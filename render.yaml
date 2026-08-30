@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: khdoom-api
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: KHDOOM_OWNER_KEY
+        generateValue: true
+      - key: KHDOOM_DB
+        value: /data/khdoom.db
+    disk:
+      name: khdoom-data
+      mountPath: /data
+      sizeGB: 1
