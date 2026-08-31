@@ -709,8 +709,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             max_uses = max(1, min(int(data.get("maxUses", 1)), 10000))
             validity_days = max(1, min(int(data.get("validityDays", 30)), 3650))
             custom_code = str(data.get("customCode", "")).strip().upper()
-            if custom_code and (len(custom_code) < 6 or len(custom_code) > 40):
-                raise ApiError(400, "كود الخصم يجب أن يكون من 6 إلى 40 خانة")
+            if custom_code and (len(custom_code) < 2 or len(custom_code) > 40):
+                raise ApiError(400, "كود الخصم يجب أن يكون من خانتين إلى 40 خانة")
             if custom_code and not all(c.isalnum() or c in "-_" for c in custom_code):
                 raise ApiError(400, "استخدم في الكود حروفًا وأرقامًا وشرطة فقط")
             code = custom_code or f"SAVE{discount_percent}-{secrets.token_hex(3).upper()}"
