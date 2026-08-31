@@ -9,6 +9,15 @@ import json
 import os
 import secrets
 import sqlite3
+import re
+from typing import Any
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +27,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("KHDOOM_DB", ROOT / "khdoom.db"))
+DATABASE_URL = os.environ.get("DATABASE_URL", "" ).strip()
 HOST = os.environ.get("KHDOOM_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", os.environ.get("KHDOOM_PORT", "8080")))
 OWNER_KEY_PATH = ROOT / "owner.key"
@@ -29,7 +39,68 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def db() -> sqlite3.Connection:
+class PostgresCursor:
+    def __init__(self, cursor: Any, lastrowid: int | None = None):
+        self._cursor = cursor
+        self.lastrowid = lastrowid
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+
+class PostgresConnection:
+    _id_tables = {"organizations", "users", "vehicles", "advertisements", "activation_codes", "ai_usage"}
+
+    def __init__(self, connection: Any):
+        self._connection = connection
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if exc_type is None:
+            self._connection.commit()
+        else:
+            self._connection.rollback()
+        self._connection.close()
+
+    def execute(self, sql: str, params: tuple | list = ()) -> PostgresCursor:
+        statement = sql.replace("?", "%s").replace(" COLLATE NOCASE", "")
+        match = re.match(r"\s*INSERT\s+INTO\s+([a-z_]+)", statement, re.IGNORECASE)
+        needs_id = bool(match and match.group(1).lower() in self._id_tables and " RETURNING " not in statement.upper())
+        if needs_id:
+            statement = statement.rstrip().rstrip(";") + " RETURNING id"
+        cursor = self._connection.execute(statement, params)
+        lastrowid = None
+        if needs_id:
+            row = cursor.fetchone()
+            lastrowid = int(row["id"])
+        return PostgresCursor(cursor, lastrowid)
+
+    def executescript(self, script: str) -> None:
+        for statement in script.split(";"):
+            if statement.strip():
+                self._connection.execute(statement)
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+
+def db():
+    if DATABASE_URL:
+        if psycopg is None:
+            raise RuntimeError("psycopg is required when DATABASE_URL is configured")
+        return PostgresConnection(psycopg.connect(DATABASE_URL, row_factory=dict_row))
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
@@ -37,6 +108,11 @@ def db() -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA busy_timeout = 5000")
     return connection
+
+
+DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
+if psycopg is not None:
+    DB_INTEGRITY_ERRORS = DB_INTEGRITY_ERRORS + (psycopg.IntegrityError,)
 
 
 def generate_ai_text(
@@ -89,7 +165,7 @@ def generate_ai_text(
 
 
 def ai_allowance(
-    connection: sqlite3.Connection, organization_id: int
+    connection: Any, organization_id: int
 ) -> tuple[str, int, int]:
     package_row = connection.execute(
         "SELECT package FROM subscriptions WHERE organization_id=?",
@@ -107,6 +183,103 @@ def ai_allowance(
     return package, daily_limit, used
 
 def init_db() -> None:
+    if DATABASE_URL:
+        postgres_schema = """
+        CREATE TABLE IF NOT EXISTS organizations (
+          id BIGSERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          activity TEXT NOT NULL DEFAULT '',
+          phone TEXT NOT NULL DEFAULT '',
+          public_chat_token TEXT UNIQUE,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS users (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          username TEXT NOT NULL UNIQUE,
+          phone TEXT NOT NULL DEFAULT '',
+          email TEXT NOT NULL DEFAULT '',
+          password_hash TEXT NOT NULL,
+          password_salt TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('admin','employee')),
+          job_title TEXT NOT NULL DEFAULT 'موظف',
+          permissions TEXT NOT NULL DEFAULT '{}',
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          token_hash TEXT PRIMARY KEY,
+          user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS vehicles (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          plate TEXT NOT NULL DEFAULT '',
+          registration_expiry TEXT NOT NULL,
+          inspection_expiry TEXT NOT NULL,
+          insurance_expiry TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS subscriptions (
+          organization_id BIGINT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+          package TEXT NOT NULL DEFAULT 'free' CHECK(package IN ('free','basic','vip')),
+          starts_at TEXT NOT NULL,
+          expires_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS advertisements (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          title TEXT NOT NULL,
+          message TEXT NOT NULL DEFAULT '',
+          contact TEXT NOT NULL DEFAULT '',
+          active INTEGER NOT NULL DEFAULT 1,
+          approved INTEGER NOT NULL DEFAULT 0,
+          approved_at TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS activation_codes (
+          id BIGSERIAL PRIMARY KEY,
+          code_hash TEXT NOT NULL UNIQUE,
+          code_prefix TEXT NOT NULL,
+          package TEXT NOT NULL CHECK(package IN ('basic','vip')),
+          duration_days INTEGER NOT NULL,
+          max_uses INTEGER NOT NULL DEFAULT 1,
+          used_count INTEGER NOT NULL DEFAULT 0,
+          expires_at TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          recipient_name TEXT NOT NULL DEFAULT '',
+          assigned_username TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS ai_usage (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          employee_type TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_vehicles_org ON vehicles(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id,created_at);
+        CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(active,approved);
+        """
+        with db() as connection:
+            connection.executescript(postgres_schema)
+            organizations_without_chat = connection.execute(
+                "SELECT id FROM organizations WHERE public_chat_token IS NULL OR public_chat_token=''"
+            ).fetchall()
+            for organization in organizations_without_chat:
+                connection.execute(
+                    "UPDATE organizations SET public_chat_token=? WHERE id=?",
+                    (secrets.token_urlsafe(18), organization["id"]),
+                )
+        if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
+            OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
+        return
     with db() as connection:
         connection.executescript(
             """
@@ -239,7 +412,7 @@ def init_db() -> None:
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
 
 
-def purge_expired_ads(connection: sqlite3.Connection) -> int:
+def purge_expired_ads(connection: Any) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
     cursor = connection.execute(
         "DELETE FROM advertisements WHERE approved=1 AND approved_at IS NOT NULL AND approved_at<=?",
@@ -247,7 +420,7 @@ def purge_expired_ads(connection: sqlite3.Connection) -> int:
     )
     return cursor.rowcount
 
-def downgrade_expired_subscriptions(connection: sqlite3.Connection) -> int:
+def downgrade_expired_subscriptions(connection: Any) -> int:
     """Return expired paid subscriptions to the free package."""
     cursor = connection.execute(
         """UPDATE subscriptions
@@ -270,7 +443,7 @@ def verify_password(password: str, expected: str, salt: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
-def issue_token(connection: sqlite3.Connection, user_id: int) -> str:
+def issue_token(connection: Any, user_id: int) -> str:
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
@@ -340,7 +513,7 @@ class Handler(BaseHTTPRequestHandler):
             raise
         except (ValueError, json.JSONDecodeError):
             raise ApiError(400, "بيانات الطلب غير صحيحة")
-    def _user(self, connection: sqlite3.Connection) -> sqlite3.Row:
+    def _user(self, connection: Any) -> Any:
         authorization = self.headers.get("Authorization", "")
         if not authorization.startswith("Bearer "):
             raise ApiError(401, "يلزم تسجيل الدخول")
@@ -545,7 +718,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                            VALUES(?,?,?,?,?,?,?,?,?)""",
                         (code_hash, code[:10], package, duration_days, max_uses, expires_at, recipient_name, assigned_username, now()),
                     )
-            except sqlite3.IntegrityError:
+            except DB_INTEGRITY_ERRORS:
                 raise ApiError(409, "هذا الكود مستخدم، اختر كودًا آخر")
             self._send(201, {"code": code, "recipientName": recipient_name, "assignedUsername": assigned_username, "package": package, "durationDays": duration_days, "maxUses": max_uses, "codeExpiresAt": expires_at})
             return
@@ -624,7 +797,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                         connection.execute("UPDATE activation_codes SET used_count=used_count+1 WHERE id=?", (code["id"],))
                     token = issue_token(connection, cursor.lastrowid)
                 self._send(201, {"token": token, "organizationId": organization_id, "package": package, "expiresAt": package_expires})
-            except sqlite3.IntegrityError:
+            except DB_INTEGRITY_ERRORS:
                 raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
             return
         if method == "POST" and path == "/api/login":
@@ -632,7 +805,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             with db() as connection:
                 user = connection.execute(
                     "SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1",
-                    (str(data.get("username", "")).strip(),),
+                    (str(data.get("username", "")).strip().lower(),),
                 ).fetchone()
                 if user is None or not verify_password(str(data.get("password", "")), user["password_hash"], user["password_salt"]):
                     raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
@@ -847,7 +1020,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     )
                     connection.commit()
                     self._send(201, {"id": cursor.lastrowid})
-                except sqlite3.IntegrityError:
+                except DB_INTEGRITY_ERRORS:
                     raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
                 return
             if path.startswith("/api/employees/") and method == "PUT":
@@ -886,7 +1059,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     if cursor.rowcount == 0:
                         raise ApiError(404, "الموظف غير موجود")
                     connection.commit()
-                except sqlite3.IntegrityError:
+                except DB_INTEGRITY_ERRORS:
                     raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
                 self._send(200, {"saved": True})
                 return

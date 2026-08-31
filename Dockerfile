@@ -1,8 +1,17 @@
 FROM python:3.13-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 KHDOOM_HOST=0.0.0.0 KHDOOM_DB=/data/khdoom.db
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    KHDOOM_HOST=0.0.0.0 \
+    KHDOOM_DB=/data/khdoom.db
+
 WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY server.py /app/server.py
+
 RUN mkdir -p /data && useradd --create-home khdoom && chown -R khdoom:khdoom /app /data
 USER khdoom
+
 EXPOSE 8080
 CMD ["python", "server.py"]
