@@ -9,6 +9,10 @@ services:
         generateValue: true
       - key: KHDOOM_DB
         value: /data/khdoom.db
+      - key: KHDOOM_AI_API_KEY
+        sync: false
+      - key: KHDOOM_AI_MODEL
+        value: gpt-4.1-mini
     disk:
       name: khdoom-data
       mountPath: /data

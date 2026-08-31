@@ -11,13 +11,17 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("KHDOOM_DB", ROOT / "khdoom.db"))
 HOST = os.environ.get("KHDOOM_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", os.environ.get("KHDOOM_PORT", "8080")))
 OWNER_KEY_PATH = ROOT / "owner.key"
+AI_URL = os.environ.get("KHDOOM_AI_URL", "https://api.openai.com/v1/responses")
+AI_MODEL = os.environ.get("KHDOOM_AI_MODEL", "gpt-4.1-mini")
 
 
 def now() -> str:
@@ -33,6 +37,73 @@ def db() -> sqlite3.Connection:
     connection.execute("PRAGMA busy_timeout = 5000")
     return connection
 
+
+def generate_ai_text(
+    system_prompt: str, user_prompt: str, *, web_search: bool = False
+) -> str:
+    api_key = os.environ.get("KHDOOM_AI_API_KEY", "").strip()
+    if not api_key:
+        raise ApiError(503, "خدمة AI لم تُفعّل في إعدادات الخادم بعد")
+    request_data = {
+        "model": AI_MODEL,
+        "instructions": system_prompt,
+        "input": user_prompt,
+        "max_output_tokens": 1200,
+        "store": False,
+    }
+    if web_search:
+        request_data["tools"] = [{"type": "web_search_preview"}]
+    payload = json.dumps(request_data, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        AI_URL,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+    )
+    try:
+        with urlopen(request, timeout=60) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        print(f"AI HTTP ERROR: {error.code}")
+        raise ApiError(502, "تعذر إنشاء الرد بالذكاء الاصطناعي الآن")
+    except (URLError, TimeoutError, json.JSONDecodeError) as error:
+        print(f"AI CONNECTION ERROR: {error}")
+        raise ApiError(502, "تعذر الاتصال بخدمة الذكاء الاصطناعي")
+    text = str(result.get("output_text", "")).strip()
+    if not text:
+        parts = []
+        for item in result.get("output", []):
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            for content in item.get("content", []):
+                if isinstance(content, dict) and content.get("type") == "output_text":
+                    parts.append(str(content.get("text", "")))
+        text = "\n".join(parts).strip()
+    if not text:
+        raise ApiError(502, "وصل رد فارغ من خدمة الذكاء الاصطناعي")
+    return text
+
+
+def ai_allowance(
+    connection: sqlite3.Connection, organization_id: int
+) -> tuple[str, int, int]:
+    package_row = connection.execute(
+        "SELECT package FROM subscriptions WHERE organization_id=?",
+        (organization_id,),
+    ).fetchone()
+    package = package_row["package"] if package_row else "free"
+    daily_limit = {"free": 5, "basic": 30, "vip": 100}.get(package, 5)
+    day_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+    used = connection.execute(
+        "SELECT COUNT(*) AS count FROM ai_usage WHERE organization_id=? AND created_at>=?",
+        (organization_id, day_start),
+    ).fetchone()["count"]
+    if used >= daily_limit:
+        raise ApiError(429, "تم بلوغ الحد اليومي لموظفي AI")
+    return package, daily_limit, used
 
 def init_db() -> None:
     with db() as connection:
@@ -105,8 +176,34 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);
             CREATE INDEX IF NOT EXISTS idx_vehicles_org ON vehicles(organization_id);
+            CREATE TABLE IF NOT EXISTS ai_usage (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              employee_type TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(active, approved);
             """
+        )
+        user_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(users)")
+        }
+        if "job_title" not in user_columns:
+            connection.execute(
+                "ALTER TABLE users ADD COLUMN job_title TEXT NOT NULL DEFAULT 'موظف'"
+            )
+        ad_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(advertisements)")
+        }
+        if "approved_at" not in ad_columns:
+            connection.execute("ALTER TABLE advertisements ADD COLUMN approved_at TEXT")
+        connection.execute(
+            "UPDATE advertisements SET approved_at=? WHERE approved=1 AND approved_at IS NULL",
+            (now(),),
         )
         code_columns = {
             row["name"]
@@ -123,6 +220,26 @@ def init_db() -> None:
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
 
+
+def purge_expired_ads(connection: sqlite3.Connection) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    cursor = connection.execute(
+        "DELETE FROM advertisements WHERE approved=1 AND approved_at IS NOT NULL AND approved_at<=?",
+        (cutoff,),
+    )
+    return cursor.rowcount
+
+def downgrade_expired_subscriptions(connection: sqlite3.Connection) -> int:
+    """Return expired paid subscriptions to the free package."""
+    cursor = connection.execute(
+        """UPDATE subscriptions
+           SET package='free', starts_at=?, expires_at=NULL
+           WHERE package IN ('basic','vip')
+             AND expires_at IS NOT NULL
+             AND expires_at<=?""",
+        (now(), now()),
+    )
+    return cursor.rowcount
 
 def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
     salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
@@ -179,11 +296,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict:
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            return json.loads(self.rfile.read(length) or b"{}")
+            transfer_encoding = self.headers.get("Transfer-Encoding", "").lower()
+            if "chunked" in transfer_encoding:
+                chunks = bytearray()
+                while True:
+                    size_line = self.rfile.readline().strip().split(b";", 1)[0]
+                    if not size_line:
+                        continue
+                    size = int(size_line, 16)
+                    if size == 0:
+                        self.rfile.readline()
+                        break
+                    if len(chunks) + size > 1_048_576:
+                        raise ApiError(413, "حجم الطلب أكبر من المسموح")
+                    chunks.extend(self.rfile.read(size))
+                    self.rfile.read(2)
+                raw = bytes(chunks)
+            else:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > 1_048_576:
+                    raise ApiError(413, "حجم الطلب أكبر من المسموح")
+                raw = self.rfile.read(length) if length else b"{}"
+            return json.loads(raw or b"{}")
+        except ApiError:
+            raise
         except (ValueError, json.JSONDecodeError):
             raise ApiError(400, "بيانات الطلب غير صحيحة")
-
     def _user(self, connection: sqlite3.Connection) -> sqlite3.Row:
         authorization = self.headers.get("Authorization", "")
         if not authorization.startswith("Bearer "):
@@ -208,6 +346,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         path = urlparse(self.path).path.rstrip("/") or "/"
+        with db() as subscription_connection:
+            downgrade_expired_subscriptions(subscription_connection)
         if method == "GET" and path == "/":
             self._send_html(
                 """<!doctype html>
@@ -231,8 +371,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}</style></head><body><div class="wrap"><h1>لوحة مالك خدووم</h1>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="ownerLogin()">دخول لوحة المالك</button><div id="loginStatus" class="result">أدخل المفتاح ثم اضغط دخول</div></div>
 <div class="card"><h2>صفحة أكواد التفعيل</h2><p>إنشاء وإدارة أكواد الباقة الأساسية وVIP في صفحة خاصة.</p><button onclick="location.href='/owner/codes'">فتح صفحة أكواد التفعيل</button></div>
-<div class="card"><h2>المؤسسات</h2><button onclick="loadOrganizations()">عرض المؤسسات</button><div id="organizations" class="result"></div></div></div>
-<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=prompt('مدة الباقة بالأيام','30');if(!days)return;let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:+days})});let d=await r.json();alert(d.saved?'تم تغيير الباقة':(d.error||'تعذر التغيير'));loadOrganizations()}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${o.name}</b><p>الباقة الحالية: ${o.package} | ${o.phone}</p><button onclick="setPackage(${o.id},'free')">مجانية</button><button onclick="setPackage(${o.id},'basic')">فتح الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">فتح VIP</button></div>`).join('')}</script></body></html>"""
+<div class="card"><h2>المؤسسات</h2><button onclick="loadOrganizations()">عرض المؤسسات</button><div id="organizations" class="result"></div></div><div class="card"><h2>مراجعة إعلانات VIP</h2><button class="vip" onclick="loadAds()">تحميل الإعلانات</button><div id="ads" class="result"></div></div></div>
+<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=prompt('مدة الباقة بالأيام','30');if(!days)return;let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:+days})});let d=await r.json();alert(d.saved?'تم تغيير الباقة':(d.error||'تعذر التغيير'));loadOrganizations()}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${o.name}</b><p>الباقة الحالية: ${o.package} | ${o.phone}</p><button onclick="setPackage(${o.id},'free')">مجانية</button><button onclick="setPackage(${o.id},'basic')">فتح الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">فتح VIP</button></div>`).join('')}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
             )
             return
         if method == "GET" and path == "/owner/codes":
@@ -247,6 +387,42 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             return
         if method == "GET" and path == "/health":
             self._send(200, {"status": "ok", "service": "khdoom-api"})
+            return
+        if path == "/owner/api/ads" and method == "GET":
+            self._owner()
+            with db() as connection:
+                purge_expired_ads(connection)
+                rows = connection.execute(
+                    """SELECT advertisements.id,advertisements.title,advertisements.message,
+                              advertisements.contact,advertisements.active,advertisements.approved,
+                              advertisements.created_at,advertisements.approved_at,organizations.name AS organization_name
+                       FROM advertisements
+                       JOIN organizations ON organizations.id=advertisements.organization_id
+                       ORDER BY advertisements.id DESC"""
+                ).fetchall()
+            self._send(200, [dict(row) for row in rows])
+            return
+        if path.startswith("/owner/api/ads/") and method == "PUT":
+            self._owner()
+            try:
+                advertisement_id = int(path.rsplit("/", 1)[1])
+            except ValueError:
+                raise ApiError(400, "رقم الإعلان غير صحيح")
+            data = self._body()
+            action = str(data.get("action", "")).strip()
+            if action not in ("approve", "reject"):
+                raise ApiError(400, "اختر قبول الإعلان أو رفضه")
+            approved = 1 if action == "approve" else 0
+            active = 1 if action == "approve" else 0
+            with db() as connection:
+                cursor = connection.execute(
+                    "UPDATE advertisements SET approved=?,active=?,approved_at=? WHERE id=?",
+                    (approved, active, now() if approved else None, advertisement_id),
+                )
+                connection.commit()
+            if cursor.rowcount == 0:
+                raise ApiError(404, "الإعلان غير موجود")
+            self._send(200, {"saved": True, "approved": bool(approved)})
             return
         if path == "/owner/api/codes" and method == "POST":
             self._owner()
@@ -312,8 +488,9 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         if method == "POST" and path == "/api/register":
             data = self._body()
             required = ("name", "username", "phone", "password", "organizationName")
-            if any(not str(data.get(key, "")).strip() for key in required):
-                raise ApiError(400, "أكمل بيانات الحساب والمؤسسة")
+            missing = [key for key in required if not str(data.get(key, "")).strip()]
+            if missing:
+                raise ApiError(400, "حقول مطلوبة ناقصة: " + ", ".join(missing))
             if len(str(data["password"])) < 8:
                 raise ApiError(400, "كلمة المرور يجب أن تكون 8 خانات على الأقل")
             password_hash, salt = hash_password(str(data["password"]))
@@ -401,6 +578,105 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         with db() as connection:
             user = self._user(connection)
             organization_id = user["organization_id"]
+            if path == "/api/ai/commercial-research" and method == "POST":
+                data = self._body()
+                keywords = str(data.get("keywords", "")).strip()[:300]
+                city = str(data.get("city", "")).strip()[:120]
+                research_type = str(data.get("researchType", "عملاء محتملون")).strip()[:80]
+                if not keywords or not city:
+                    raise ApiError(400, "اكتب مجال البحث والمدينة")
+                package, daily_limit, used = ai_allowance(connection, organization_id)
+                if package != "vip":
+                    raise ApiError(403, "موظف البحث التجاري متاح في باقة VIP")
+                system_prompt = (
+                    "أنت موظف بحث تجاري سعودي. ابحث في الإنترنت عن معلومات حديثة وعلنية فقط. "
+                    "أجب بالعربية بوضوح، ولا تخترع أسماء أو أرقامًا. اذكر مصادر أو روابط مفيدة عند توفرها، "
+                    "ونبّه أن بيانات الاتصال والأسعار تحتاج تحققًا قبل الاعتماد."
+                )
+                user_prompt = (
+                    f"نوع البحث: {research_type}\nالمجال أو الكلمات: {keywords}\n"
+                    f"المدينة: {city}\nقدم نتيجة عملية مختصرة من 5 إلى 10 نقاط."
+                )
+                text = generate_ai_text(system_prompt, user_prompt, web_search=True)
+                connection.execute(
+                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
+                    (organization_id, user["id"], "commercial_research", now()),
+                )
+                connection.commit()
+                self._send(200, {"text": text, "remaining": daily_limit - used - 1})
+                return
+            if path == "/api/ai/reception-reply" and method == "POST":
+                data = self._body()
+                message = str(data.get("message", "")).strip()[:3000]
+                settings = data.get("settings")
+                if not message:
+                    raise ApiError(400, "اكتب رسالة العميل")
+                if not isinstance(settings, dict):
+                    settings = {}
+                package, daily_limit, used = ai_allowance(connection, organization_id)
+                if package not in ("basic", "vip"):
+                    raise ApiError(403, "موظف الاستقبال متاح من الباقة الأساسية")
+                allowed_keys = ("businessName", "businessInfo", "workingHours", "replyStyle")
+                safe_settings = {
+                    key: str(settings.get(key, ""))[:1500]
+                    for key in allowed_keys
+                }
+                system_prompt = (
+                    "أنت موظف استقبال لمؤسسة سعودية. أجب بالعربية وفق بيانات المؤسسة فقط. "
+                    "لا تخترع سعرًا أو موعدًا أو خدمة غير مذكورة. إذا نقصت معلومة فقل إن الموظف البشري سيتابع، "
+                    "واجمع عند الحاجة اسم العميل ورقم التواصل ونوع الطلب. اجعل الرد مهذبًا ومختصرًا."
+                )
+                user_prompt = (
+                    "إعدادات المؤسسة:\n"
+                    + json.dumps(safe_settings, ensure_ascii=False, indent=2)
+                    + f"\nرسالة العميل الحالية:\n{message}"
+                )
+                text = generate_ai_text(system_prompt, user_prompt)
+                connection.execute(
+                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
+                    (organization_id, user["id"], "reception_reply", now()),
+                )
+                connection.commit()
+                self._send(200, {"text": text, "remaining": daily_limit - used - 1})
+                return
+            if path == "/api/ai/commercial-report" and method == "POST":
+                data = self._body()
+                report_data = data.get("report")
+                if not isinstance(report_data, dict):
+                    raise ApiError(400, "بيانات التقرير غير صحيحة")
+                package_row = connection.execute(
+                    "SELECT package FROM subscriptions WHERE organization_id=?",
+                    (organization_id,),
+                ).fetchone()
+                package = package_row["package"] if package_row else "free"
+                daily_limit = {"free": 5, "basic": 30, "vip": 100}.get(package, 5)
+                day_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+                used = connection.execute(
+                    "SELECT COUNT(*) AS count FROM ai_usage WHERE organization_id=? AND created_at>=?",
+                    (organization_id, day_start),
+                ).fetchone()["count"]
+                if used >= daily_limit:
+                    raise ApiError(429, "تم بلوغ الحد اليومي لموظفي AI")
+                safe_report = {
+                    str(key)[:60]: str(value)[:2000]
+                    for key, value in report_data.items()
+                }
+                system_prompt = (
+                    "أنت موظف متابعة تجارية سعودي محترف. اكتب تقرير متابعة اتصال "
+                    "بالعربية الواضحة دون اختلاق معلومات. حافظ على الأرقام والحقائق، "
+                    "واجعل التقرير عمليًا ومختصرًا ويتضمن الحالة والخطوة التالية."
+                )
+                user_prompt = "حوّل البيانات التالية إلى تقرير مهني:\n" + json.dumps(
+                    safe_report, ensure_ascii=False, indent=2
+                )
+                text = generate_ai_text(system_prompt, user_prompt)
+                connection.execute(
+                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
+                    (organization_id, user["id"], "commercial_report", now()),
+                )
+                connection.commit()
+                self._send(200, {"text": text, "remaining": daily_limit - used - 1})
+                return
             if path == "/api/activate-code" and method == "POST":
                 data = self._body()
                 raw_code = str(data.get("code", "")).strip().upper()
@@ -421,7 +697,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(200, {"activated": True, "package": code["package"], "expiresAt": package_expires})
                 return
             if method == "GET" and path == "/api/organization":
-                org = connection.execute("SELECT id,name,activity,phone,created_at FROM organizations WHERE id=?", (organization_id,)).fetchone()
+                org = connection.execute("""SELECT organizations.id,organizations.name,organizations.activity,organizations.phone,organizations.created_at,subscriptions.package,subscriptions.expires_at FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id WHERE organizations.id=?""", (organization_id,)).fetchone()
                 self._send(200, dict(org))
                 return
             if method == "PUT" and path == "/api/organization":
@@ -436,7 +712,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 if user["role"] != "admin":
                     raise ApiError(403, "هذه العملية للمدير فقط")
                 rows = connection.execute(
-                    """SELECT id,name,username,phone,email,role,permissions,active,created_at
+                    """SELECT id,name,username,phone,email,job_title,permissions,active,created_at
                        FROM users WHERE organization_id=? AND role='employee' ORDER BY id DESC""",
                     (organization_id,),
                 ).fetchall()
@@ -452,19 +728,72 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 if user["role"] != "admin":
                     raise ApiError(403, "هذه العملية للمدير فقط")
                 data = self._body()
+                package_row = connection.execute(
+                    "SELECT package FROM subscriptions WHERE organization_id=?",
+                    (organization_id,),
+                ).fetchone()
+                package = package_row["package"] if package_row else "free"
+                employee_limit = {"free": 1, "basic": 5}.get(package)
+                employee_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM users WHERE organization_id=? AND role='employee'",
+                    (organization_id,),
+                ).fetchone()["count"]
+                if employee_limit is not None and employee_count >= employee_limit:
+                    message = "الباقة المجانية تسمح بموظف واحد فقط" if package == "free" else "الباقة الأساسية تسمح بخمسة موظفين فقط"
+                    raise ApiError(403, message)
                 if len(str(data.get("password", ""))) < 8:
                     raise ApiError(400, "كلمة مرور الموظف 8 خانات على الأقل")
                 password_hash, salt = hash_password(str(data["password"]))
                 try:
                     cursor = connection.execute(
-                        """INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,permissions,active,created_at)
-                           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                        (organization_id, str(data.get("name", "")).strip(), str(data.get("username", "")).strip().lower(), str(data.get("phone", "")).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "employee", json.dumps(data.get("permissions", {}), ensure_ascii=False), 1, now()),
+                        """INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,job_title,permissions,active,created_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (organization_id, str(data.get("name", "")).strip(), str(data.get("username", "")).strip().lower(), str(data.get("phone", "")).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "employee", str(data.get("role", "موظف")).strip(), json.dumps(data.get("permissions", {}), ensure_ascii=False), 1 if data.get("active", True) else 0, now()),
                     )
                     connection.commit()
                     self._send(201, {"id": cursor.lastrowid})
                 except sqlite3.IntegrityError:
                     raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
+                return
+            if path.startswith("/api/employees/") and method == "PUT":
+                if user["role"] != "admin":
+                    raise ApiError(403, "هذه العملية للمدير فقط")
+                employee_id = int(path.rsplit("/", 1)[1])
+                data = self._body()
+                name = str(data.get("name", "")).strip()
+                username = str(data.get("username", "")).strip().lower()
+                if not name or len(username) < 3:
+                    raise ApiError(400, "اكتب اسم الموظف واسم مستخدم واضح")
+                password = str(data.get("password", ""))
+                if password and len(password) < 8:
+                    raise ApiError(400, "كلمة مرور الموظف 8 خانات على الأقل")
+                values = (
+                    name, username, str(data.get("phone", "")).strip(),
+                    str(data.get("email", "")).strip().lower(),
+                    str(data.get("role", "موظف")).strip(),
+                    json.dumps(data.get("permissions", {}), ensure_ascii=False),
+                    1 if data.get("active", True) else 0,
+                )
+                try:
+                    if password:
+                        password_hash, salt = hash_password(password)
+                        cursor = connection.execute(
+                            """UPDATE users SET name=?,username=?,phone=?,email=?,job_title=?,permissions=?,active=?,password_hash=?,password_salt=?
+                               WHERE id=? AND organization_id=? AND role='employee'""",
+                            values + (password_hash, salt, employee_id, organization_id),
+                        )
+                    else:
+                        cursor = connection.execute(
+                            """UPDATE users SET name=?,username=?,phone=?,email=?,job_title=?,permissions=?,active=?
+                               WHERE id=? AND organization_id=? AND role='employee'""",
+                            values + (employee_id, organization_id),
+                        )
+                    if cursor.rowcount == 0:
+                        raise ApiError(404, "الموظف غير موجود")
+                    connection.commit()
+                except sqlite3.IntegrityError:
+                    raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
+                self._send(200, {"saved": True})
                 return
             if path.startswith("/api/employees/") and method == "DELETE":
                 if user["role"] != "admin":
@@ -498,16 +827,14 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(200, {"deleted": True})
                 return
             if path == "/api/ads" and method == "GET":
-                package = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()["package"]
-                if package == "vip":
-                    self._send(200, [])
-                else:
-                    rows = connection.execute(
-                        """SELECT advertisements.id,advertisements.title,advertisements.message,advertisements.contact,organizations.name AS advertiser
-                           FROM advertisements JOIN organizations ON organizations.id=advertisements.organization_id
-                           WHERE advertisements.active=1 AND advertisements.approved=1 ORDER BY advertisements.id DESC"""
-                    ).fetchall()
-                    self._send(200, [dict(row) for row in rows])
+                purge_expired_ads(connection)
+                rows = connection.execute(
+                    """SELECT advertisements.id,advertisements.title,advertisements.message,advertisements.contact,
+                              advertisements.approved_at,organizations.name AS advertiser
+                       FROM advertisements JOIN organizations ON organizations.id=advertisements.organization_id
+                       WHERE advertisements.active=1 AND advertisements.approved=1 ORDER BY advertisements.id DESC"""
+                ).fetchall()
+                self._send(200, [dict(row) for row in rows])
                 return
             if path == "/api/ads" and method == "POST":
                 if user["role"] != "admin":
@@ -516,9 +843,17 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 if package != "vip":
                     raise ApiError(403, "إنشاء الإعلانات متاح لباقة VIP فقط")
                 data = self._body()
+                title = str(data.get("title", "")).strip()
+                message = str(data.get("message", "")).strip()
+                contact = str(data.get("contact", "")).strip()
+                if not title or len(title) > 120:
+                    raise ApiError(400, "عنوان الإعلان مطلوب وبحد أقصى 120 حرفًا")
+                if len(message) > 1000 or len(contact) > 80:
+                    raise ApiError(400, "محتوى الإعلان أو وسيلة التواصل طويلة جدًا")
+
                 cursor = connection.execute(
                     "INSERT INTO advertisements(organization_id,title,message,contact,active,approved,created_at) VALUES(?,?,?,?,?,?,?)",
-                    (organization_id, str(data.get("title", "")).strip(), str(data.get("message", "")).strip(), str(data.get("contact", "")).strip(), 1, 0, now()),
+                    (organization_id, title, message, contact, 1, 0, now()),
                 )
                 connection.commit()
                 self._send(201, {"id": cursor.lastrowid, "approved": False})
@@ -548,6 +883,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         try:
             self._dispatch(method)
         except ApiError as error:
+            print(f"API ERROR {error.status} {self.path}: {error.message}")
             self._send(error.status, {"error": error.message})
         except Exception as error:
             print(f"ERROR: {error}")
