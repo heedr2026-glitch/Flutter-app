@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import os
 import secrets
@@ -195,6 +196,23 @@ def init_db() -> None:
             connection.execute(
                 "ALTER TABLE users ADD COLUMN job_title TEXT NOT NULL DEFAULT 'موظف'"
             )
+        organization_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(organizations)")
+        }
+        if "public_chat_token" not in organization_columns:
+            connection.execute("ALTER TABLE organizations ADD COLUMN public_chat_token TEXT")
+        organizations_without_chat = connection.execute(
+            "SELECT id FROM organizations WHERE public_chat_token IS NULL OR public_chat_token=''"
+        ).fetchall()
+        for organization in organizations_without_chat:
+            connection.execute(
+                "UPDATE organizations SET public_chat_token=? WHERE id=?",
+                (secrets.token_urlsafe(18), organization["id"]),
+            )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_public_chat_token ON organizations(public_chat_token)"
+        )
         ad_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(advertisements)")
@@ -365,6 +383,83 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 </div></body></html>"""
             )
             return
+        if method == "GET" and path.startswith("/chat/"):
+            chat_token = path.split("/", 2)[2]
+            with db() as connection:
+                organization = connection.execute(
+                    """SELECT organizations.id,organizations.name,organizations.activity,organizations.phone,
+                              subscriptions.package
+                       FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id
+                       WHERE organizations.public_chat_token=?""",
+                    (chat_token,),
+                ).fetchone()
+            if organization is None:
+                raise ApiError(404, "رابط المحادثة غير صحيح")
+            if organization["package"] not in ("basic", "vip"):
+                raise ApiError(403, "موظف الاستقبال غير متاح لهذه المؤسسة حاليًا")
+            page = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف استقبال __ORG_NAME__</title>
+<style>body{margin:0;background:linear-gradient(160deg,#071126,#142454);color:#fff;font-family:Tahoma,Arial;min-height:100vh}.wrap{max-width:720px;margin:auto;padding:22px}.head,.chat{background:#111f42;border:1px solid #24618d;border-radius:22px;padding:20px;margin-bottom:14px}h1{color:#38d4ff;margin:0 0 8px}.messages{min-height:260px;max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:14px}.msg{padding:12px 15px;border-radius:16px;white-space:pre-wrap;line-height:1.65}.bot{background:#15345f;align-self:flex-start}.customer{background:#087cab;align-self:flex-end}textarea,button{box-sizing:border-box;width:100%;padding:14px;border-radius:13px;border:1px solid #2f6b99;color:#fff;font:inherit}textarea{background:#09152e;min-height:88px;resize:vertical}button{background:#7c3aed;font-weight:bold;margin-top:10px;cursor:pointer}.note{color:#9bdcf5;font-size:13px}.error{color:#fbbf24}</style></head><body><main class="wrap"><section class="head"><h1>__ORG_NAME__</h1><p>مرحبًا بك، أنا موظف الاستقبال الذكي. كيف أقدر أخدمك؟</p><p class="note">لا ترسل بيانات بنكية أو رموز تحقق. قد يتابع معك موظف بشري عند الحاجة.</p></section><section class="chat"><div id="messages" class="messages"><div class="msg bot">مرحبًا بك في __ORG_NAME__. اكتب استفسارك أو تفاصيل طلبك.</div></div><textarea id="message" maxlength="1500" placeholder="اكتب رسالتك هنا"></textarea><button id="send" onclick="sendMessage()">إرسال</button><div id="status" class="note"></div></section></main>
+<script>const history=[];function addMessage(text,type){const item=document.createElement('div');item.className='msg '+type;item.textContent=text;const box=document.getElementById('messages');box.appendChild(item);box.scrollTop=box.scrollHeight}async function sendMessage(){const input=document.getElementById('message'),button=document.getElementById('send'),status=document.getElementById('status'),message=input.value.trim();if(!message)return;addMessage(message,'customer');history.push({role:'customer',text:message});input.value='';button.disabled=true;status.textContent='جاري تجهيز الرد...';try{const response=await fetch('/api/public-chat/__CHAT_TOKEN__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history:history.slice(-8)})});const data=await response.json();if(!response.ok)throw new Error(data.error||'تعذر الرد الآن');addMessage(data.text,'bot');history.push({role:'assistant',text:data.text});status.textContent=''}catch(error){status.textContent=error.message;status.className='note error'}finally{button.disabled=false;input.focus()}}</script></body></html>"""
+            page = page.replace("__ORG_NAME__", html.escape(organization["name"])).replace("__CHAT_TOKEN__", chat_token)
+            self._send_html(page)
+            return
+        if method == "POST" and path.startswith("/api/public-chat/"):
+            chat_token = path.rsplit("/", 1)[1]
+            data = self._body()
+            message = str(data.get("message", "")).strip()[:1500]
+            if not message:
+                raise ApiError(400, "اكتب رسالة العميل")
+            history = data.get("history")
+            if not isinstance(history, list):
+                history = []
+            safe_history = []
+            for item in history[-8:]:
+                if not isinstance(item, dict):
+                    continue
+                role = "موظف الاستقبال" if item.get("role") == "assistant" else "العميل"
+                safe_history.append({"role": role, "text": str(item.get("text", ""))[:1500]})
+            with db() as connection:
+                organization = connection.execute(
+                    """SELECT organizations.id,organizations.name,organizations.activity,organizations.phone,
+                              subscriptions.package
+                       FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id
+                       WHERE organizations.public_chat_token=?""",
+                    (chat_token,),
+                ).fetchone()
+                if organization is None:
+                    raise ApiError(404, "رابط المحادثة غير صحيح")
+                package, daily_limit, used = ai_allowance(connection, organization["id"])
+                if package not in ("basic", "vip"):
+                    raise ApiError(403, "موظف الاستقبال متاح من الباقة الأساسية")
+                admin = connection.execute(
+                    "SELECT id FROM users WHERE organization_id=? AND role='admin' AND active=1 ORDER BY id LIMIT 1",
+                    (organization["id"],),
+                ).fetchone()
+                if admin is None:
+                    raise ApiError(503, "لا يوجد مسؤول نشط للمؤسسة")
+                system_prompt = (
+                    "أنت موظف استقبال تابع للمؤسسة المذكورة. أجب بالعربية وباختصار وفق بيانات المؤسسة فقط. "
+                    "لا تخترع أسعارًا أو خدمات أو مواعيد. إذا نقصت معلومة فقل إن موظفًا بشريًا سيتابع. "
+                    "اطلب اسم العميل ورقم التواصل ونوع الطلب عند الحاجة، ولا تطلب بيانات بنكية أو رموز تحقق."
+                )
+                organization_info = {
+                    "اسم المؤسسة": organization["name"],
+                    "نشاط المؤسسة": organization["activity"],
+                    "رقم المؤسسة للتواصل": organization["phone"],
+                }
+                user_prompt = (
+                    "بيانات المؤسسة:\n" + json.dumps(organization_info, ensure_ascii=False)
+                    + "\nالمحادثة السابقة:\n" + json.dumps(safe_history, ensure_ascii=False)
+                    + "\nرسالة العميل الحالية:\n" + message
+                )
+                reply = generate_ai_text(system_prompt, user_prompt)
+                connection.execute(
+                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
+                    (organization["id"], admin["id"], "public_reception_chat", now()),
+                )
+                connection.commit()
+            self._send(200, {"text": reply, "remaining": daily_limit - used - 1})
+            return
         if method == "GET" and path == "/owner":
             self._send_html(
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة مالك خدووم</title>
@@ -372,7 +467,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="ownerLogin()">دخول لوحة المالك</button><div id="loginStatus" class="result">أدخل المفتاح ثم اضغط دخول</div></div>
 <div class="card"><h2>صفحة أكواد التفعيل</h2><p>إنشاء وإدارة أكواد الباقة الأساسية وVIP في صفحة خاصة.</p><button onclick="location.href='/owner/codes'">فتح صفحة أكواد التفعيل</button></div>
 <div class="card"><h2>المؤسسات</h2><button onclick="loadOrganizations()">عرض المؤسسات</button><div id="organizations" class="result"></div></div><div class="card"><h2>مراجعة إعلانات VIP</h2><button class="vip" onclick="loadAds()">تحميل الإعلانات</button><div id="ads" class="result"></div></div></div>
-<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:30})});let d=await r.json();let box=document.getElementById('organizations');if(r.ok&&d.saved){box.textContent='تم تغيير الباقة لمدة 30 يوم ✓';await loadOrganizations()}else{box.textContent=d.error||'تعذر تغيير الباقة'}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${o.name}</b><p>الباقة الحالية: ${o.package} | ${o.phone}</p><button onclick="setPackage(${o.id},'free')">مجانية</button><button onclick="setPackage(${o.id},'basic')">فتح الأساسية لمدة 30 يوم</button><button class="vip" onclick="setPackage(${o.id},'vip')">فتح VIP لمدة 30 يوم</button></div>`).join('')}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
+<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:30})});let d=await r.json();let box=document.getElementById('organizations');if(r.ok&&d.saved){box.textContent='تم تغيير الباقة لمدة 30 يوم ✓';await loadOrganizations()}else{box.textContent=d.error||'تعذر تغيير الباقة'}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${o.name}</b><p>الباقة الحالية: ${o.package} | ${o.phone}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><button onclick="setPackage(${o.id},'free')">مجانية</button><button onclick="setPackage(${o.id},'basic')">فتح الأساسية لمدة 30 يوم</button><button class="vip" onclick="setPackage(${o.id},'vip')">فتح VIP لمدة 30 يوم</button></div>`).join('')}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
             )
             return
         if method == "GET" and path == "/owner/codes":
@@ -467,7 +562,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             self._owner()
             with db() as connection:
                 rows = connection.execute(
-                    """SELECT organizations.id,organizations.name,organizations.phone,subscriptions.package,subscriptions.expires_at
+                    """SELECT organizations.id,organizations.name,organizations.phone,organizations.public_chat_token,subscriptions.package,subscriptions.expires_at
                        FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id ORDER BY organizations.id DESC"""
                 ).fetchall()
             self._send(200, [dict(row) for row in rows])
@@ -510,8 +605,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                         if code["assigned_username"] and code["assigned_username"].lower() != str(data["username"]).strip().lower():
                             raise ApiError(403, "هذا الكود مخصص لمستخدم آخر")
                     cursor = connection.execute(
-                        "INSERT INTO organizations(name,activity,phone,created_at) VALUES(?,?,?,?)",
-                        (str(data["organizationName"]).strip(), str(data.get("activity", "")).strip(), str(data["phone"]).strip(), now()),
+                        "INSERT INTO organizations(name,activity,phone,public_chat_token,created_at) VALUES(?,?,?,?,?)",
+                        (str(data["organizationName"]).strip(), str(data.get("activity", "")).strip(), str(data["phone"]).strip(), secrets.token_urlsafe(18), now()),
                     )
                     organization_id = cursor.lastrowid
                     cursor = connection.execute(
