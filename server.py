@@ -656,11 +656,11 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         if method == "GET" and path == "/owner/codes":
             self._send_html(
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>أكواد خصم خدووم</title>
-<style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}.code{border-right:4px solid #f59e0b}</style></head><body><div class="wrap"><h1>صفحة أكواد خصم خدووم</h1><p><a href="/owner" style="color:#7dd3fc">العودة إلى لوحة المالك</a></p>
+<style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}.code{border-right:4px solid #f59e0b}.field{margin:14px 0}.field label{display:block;font-weight:bold;color:#bae6fd;margin-bottom:3px}.hint{display:block;color:#94a3b8;font-size:13px;margin-top:2px}</style></head><body><div class="wrap"><h1>صفحة أكواد خصم خدووم</h1><p><a href="/owner" style="color:#7dd3fc">العودة إلى لوحة المالك</a></p>
 <div class="card"><h2>مفتاح المالك</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="login()">دخول وتحميل الأكواد</button><div id="status" class="result"></div></div>
-<div class="card"><h2>إنشاء كود خصم جديد</h2><input id="recipient" placeholder="اسم الحملة أو المعلن (اختياري)"><input id="customCode" placeholder="الكود الخاص مثل KHDOOM15"><input id="discount" type="number" min="1" max="90" value="15" placeholder="نسبة الخصم"><input id="validityDays" type="number" min="1" value="30" placeholder="صلاحية الكود بالأيام"><input id="uses" type="number" min="1" value="100" placeholder="عدد مرات الاستخدام"><button class="vip" onclick="createCode()">إنشاء كود الخصم</button><div id="result" class="result"></div></div>
+<div class="card"><h2>إنشاء كود خصم جديد</h2><div class="field"><label for="recipient">اسم الحملة أو المعلن</label><input id="recipient" placeholder="مثال: إعلان أحمد"><span class="hint">يظهر في سجل الأكواد لتعرف سبب إنشاء الكود.</span></div><div class="field"><label for="customCode">كود الخصم</label><input id="customCode" placeholder="مثال: AHMED15"><span class="hint">هذا هو الكود الذي ترسله للعميل.</span></div><div class="field"><label for="discount">نسبة الخصم (%)</label><input id="discount" type="number" min="1" max="90" value="15"><span class="hint">مثال: 15 تعني خصم 15% من سعر الباقة.</span></div><div class="field"><label for="validityDays">مدة صلاحية الكود بالأيام</label><input id="validityDays" type="number" min="1" value="30"><span class="hint">بعد انتهاء هذه المدة يتوقف قبول الكود.</span></div><div class="field"><label for="uses">عدد مرات الاستخدام</label><input id="uses" type="number" min="1" value="100"><span class="hint">أقصى عدد للعملاء الذين يمكنهم استخدام الكود.</span></div><button class="vip" onclick="createCode()">إنشاء كود الخصم</button><div id="result" class="result"></div></div>
 <div class="card"><h2>سجل الأكواد</h2><button onclick="loadCodes()">تحديث السجل</button><div id="codes"></div></div></div>
-<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function login(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();document.getElementById('status').textContent=r.ok?'تم الدخول بنجاح ✓':(d.error||'تعذر الدخول');if(r.ok)render(d)}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,customCode:document.getElementById('customCode').value,discountPercent:+document.getElementById('discount').value,validityDays:+document.getElementById('validityDays').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'كود الخصم: '+d.code+'\\nالحملة: '+(d.recipientName||'غير محدد')+'\\nالخصم: '+d.discountPercent+'%':(d.error||'تعذر إنشاء الكود');if(r.ok)loadCodes()}async function loadCodes(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();if(r.ok)render(d);else document.getElementById('codes').textContent=d.error||'تعذر تحميل الأكواد'}function render(data){let box=document.getElementById('codes');box.innerHTML=data.length?data.map(c=>`<div class="card code"><b>${c.code_prefix}...</b><p>الحملة: ${c.recipient_name||'غير محدد'}</p><p>الخصم: ${c.discount_percent||0}% | الاستخدام: ${c.used_count}/${c.max_uses} | النوع: ${c.code_kind==='discount'?'خصم':'كود قديم'}</p></div>`).join(''):'لا توجد أكواد بعد'}</script></body></html>"""
+<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function login(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();document.getElementById('status').textContent=r.ok?'تم الدخول بنجاح ✓':(d.error||'تعذر الدخول');if(r.ok)render(d)}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,customCode:document.getElementById('customCode').value,discountPercent:+document.getElementById('discount').value,validityDays:+document.getElementById('validityDays').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?(d.renewed?'تم تجديد الكود: ':'تم إنشاء الكود: ')+d.code+'\\nالحملة: '+(d.recipientName||'غير محدد')+'\\nالخصم: '+d.discountPercent+'%':(d.error||'تعذر إنشاء الكود');if(r.ok)loadCodes()}async function loadCodes(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();if(r.ok)render(d);else document.getElementById('codes').textContent=d.error||'تعذر تحميل الأكواد'}function render(data){let box=document.getElementById('codes');box.innerHTML=data.length?data.map(c=>`<div class="card code"><b>${c.code_prefix}...</b><p><b>الحملة أو المعلن:</b> ${c.recipient_name||'غير محدد'}</p><p><b>نسبة الخصم:</b> ${c.discount_percent||0}%</p><p><b>مرات الاستخدام:</b> ${c.used_count} من ${c.max_uses}</p><p><b>تاريخ انتهاء الكود:</b> ${c.expires_at||'بدون انتهاء'}</p><p><b>النوع:</b> ${c.code_kind==='discount'?'كود خصم':'كود قديم'}</p></div>`).join(''):'لا توجد أكواد بعد'}</script></body></html>"""
             )
             return
         if method == "GET" and path == "/health":
@@ -717,16 +717,29 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             code_hash = hashlib.sha256(code.encode()).hexdigest()
             expires_at = (datetime.now(timezone.utc) + timedelta(days=validity_days)).isoformat()
             recipient_name = str(data.get("recipientName", "")).strip()
-            try:
-                with db() as connection:
+            renewed = False
+            with db() as connection:
+                existing = connection.execute(
+                    "SELECT id FROM activation_codes WHERE code_hash=?",
+                    (code_hash,),
+                ).fetchone()
+                if existing:
+                    renewed = True
+                    connection.execute(
+                        """UPDATE activation_codes
+                           SET code_prefix=?,package='basic',duration_days=0,max_uses=?,used_count=0,
+                               expires_at=?,active=1,recipient_name=?,assigned_username='',
+                               code_kind='discount',discount_percent=?,created_at=?
+                           WHERE id=?""",
+                        (code[:10], max_uses, expires_at, recipient_name, discount_percent, now(), existing["id"]),
+                    )
+                else:
                     connection.execute(
                         """INSERT INTO activation_codes(code_hash,code_prefix,package,duration_days,max_uses,expires_at,recipient_name,assigned_username,code_kind,discount_percent,created_at)
                            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                         (code_hash, code[:10], "basic", 0, max_uses, expires_at, recipient_name, "", "discount", discount_percent, now()),
                     )
-            except DB_INTEGRITY_ERRORS:
-                raise ApiError(409, "هذا الكود مستخدم، اختر كودًا آخر")
-            self._send(201, {"code": code, "recipientName": recipient_name, "discountPercent": discount_percent, "maxUses": max_uses, "codeExpiresAt": expires_at})
+            self._send(200 if renewed else 201, {"code": code, "renewed": renewed, "recipientName": recipient_name, "discountPercent": discount_percent, "maxUses": max_uses, "codeExpiresAt": expires_at})
             return
         if path == "/owner/api/codes" and method == "GET":
             self._owner()
