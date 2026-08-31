@@ -269,6 +269,8 @@ def init_db() -> None:
         """
         with db() as connection:
             connection.executescript(postgres_schema)
+            connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS code_kind TEXT NOT NULL DEFAULT 'activation'")
+            connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0")
             organizations_without_chat = connection.execute(
                 "SELECT id FROM organizations WHERE public_chat_token IS NULL OR public_chat_token=''"
             ).fetchall()
@@ -407,6 +409,14 @@ def init_db() -> None:
         if "assigned_username" not in code_columns:
             connection.execute(
                 "ALTER TABLE activation_codes ADD COLUMN assigned_username TEXT NOT NULL DEFAULT ''"
+            )
+        if "code_kind" not in code_columns:
+            connection.execute(
+                "ALTER TABLE activation_codes ADD COLUMN code_kind TEXT NOT NULL DEFAULT 'activation'"
+            )
+        if "discount_percent" not in code_columns:
+            connection.execute(
+                "ALTER TABLE activation_codes ADD COLUMN discount_percent INTEGER NOT NULL DEFAULT 0"
             )
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -638,19 +648,19 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة مالك خدووم</title>
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}</style></head><body><div class="wrap"><h1>لوحة مالك خدووم</h1>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="ownerLogin()">دخول لوحة المالك</button><div id="loginStatus" class="result">أدخل المفتاح ثم اضغط دخول</div></div>
-<div class="card"><h2>صفحة أكواد التفعيل</h2><p>إنشاء وإدارة أكواد الباقة الأساسية وVIP في صفحة خاصة.</p><button onclick="location.href='/owner/codes'">فتح صفحة أكواد التفعيل</button></div>
+<div class="card"><h2>أكواد الخصم</h2><p>إنشاء أكواد خصم للعروض والإعلانات، مثل خصم 15%.</p><button onclick="location.href='/owner/codes'">فتح صفحة أكواد الخصم</button></div>
 <div class="card"><h2>المؤسسات</h2><button onclick="loadOrganizations()">عرض المؤسسات</button><div id="organizations" class="result"></div></div><div class="card"><h2>مراجعة إعلانات VIP</h2><button class="vip" onclick="loadAds()">تحميل الإعلانات</button><div id="ads" class="result"></div></div></div>
-<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:30})});let d=await r.json();let box=document.getElementById('organizations');if(r.ok&&d.saved){box.textContent='تم تغيير الباقة لمدة 30 يوم ✓';await loadOrganizations()}else{box.textContent=d.error||'تعذر تغيير الباقة'}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${o.name}</b><p>الباقة الحالية: ${o.package} | ${o.phone}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><button onclick="setPackage(${o.id},'free')">مجانية</button><button onclick="setPackage(${o.id},'basic')">فتح الأساسية لمدة 30 يوم</button><button class="vip" onclick="setPackage(${o.id},'vip')">فتح VIP لمدة 30 يوم</button></div>`).join('')}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
+<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=pkg==='free'?1:+document.getElementById('days-'+id).value;if(pkg!=='free'&&(!days||days<1)){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:days})});let d=await r.json();if(r.ok&&d.saved){alert(pkg==='free'?'تم قفل الباقات وإعادة المؤسسة للمجانية':'تم فتح الباقة لمدة '+days+' يوم');await loadOrganizations()}else{alert(d.error||'تعذر تغيير الباقة')}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${esc(o.name)}</b><p>الباقة الحالية: ${o.package} | ${esc(o.phone)}</p><p>تنتهي: ${o.expires_at||'لا يوجد'}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><input id="days-${o.id}" type="number" min="1" value="30" placeholder="المدة بالأيام"><button onclick="setPackage(${o.id},'free')">🔒 قفل وإرجاعها مجانية</button><button onclick="setPackage(${o.id},'basic')">${o.package==='basic'?'🔓':'🔒'} فتح الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">${o.package==='vip'?'🔓':'🔒'} فتح VIP</button></div>`).join('')}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
             )
             return
         if method == "GET" and path == "/owner/codes":
             self._send_html(
-                """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>أكواد تفعيل خدووم</title>
-<style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}.code{border-right:4px solid #f59e0b}</style></head><body><div class="wrap"><h1>صفحة أكواد تفعيل خدووم</h1><p><a href="/owner" style="color:#7dd3fc">العودة إلى لوحة المالك</a></p>
+                """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>أكواد خصم خدووم</title>
+<style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}.code{border-right:4px solid #f59e0b}</style></head><body><div class="wrap"><h1>صفحة أكواد خصم خدووم</h1><p><a href="/owner" style="color:#7dd3fc">العودة إلى لوحة المالك</a></p>
 <div class="card"><h2>مفتاح المالك</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="login()">دخول وتحميل الأكواد</button><div id="status" class="result"></div></div>
-<div class="card"><h2>إنشاء كود جديد</h2><input id="recipient" placeholder="اسم الشخص أو المؤسسة"><input id="assignedUsername" placeholder="اسم المستخدم المسموح له (اختياري)"><input id="customCode" placeholder="الكود الخاص مثل VIP-AHMED-2026"><select id="package"><option value="basic">الأساسية</option><option value="vip">VIP</option></select><input id="days" type="number" value="30" placeholder="مدة الاشتراك بالأيام"><input id="uses" type="number" value="1" placeholder="عدد مرات الاستخدام"><button class="vip" onclick="createCode()">إنشاء كود التفعيل</button><div id="result" class="result"></div></div>
+<div class="card"><h2>إنشاء كود خصم جديد</h2><input id="recipient" placeholder="اسم الحملة أو المعلن (اختياري)"><input id="customCode" placeholder="الكود الخاص مثل KHDOOM15"><input id="discount" type="number" min="1" max="90" value="15" placeholder="نسبة الخصم"><input id="validityDays" type="number" min="1" value="30" placeholder="صلاحية الكود بالأيام"><input id="uses" type="number" min="1" value="100" placeholder="عدد مرات الاستخدام"><button class="vip" onclick="createCode()">إنشاء كود الخصم</button><div id="result" class="result"></div></div>
 <div class="card"><h2>سجل الأكواد</h2><button onclick="loadCodes()">تحديث السجل</button><div id="codes"></div></div></div>
-<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function login(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();document.getElementById('status').textContent=r.ok?'تم الدخول بنجاح ✓':(d.error||'تعذر الدخول');if(r.ok)render(d)}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'احتفظ بهذا الكود وأرسله للمستفيد فقط: '+d.code+'\\nالمستفيد: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+' لمدة '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود');if(r.ok)loadCodes()}async function loadCodes(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();if(r.ok)render(d);else document.getElementById('codes').textContent=d.error||'تعذر تحميل الأكواد'}function render(data){let box=document.getElementById('codes');box.innerHTML=data.length?data.map(c=>`<div class="card code"><b>${c.code_prefix}...</b><p>المستفيد: ${c.recipient_name||'غير محدد'} | المستخدم: ${c.assigned_username||'أي مستخدم'}</p><p>الباقة: ${c.package} | الاستخدام: ${c.used_count}/${c.max_uses} | مدة الاشتراك: ${c.duration_days} يوم</p></div>`).join(''):'لا توجد أكواد بعد'}</script></body></html>"""
+<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function login(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();document.getElementById('status').textContent=r.ok?'تم الدخول بنجاح ✓':(d.error||'تعذر الدخول');if(r.ok)render(d)}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,customCode:document.getElementById('customCode').value,discountPercent:+document.getElementById('discount').value,validityDays:+document.getElementById('validityDays').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'كود الخصم: '+d.code+'\\nالحملة: '+(d.recipientName||'غير محدد')+'\\nالخصم: '+d.discountPercent+'%':(d.error||'تعذر إنشاء الكود');if(r.ok)loadCodes()}async function loadCodes(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();if(r.ok)render(d);else document.getElementById('codes').textContent=d.error||'تعذر تحميل الأكواد'}function render(data){let box=document.getElementById('codes');box.innerHTML=data.length?data.map(c=>`<div class="card code"><b>${c.code_prefix}...</b><p>الحملة: ${c.recipient_name||'غير محدد'}</p><p>الخصم: ${c.discount_percent||0}% | الاستخدام: ${c.used_count}/${c.max_uses} | النوع: ${c.code_kind==='discount'?'خصم':'كود قديم'}</p></div>`).join(''):'لا توجد أكواد بعد'}</script></body></html>"""
             )
             return
         if method == "GET" and path == "/health":
@@ -695,38 +705,34 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         if path == "/owner/api/codes" and method == "POST":
             self._owner()
             data = self._body()
-            package = str(data.get("package", ""))
-            if package not in ("basic", "vip"):
-                raise ApiError(400, "اختر باقة صحيحة")
-            duration_days = max(1, min(int(data.get("durationDays", 30)), 3650))
+            discount_percent = max(1, min(int(data.get("discountPercent", 15)), 90))
             max_uses = max(1, min(int(data.get("maxUses", 1)), 10000))
-            prefix = "VIP" if package == "vip" else "BASIC"
+            validity_days = max(1, min(int(data.get("validityDays", 30)), 3650))
             custom_code = str(data.get("customCode", "")).strip().upper()
             if custom_code and (len(custom_code) < 6 or len(custom_code) > 40):
-                raise ApiError(400, "الكود الخاص يجب أن يكون من 6 إلى 40 خانة")
+                raise ApiError(400, "كود الخصم يجب أن يكون من 6 إلى 40 خانة")
             if custom_code and not all(c.isalnum() or c in "-_" for c in custom_code):
                 raise ApiError(400, "استخدم في الكود حروفًا وأرقامًا وشرطة فقط")
-            code = custom_code or f"{prefix}-{secrets.token_hex(3).upper()}-{secrets.token_hex(3).upper()}"
+            code = custom_code or f"SAVE{discount_percent}-{secrets.token_hex(3).upper()}"
             code_hash = hashlib.sha256(code.encode()).hexdigest()
-            expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=validity_days)).isoformat()
             recipient_name = str(data.get("recipientName", "")).strip()
-            assigned_username = str(data.get("assignedUsername", "")).strip().lower()
             try:
                 with db() as connection:
                     connection.execute(
-                        """INSERT INTO activation_codes(code_hash,code_prefix,package,duration_days,max_uses,expires_at,recipient_name,assigned_username,created_at)
-                           VALUES(?,?,?,?,?,?,?,?,?)""",
-                        (code_hash, code[:10], package, duration_days, max_uses, expires_at, recipient_name, assigned_username, now()),
+                        """INSERT INTO activation_codes(code_hash,code_prefix,package,duration_days,max_uses,expires_at,recipient_name,assigned_username,code_kind,discount_percent,created_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        (code_hash, code[:10], "basic", 0, max_uses, expires_at, recipient_name, "", "discount", discount_percent, now()),
                     )
             except DB_INTEGRITY_ERRORS:
                 raise ApiError(409, "هذا الكود مستخدم، اختر كودًا آخر")
-            self._send(201, {"code": code, "recipientName": recipient_name, "assignedUsername": assigned_username, "package": package, "durationDays": duration_days, "maxUses": max_uses, "codeExpiresAt": expires_at})
+            self._send(201, {"code": code, "recipientName": recipient_name, "discountPercent": discount_percent, "maxUses": max_uses, "codeExpiresAt": expires_at})
             return
         if path == "/owner/api/codes" and method == "GET":
             self._owner()
             with db() as connection:
                 rows = connection.execute(
-                    """SELECT id,code_prefix,recipient_name,assigned_username,package,duration_days,max_uses,used_count,expires_at,active,created_at
+                    """SELECT id,code_prefix,recipient_name,assigned_username,package,duration_days,max_uses,used_count,expires_at,active,code_kind,discount_percent,created_at
                        FROM activation_codes ORDER BY id DESC"""
                 ).fetchall()
             self._send(200, [dict(row) for row in rows])
@@ -753,6 +759,27 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 connection.execute("UPDATE subscriptions SET package=?,starts_at=?,expires_at=? WHERE organization_id=?", (package, now(), expires_at, organization_id))
             self._send(200, {"saved": True, "package": package, "expiresAt": expires_at})
             return
+        if method == "POST" and path == "/api/discount-code/preview":
+            data = self._body()
+            raw_code = str(data.get("code", "")).strip().upper()
+            package = str(data.get("package", "")).strip().lower()
+            if package not in ("basic", "vip"):
+                raise ApiError(400, "اختر باقة صحيحة")
+            code_hash = hashlib.sha256(raw_code.encode()).hexdigest()
+            with db() as connection:
+                code = connection.execute(
+                    """SELECT * FROM activation_codes WHERE code_hash=? AND active=1
+                       AND code_kind='discount' AND used_count<max_uses
+                       AND (expires_at IS NULL OR expires_at>?)""",
+                    (code_hash, now()),
+                ).fetchone()
+            if code is None:
+                raise ApiError(400, "كود الخصم غير صحيح أو منتهي")
+            original_price = 49 if package == "basic" else 99
+            discount_percent = int(code["discount_percent"])
+            discounted_price = round(original_price * (100 - discount_percent) / 100, 2)
+            self._send(200, {"valid": True, "package": package, "discountPercent": discount_percent, "originalPrice": original_price, "discountedPrice": discounted_price})
+            return
         if method == "POST" and path == "/api/register":
             data = self._body()
             required = ("name", "username", "phone", "password", "organizationName")
@@ -770,7 +797,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                         code_hash = hashlib.sha256(activation_code.encode()).hexdigest()
                         code = connection.execute(
                             """SELECT * FROM activation_codes WHERE code_hash=? AND active=1
-                               AND used_count<max_uses AND (expires_at IS NULL OR expires_at>?)""",
+                               AND code_kind='activation' AND used_count<max_uses AND (expires_at IS NULL OR expires_at>?)""",
                             (code_hash, now()),
                         ).fetchone()
                         if code is None:
@@ -829,7 +856,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     raise ApiError(404, "اسم المستخدم غير موجود في الخادم")
                 code = connection.execute(
                     """SELECT * FROM activation_codes WHERE code_hash=? AND active=1
-                       AND used_count<max_uses AND (expires_at IS NULL OR expires_at>?)""",
+                       AND code_kind='activation' AND used_count<max_uses AND (expires_at IS NULL OR expires_at>?)""",
                     (code_hash, now()),
                 ).fetchone()
                 if code is None:
@@ -951,7 +978,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 code_hash = hashlib.sha256(raw_code.encode()).hexdigest()
                 code = connection.execute(
                     """SELECT * FROM activation_codes WHERE code_hash=? AND active=1
-                       AND used_count<max_uses AND (expires_at IS NULL OR expires_at>?)""",
+                       AND code_kind='activation' AND used_count<max_uses AND (expires_at IS NULL OR expires_at>?)""",
                     (code_hash, now()),
                 ).fetchone()
                 if code is None:
