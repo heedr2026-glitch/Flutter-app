@@ -505,6 +505,12 @@ def init_db() -> None:
           updated_at TEXT NOT NULL,
           PRIMARY KEY(organization_id, employee_type)
         );
+        CREATE TABLE IF NOT EXISTS maintenance_modes (
+          organization_id BIGINT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+          chat_until TEXT,
+          appointments_until TEXT,
+          message TEXT NOT NULL DEFAULT 'الخدمة تحت الصيانة مؤقتًا'
+        );
         CREATE TABLE IF NOT EXISTS audit_logs (
           id BIGSERIAL PRIMARY KEY,
           organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -680,6 +686,12 @@ def init_db() -> None:
               updated_at TEXT NOT NULL,
               PRIMARY KEY(organization_id, employee_type)
             );
+            CREATE TABLE IF NOT EXISTS maintenance_modes (
+              organization_id INTEGER PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+              chat_until TEXT,
+              appointments_until TEXT,
+              message TEXT NOT NULL DEFAULT 'الخدمة تحت الصيانة مؤقتًا'
+            );
             CREATE TABLE IF NOT EXISTS audit_logs (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -781,6 +793,18 @@ def init_db() -> None:
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
 
+
+def maintenance_status(connection: Any, organization_id: int) -> dict[str, Any]:
+    row = connection.execute("SELECT chat_until,appointments_until,message FROM maintenance_modes WHERE organization_id=?", (organization_id,)).fetchone()
+    current = datetime.now(timezone.utc)
+    def active(value: object) -> bool:
+        if not value: return False
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc) > current
+        except ValueError: return False
+    return {"chat": active(row["chat_until"]) if row else False, "appointments": active(row["appointments_until"]) if row else False, "chatUntil": row["chat_until"] if row else None, "appointmentsUntil": row["appointments_until"] if row else None, "message": row["message"] if row else "الخدمة تحت الصيانة مؤقتًا"}
 
 def purge_expired_ads(connection: Any) -> int:
     """Deactivate advertisements after the owner-selected end time."""
@@ -978,6 +1002,10 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 ).fetchone()
             if organization is None:
                 raise ApiError(404, "رابط المحادثة غير صحيح")
+            with db() as connection:
+                maintenance = maintenance_status(connection, organization["id"])
+            if maintenance["chat"]:
+                raise ApiError(503, maintenance["message"])
             if organization["package"] not in ("basic", "vip"):
                 raise ApiError(403, "موظف الاستقبال غير متاح لهذه المؤسسة حاليًا")
             page = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف استقبال __ORG_NAME__</title>
@@ -1023,6 +1051,9 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     raise ApiError(404, "رابط المحادثة غير صحيح")
                 if organization["package"] not in ("basic", "vip"):
                     raise ApiError(403, "استقبال المواعيد غير متاح لهذه المؤسسة حاليًا")
+                maintenance = maintenance_status(connection, organization["id"])
+                if maintenance["appointments"]:
+                    raise ApiError(503, maintenance["message"])
                 cursor = connection.execute(
                     """INSERT INTO appointment_requests(
                            organization_id,request_type,title,customer_name,phone,notes,
@@ -1083,6 +1114,9 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 ).fetchone()
                 if organization is None:
                     raise ApiError(404, "رابط المحادثة غير صحيح")
+                maintenance = maintenance_status(connection, organization["id"])
+                if maintenance["chat"]:
+                    raise ApiError(503, maintenance["message"])
                 package, daily_limit, used = ai_allowance(connection, organization["id"])
                 if package not in ("basic", "vip"):
                     raise ApiError(403, "موظف الاستقبال متاح من الباقة الأساسية")
@@ -1142,7 +1176,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="ownerLogin()">دخول لوحة المالك</button><div id="loginStatus" class="result">أدخل المفتاح ثم اضغط دخول</div></div>
 <div class="card"><h2>أكواد الخصم</h2><p>إنشاء أكواد خصم للعروض والإعلانات، مثل خصم 15%.</p><button onclick="location.href='/owner/codes'">فتح صفحة أكواد الخصم</button></div>
 <div class="card"><h2>طلبات ترقية الباقات</h2><button onclick="loadSubscriptionRequests()">تحميل طلبات الترقية</button><div id="subscriptionRequests" class="result"></div></div><div class="card"><h2>المؤسسات</h2><button onclick="loadOrganizations()">عرض المؤسسات</button><div id="organizations" class="result"></div></div><div class="card"><h2>مراجعة إعلانات VIP</h2><button class="vip" onclick="loadAds()">تحميل الإعلانات</button><div id="ads" class="result"></div></div></div>
-<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadSubscriptionRequests();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=pkg==='free'?1:+document.getElementById('days-'+id).value;if(pkg!=='free'&&(!days||days<1)){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:days})});let d=await r.json();if(r.ok&&d.saved){alert(pkg==='free'?'تم قفل الباقات وإعادة المؤسسة للمجانية':'تم فتح الباقة لمدة '+days+' يوم');await loadOrganizations()}else{alert(d.error||'تعذر تغيير الباقة')}}async function loadSubscriptionRequests(){let r=await fetch('/owner/api/subscription-requests',{headers:headers()});let data=await r.json();let box=document.getElementById('subscriptionRequests');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل طلبات الترقية';return}box.innerHTML=data.length?data.map(x=>`<div class="card"><b>${esc(x.organization_name)}</b><p>التواصل: ${esc(x.phone)}</p><p>الباقة الحالية: ${x.current_package}</p><p>الباقة المطلوبة: ${x.requested_package==='basic'?'الأساسية':'VIP'}</p><p>كود الخصم: ${x.discount_code?esc(x.discount_code)+' — خصم '+x.discount_percent+'%':'بدون كود'}</p><p>الحالة: ${x.status==='pending'?'بانتظار المراجعة':x.status==='approved'?'مقبول':'مرفوض'}</p>${x.status==='pending'?`<input id="request-days-${x.id}" type="number" min="1" value="30" placeholder="مدة فتح الباقة بالأيام"><button onclick="reviewSubscriptionRequest(${x.id},'approve')">قبول وفتح الباقة</button><button class="vip" onclick="reviewSubscriptionRequest(${x.id},'reject')">رفض الطلب</button>`:''}</div>`).join(''):'لا توجد طلبات ترقية بعد'}async function reviewSubscriptionRequest(id,action){let days=+document.getElementById('request-days-'+id)?.value||30;let r=await fetch('/owner/api/subscription-requests/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action:action,durationDays:days})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الطلب وفتح الباقة':'تم رفض الطلب'):(d.error||'تعذر معالجة الطلب'));if(r.ok){loadSubscriptionRequests();loadOrganizations()}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${esc(o.name)}</b><p>الباقة الحالية: ${o.package} | ${esc(o.phone)}</p><p>تنتهي: ${o.expires_at||'لا يوجد'}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><input id="days-${o.id}" type="number" min="1" value="30" placeholder="المدة بالأيام"><button onclick="setPackage(${o.id},'free')">🔒 قفل وإرجاعها مجانية</button><button onclick="setPackage(${o.id},'basic')">${o.package==='basic'?'🔓':'🔒'} فتح الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">${o.package==='vip'?'🔓':'🔒'} فتح VIP</button></div>`).join('')}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><p>ينتهي: ${a.expires_at||'لم تحدد المدة بعد'}</p><label for="ad-days-${a.id}" style="display:block;color:#bae6fd;font-weight:bold;margin-top:12px">مدة عرض الإعلان (بالأيام)</label><input id="ad-days-${a.id}" type="number" min="1" value="30" placeholder="مثال: 30 يومًا"><small style="display:block;color:#94a3b8;margin-bottom:8px">مثال: 30 تعني عرض الإعلان لمدة شهر من وقت القبول.</small><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action,durationDays:+document.getElementById('ad-days-'+id).value||30})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
+<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadSubscriptionRequests();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=pkg==='free'?1:+document.getElementById('days-'+id).value;if(pkg!=='free'&&(!days||days<1)){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:days})});let d=await r.json();if(r.ok&&d.saved){alert(pkg==='free'?'تم قفل الباقات وإعادة المؤسسة للمجانية':'تم فتح الباقة لمدة '+days+' يوم');await loadOrganizations()}else{alert(d.error||'تعذر تغيير الباقة')}}async function loadSubscriptionRequests(){let r=await fetch('/owner/api/subscription-requests',{headers:headers()});let data=await r.json();let box=document.getElementById('subscriptionRequests');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل طلبات الترقية';return}box.innerHTML=data.length?data.map(x=>`<div class="card"><b>${esc(x.organization_name)}</b><p>التواصل: ${esc(x.phone)}</p><p>الباقة الحالية: ${x.current_package}</p><p>الباقة المطلوبة: ${x.requested_package==='basic'?'الأساسية':'VIP'}</p><p>كود الخصم: ${x.discount_code?esc(x.discount_code)+' — خصم '+x.discount_percent+'%':'بدون كود'}</p><p>الحالة: ${x.status==='pending'?'بانتظار المراجعة':x.status==='approved'?'مقبول':'مرفوض'}</p>${x.status==='pending'?`<input id="request-days-${x.id}" type="number" min="1" value="30" placeholder="مدة فتح الباقة بالأيام"><button onclick="reviewSubscriptionRequest(${x.id},'approve')">قبول وفتح الباقة</button><button class="vip" onclick="reviewSubscriptionRequest(${x.id},'reject')">رفض الطلب</button>`:''}</div>`).join(''):'لا توجد طلبات ترقية بعد'}async function reviewSubscriptionRequest(id,action){let days=+document.getElementById('request-days-'+id)?.value||30;let r=await fetch('/owner/api/subscription-requests/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action:action,durationDays:days})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الطلب وفتح الباقة':'تم رفض الطلب'):(d.error||'تعذر معالجة الطلب'));if(r.ok){loadSubscriptionRequests();loadOrganizations()}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${esc(o.name)}</b><p>الباقة الحالية: ${o.package} | ${esc(o.phone)}</p><p>تنتهي: ${o.expires_at||'لا يوجد'}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><p><b>صيانة الشات:</b> ${o.chat_until||'مفتوح'}</p><p><b>صيانة المواعيد:</b> ${o.appointments_until||'مفتوحة'}</p><input id="maintenance-hours-${o.id}" type="number" min="1" value="24" placeholder="مدة الصيانة بالساعات"><input id="maintenance-message-${o.id}" value="${esc(o.maintenance_message||'الخدمة تحت الصيانة مؤقتًا')}" placeholder="رسالة الصيانة"><button onclick="setMaintenance(${o.id},'chat',true)">🔒 قفل الشات</button><button onclick="setMaintenance(${o.id},'chat',false)">🔓 فتح الشات</button><button onclick="setMaintenance(${o.id},'appointments',true)">🔒 قفل المواعيد</button><button onclick="setMaintenance(${o.id},'appointments',false)">🔓 فتح المواعيد</button><input id="days-${o.id}" type="number" min="1" value="30" placeholder="المدة بالأيام"><button onclick="setPackage(${o.id},'free')">🔒 قفل وإرجاعها مجانية</button><button onclick="setPackage(${o.id},'basic')">${o.package==='basic'?'🔓':'🔒'} فتح الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">${o.package==='vip'?'🔓':'🔒'} فتح VIP</button></div>`).join('')}async function setMaintenance(id,service,enabled){let hours=+document.getElementById('maintenance-hours-'+id).value||24;let message=document.getElementById('maintenance-message-'+id).value;let r=await fetch('/owner/api/organizations/'+id+'/maintenance',{method:'PUT',headers:headers(),body:JSON.stringify({service,enabled,hours,message})});let d=await r.json();alert(r.ok?(enabled?'تم قفل الخدمة للمدة المحددة':'تم فتح الخدمة'):(d.error||'تعذر تغيير وضع الصيانة'));if(r.ok)loadOrganizations()}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><p>ينتهي: ${a.expires_at||'لم تحدد المدة بعد'}</p><label for="ad-days-${a.id}" style="display:block;color:#bae6fd;font-weight:bold;margin-top:12px">مدة عرض الإعلان (بالأيام)</label><input id="ad-days-${a.id}" type="number" min="1" value="30" placeholder="مثال: 30 يومًا"><small style="display:block;color:#94a3b8;margin-bottom:8px">مثال: 30 تعني عرض الإعلان لمدة شهر من وقت القبول.</small><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action,durationDays:+document.getElementById('ad-days-'+id).value||30})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
             )
             return
         if method == "GET" and path == "/owner/codes":
@@ -1304,10 +1338,31 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             self._owner()
             with db() as connection:
                 rows = connection.execute(
-                    """SELECT organizations.id,organizations.name,organizations.phone,organizations.public_chat_token,subscriptions.package,subscriptions.expires_at
-                       FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id ORDER BY organizations.id DESC"""
+                    """SELECT organizations.id,organizations.name,organizations.phone,organizations.public_chat_token,subscriptions.package,subscriptions.expires_at,
+                              maintenance_modes.chat_until,maintenance_modes.appointments_until,maintenance_modes.message AS maintenance_message
+                       FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id
+                       LEFT JOIN maintenance_modes ON maintenance_modes.organization_id=organizations.id
+                       ORDER BY organizations.id DESC"""
                 ).fetchall()
             self._send(200, [dict(row) for row in rows])
+            return
+        if path.startswith("/owner/api/organizations/") and path.endswith("/maintenance") and method == "PUT":
+            self._owner()
+            organization_id = int(path.split("/")[4])
+            data = self._body()
+            service = str(data.get("service", ""))
+            if service not in ("chat", "appointments"):
+                raise ApiError(400, "اختر خدمة صحيحة")
+            enabled = data.get("enabled") is True
+            hours = max(1, min(int(data.get("hours", 24)), 24 * 365))
+            until = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat() if enabled else None
+            message = str(data.get("message", "الخدمة تحت الصيانة مؤقتًا")).strip()[:300] or "الخدمة تحت الصيانة مؤقتًا"
+            column = "chat_until" if service == "chat" else "appointments_until"
+            with db() as connection:
+                connection.execute("INSERT INTO maintenance_modes(organization_id,message) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET message=excluded.message", (organization_id, message))
+                connection.execute(f"UPDATE maintenance_modes SET {column}=?,message=? WHERE organization_id=?", (until, message, organization_id))
+                connection.commit()
+            self._send(200, {"saved": True, "service": service, "enabled": enabled, "until": until})
             return
         if path.startswith("/owner/api/organizations/") and path.endswith("/package") and method == "PUT":
             self._owner()
