@@ -194,11 +194,17 @@ def ai_training_text(connection: Any, organization_id: int, employee_type: str) 
         "SELECT employee_type,content FROM ai_training WHERE organization_id=? AND employee_type IN (?,?)",
         (organization_id, "shared", employee_type),
     ).fetchall()
-    return "\n\n".join(
-        str(row["content"]).strip()
-        for row in rows
-        if str(row["content"]).strip()
-    )
+    unique_lines: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for line in str(row["content"]).splitlines():
+            cleaned = line.strip()
+            key = re.sub(r"^[•\-]\s*", "", cleaned).strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique_lines.append(cleaned)
+    return "\n".join(unique_lines)
 
 def _next_arabic_weekday(text: str) -> datetime | None:
     weekdays = {"الاثنين": 0, "الثلاثاء": 1, "الأربعاء": 2, "الاربعاء": 2, "الخميس": 3, "الجمعة": 4, "السبت": 5, "الأحد": 6, "الاحد": 6}
@@ -1358,21 +1364,12 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 is_question = "?" in message or "؟" in message or any(normalized.startswith(word) for word in ("وش", "شنو", "ماذا", "ما ", "هل", "كم", "متى", "وين", "أين", "كيف"))
                 explicit_learning = any(
                     normalized.startswith(word)
-                    for word in ("احفظ", "حفظ", "تعلم", "تعلّم", "علمني", "اعلمك", "معلومة")
-                )
-                customer_request = any(
-                    normalized.startswith(word)
-                    for word in ("ابي ", "أبي ", "ابغى ", "أبغى ", "اريد ", "أريد ", "احتاج ", "أحتاج ", "محتاج ", "ممكن ")
-                )
-                business_fact = any(
-                    marker in normalized
-                    for marker in (
-                        "سعر ", "السعر ", "دوام", "نفتح ", "نغلق ", "نقدم ", "نوفر ",
-                        "خدماتنا", "خدمتنا", "موقعنا", "عنواننا", "رقمنا", "رقم التواصل",
-                        "اسم المؤسسة", "سياسة", "الضمان", "مدة التنفيذ",
+                    for word in (
+                        "احفظ", "حفظ", "خزن", "خزّن", "تعلم", "تعلّم",
+                        "علمني", "اعلمك", "سجل المعلومة", "سجّل المعلومة",
                     )
                 )
-                should_learn = explicit_learning or (business_fact and not customer_request and not is_question)
+                should_learn = explicit_learning
                 training = ai_training_text(connection, organization_id, employee_type)
                 action = "answered"
                 if greeting:
@@ -1381,15 +1378,30 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     text = "حتى لا أحذف معلومة بالخطأ، اختر المعلومة من قائمة المعلومات المحفوظة ثم أكد حذفها."
                     action = "delete_confirmation_required"
                 elif should_learn:
-                    fact = re.sub(r"^(احفظ|حفظ|تعلم|تعلّم|علمني|اعلمك|معلومة)\s*[:：-]?\s*", "", message).strip()
-                    new_content = (training + "\n• " + fact).strip() if training else "• " + fact
-                    connection.execute(
-                        """INSERT INTO ai_training(organization_id,employee_type,content,updated_at) VALUES(?,?,?,?)
-                           ON CONFLICT(organization_id,employee_type) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at""",
-                        (organization_id, employee_type, new_content[:12000], now()),
-                    )
-                    text = f"تمام، تعلمت وحفظت: {fact} ✓"
-                    action = "saved"
+                    fact = re.sub(
+                        r"^(احفظ|حفظ|خزن|خزّن|تعلم|تعلّم|علمني|اعلمك|سجل المعلومة|سجّل المعلومة)\s*[:：-]?\s*",
+                        "", message,
+                    ).strip()
+                    saved_facts = {
+                        re.sub(r"^[•\-]\s*", "", line).strip().lower()
+                        for line in training.splitlines()
+                        if line.strip()
+                    }
+                    if not fact:
+                        text = "اكتب المعلومة بعد كلمة «احفظ»، مثل: احفظ: سعر متر الزجاج 150 ريال."
+                        action = "needs_fact"
+                    elif fact.lower() in saved_facts:
+                        text = f"هذه المعلومة محفوظة عندي من قبل: {fact} ✓"
+                        action = "already_saved"
+                    else:
+                        new_content = (training + "\n• " + fact).strip() if training else "• " + fact
+                        connection.execute(
+                            """INSERT INTO ai_training(organization_id,employee_type,content,updated_at) VALUES(?,?,?,?)
+                               ON CONFLICT(organization_id,employee_type) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at""",
+                            (organization_id, employee_type, new_content[:12000], now()),
+                        )
+                        text = f"تمام، تعلمت وحفظت: {fact} ✓"
+                        action = "saved"
                 else:
                     package, daily_limit, used = ai_allowance(connection, organization_id)
                     system_prompt = "أنت موظف AI ودود خاص بهذه المؤسسة. تحدث بالعربية بشكل طبيعي ومفيد داخل نشاط المؤسسة. استخدم المعلومات المحفوظة عند توفرها. إذا كانت الرسالة طلب خدمة فاسأل عن التفاصيل اللازمة مثل المقاس والموقع والموعد، ولا تدّعي أنك حفظت الرسالة. إذا سأل عن معلومة غير محفوظة فقل بوضوح إنك لا تعرفها بعد."
