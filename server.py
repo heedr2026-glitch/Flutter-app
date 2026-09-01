@@ -1765,6 +1765,20 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 if not verify_password(str(data.get("password", "")), user["password_hash"], user["password_salt"]):
                     client_ip = self.headers.get("X-Forwarded-For", self.client_address[0]).split(",")[0].strip()
                     audit_log(connection, user["organization_id"], user["id"], "failed_login", f"محاولة دخول فاشلة من {str(data.get('deviceName', 'جهاز غير معروف')).strip()} — الاتصال: {client_ip}", "security")
+                    ten_minutes_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+                    recent_failures = connection.execute(
+                        "SELECT COUNT(*) AS count FROM audit_logs WHERE organization_id=? AND actor_user_id=? AND action='failed_login' AND created_at>=?",
+                        (user["organization_id"], user["id"], ten_minutes_ago),
+                    ).fetchone()["count"]
+                    if recent_failures == 3:
+                        audit_log(
+                            connection,
+                            user["organization_id"],
+                            user["id"],
+                            "suspicious_login",
+                            f"تنبيه: 3 محاولات دخول فاشلة خلال 10 دقائق — الجهاز: {str(data.get('deviceName', 'جهاز غير معروف')).strip()}",
+                            "security",
+                        )
                     connection.commit()
                     raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
                 device_id = str(data.get("deviceId", "")).strip()
