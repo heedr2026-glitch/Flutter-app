@@ -236,6 +236,29 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     if state == "closed":
         state = "idle"
         context = {}
+    cancel_booking = any(
+        phrase in lowered
+        for phrase in ("إلغاء الحجز", "الغاء الحجز", "ألغي الحجز", "الغي الحجز", "إلغاء الموعد", "الغاء الموعد")
+    )
+    active_booking_states = {"await_name", "await_phone", "await_type", "await_datetime", "await_confirmation"}
+    if cancel_booking and state in active_booking_states:
+        connection.execute(
+            "UPDATE chat_sessions SET state='idle',context_json='{}',updated_at=? WHERE id=?",
+            (now(), session["id"]),
+        )
+        return "تم إلغاء الحجز غير المكتمل. كيف أقدر أخدمك؟"
+    greeting = lowered.strip(" .،!؟") in {"السلام", "السلام عليكم", "هلا", "مرحبا", "مرحبًا", "صباح الخير", "مساء الخير"}
+    if greeting and state in active_booking_states:
+        return "وعليكم السلام ورحمة الله 👋 عندك حجز غير مكتمل. اكتب «نكمل» للمتابعة أو «إلغاء الحجز» لإلغائه."
+    if lowered.strip() == "نكمل" and state in active_booking_states:
+        prompts = {
+            "await_name": "ما اسمك الكامل لتسجيل طلب الموعد؟",
+            "await_phone": "اكتب رقم التواصل من فضلك.",
+            "await_type": "ما نوع الطلب: موعد مقاس، موعد صيانة، أم طلب عميل؟",
+            "await_datetime": "اكتب اليوم والوقت المناسب، مثل: السبت الساعة 4 العصر.",
+            "await_confirmation": "هل أرسل طلب الموعد للموظف؟ اكتب نعم أو لا.",
+        }
+        return prompts[state]
     if state == "waiting_human":
         return "طلبك أُرسل للموظف البشري، وسأكتب لك هنا فور قبوله أو تعديله أو رفضه."
     if state == "idle":
