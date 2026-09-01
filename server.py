@@ -39,6 +39,13 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def format_arabic_datetime(value: datetime) -> str:
+    local_value = value.astimezone(timezone(timedelta(hours=3)))
+    hour = local_value.hour % 12 or 12
+    period = "ص" if local_value.hour < 12 else "م"
+    return f"{local_value:%Y-%m-%d} الساعة {hour}:{local_value:%M} {period}"
+
+
 class PostgresCursor:
     def __init__(self, cursor: Any, lastrowid: int | None = None):
         self._cursor = cursor
@@ -239,7 +246,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         if context.get("scheduled_at"):
             state = "await_confirmation"
             scheduled = datetime.fromisoformat(context["scheduled_at"])
-            reply = f"سأسجل {request_type} يوم {scheduled.strftime('%Y-%m-%d')} الساعة {scheduled.strftime('%H:%M')}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
+            reply = f"سأسجل {request_type} يوم {format_arabic_datetime(scheduled)}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
         else:
             state = "await_datetime"
             reply = "اكتب اليوم والوقت المناسب، مثل: السبت الساعة 4 العصر."
@@ -249,7 +256,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
             return "لم أفهم الموعد. اكتبه مثل: السبت الساعة 4 العصر."
         context["scheduled_at"] = desired.isoformat()
         state = "await_confirmation"
-        reply = f"الموعد المقترح يوم {desired.strftime('%Y-%m-%d')} الساعة {desired.strftime('%H:%M')}. هل أرسله للموظف؟ اكتب نعم أو لا."
+        reply = f"الموعد المقترح يوم {format_arabic_datetime(desired)}. هل أرسله للموظف؟ اكتب نعم أو لا."
     elif state == "await_confirmation":
         if any(word in lowered for word in ("لا", "غير", "غيّر", "غيره")):
             state = "await_datetime"
@@ -1507,7 +1514,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 )
                 reply_message = str(data.get("replyMessage", "")).strip()[:1000]
                 if not reply_message:
-                    display_time = parsed_time.astimezone(timezone(timedelta(hours=3))).strftime("%Y-%m-%d الساعة %H:%M")
+                    display_time = format_arabic_datetime(parsed_time)
                     if status == "rejected":
                         reply_message = "نعتذر، تعذر قبول الموعد المطلوب. يرجى اختيار موعد آخر."
                     elif time_changed:
