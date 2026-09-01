@@ -1227,11 +1227,21 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         if method == "GET" and path == "/owner/security":
             self._send_html(
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة أمن خدووم</title>
-<style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:1100px;margin:auto}h1{color:#28c7ff}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.metric{text-align:center}.metric strong{display:block;font-size:34px;color:#38bdf8;margin:8px}.ok{color:#4ade80}.warn{color:#facc15}.danger{color:#fb7185}input,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.event{border-right:4px solid #f59e0b;padding:10px 14px;margin:9px 0;background:#0b1733;border-radius:10px}.muted{color:#94a3b8}a{color:#7dd3fc}</style></head><body><div class="wrap"><h1>لوحة أمن خدووم 🔐</h1><p><a href="/owner">العودة إلى لوحة المالك</a></p>
+<style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:1100px;margin:auto}h1{color:#28c7ff}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.metric{text-align:center}.metric strong{display:block;font-size:34px;color:#38bdf8;margin:8px}.ok{color:#4ade80}.warn{color:#facc15}.danger{color:#fb7185}input,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.event{border-right:4px solid #f59e0b;padding:12px 14px;margin:9px 0;background:#0b1733;border-radius:10px}.muted{color:#94a3b8}a{color:#7dd3fc}</style></head><body><div class="wrap"><h1>لوحة أمن خدووم 🔐</h1><p><a href="/owner">العودة إلى لوحة المالك</a></p>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="loadSecurity()">دخول وتحديث لوحة الأمن</button><div id="status" class="muted">أدخل مفتاح المالك لعرض البيانات الأمنية.</div></div>
-<div id="dashboard" style="display:none"><div class="grid"><div class="card metric"><span>الحسابات النشطة</span><strong id="activeUsers">0</strong></div><div class="card metric"><span>محاولات الدخول المشبوهة خلال 24 ساعة</span><strong id="failedLogins" class="danger">0</strong></div><div class="card metric"><span>الأجهزة غير الموثوقة</span><strong id="untrustedDevices" class="warn">0</strong></div><div class="card metric"><span>التنبيهات الأمنية خلال 7 أيام</span><strong id="securityAlerts">0</strong></div><div class="card metric"><span>خدمات متوقفة</span><strong id="stoppedServices">0</strong></div></div>
-<div class="card"><h2>حالة خدمات خدووم</h2><div id="services"></div></div><div class="card"><h2>آخر التنبيهات الأمنية</h2><div id="events"></div></div></div></div>
-<script>const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:{'X-Owner-Key':document.getElementById('key').value.trim()}});let d=await r.json();let s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل بشكل طبيعي ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات أمنية حديثة ✓</p>'}</script></body></html>"""
+<div id="dashboard" style="display:none"><div class="grid"><div class="card metric"><span>الحسابات النشطة</span><strong id="activeUsers">0</strong></div><div class="card metric"><span>محاولات مشبوهة خلال 24 ساعة</span><strong id="failedLogins" class="danger">0</strong></div><div class="card metric"><span>الأجهزة غير الموثوقة</span><strong id="untrustedDevices" class="warn">0</strong></div><div class="card metric"><span>تنبيهات آخر 7 أيام</span><strong id="securityAlerts">0</strong></div><div class="card metric"><span>خدمات متوقفة</span><strong id="stoppedServices">0</strong></div></div>
+<div class="card"><h2>حالة خدمات خدووم</h2><div id="services"></div></div><div class="card"><h2>الحسابات</h2><p class="muted">التجميد يمنع الدخول دون حذف بيانات الحساب.</p><div id="accounts"></div></div><div class="card"><h2>الأجهزة والجلسات</h2><p class="muted">كل جهاز موضح معه اسم المؤسسة والمستخدم.</p><div id="devices"></div></div><div class="card"><h2>آخر التنبيهات الأمنية</h2><div id="events"></div></div></div></div>
+<script>
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});
+async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderAccounts(d.accounts||[]);renderDevices(d.devices||[])}
+function renderAccounts(a){document.getElementById('accounts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.name)}</b><p>المستخدم: ${esc(x.username)} | ${x.role==='admin'?'مالك':'موظف'} | ${x.active?'نشط':'مجمّد'}</p><button onclick="accountAction(${x.id},${!x.active})">${x.active?'تجميد الحساب':'إعادة تفعيل الحساب'}</button></div>`).join('')||'<p>لا توجد حسابات.</p>'}
+function renderDevices(a){document.getElementById('devices').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.user_name)}</b><p>الجهاز: ${esc(x.device_name||'جهاز غير معروف')} | المستخدم: ${esc(x.username)}</p><p>آخر استخدام: ${esc(x.last_seen_at||x.created_at)} | ${x.trusted?'موثوق':'غير موثوق'}</p><button onclick="deviceTrust('${x.id}',${!x.trusted})">${x.trusted?'إلغاء التوثيق':'توثيق الجهاز'}</button><button onclick="disconnectDevice('${x.id}')">فصل الجهاز</button></div>`).join('')||'<p>لا توجد أجهزة نشطة.</p>'}
+async function accountAction(id,active){if(!confirm(active?'تأكيد إعادة تفعيل الحساب؟':'تأكيد تجميد الحساب؟'))return;await act('/owner/api/security/accounts/'+id,'PUT',{active})}
+async function deviceTrust(id,trusted){if(!confirm('تأكيد تغيير حالة توثيق الجهاز؟'))return;await act('/owner/api/security/devices/'+id,'PUT',{trusted})}
+async function disconnectDevice(id){if(!confirm('تأكيد فصل هذا الجهاز وإنهاء جلسته؟'))return;await act('/owner/api/security/devices/'+id,'DELETE')}
+async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),body:body?JSON.stringify(body):null}),d=await r.json();alert(r.ok?'تم تنفيذ العملية ✓':(d.error||'تعذر تنفيذ العملية'));if(r.ok)loadSecurity()}
+</script></body></html>"""
             )
             return
         if path == "/owner/api/security/overview" and method == "GET":
@@ -1248,8 +1258,55 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 stopped = connection.execute("""SELECT organizations.name AS organization_name,'مساعد المؤسسة' AS service FROM service_maintenance JOIN organizations ON organizations.id=service_maintenance.organization_id WHERE service_maintenance.service='assistant' AND service_maintenance.expires_at>?
                     UNION ALL SELECT organizations.name,'شات العملاء' FROM maintenance_modes JOIN organizations ON organizations.id=maintenance_modes.organization_id WHERE maintenance_modes.chat_until>?
                     UNION ALL SELECT organizations.name,'المواعيد' FROM maintenance_modes JOIN organizations ON organizations.id=maintenance_modes.organization_id WHERE maintenance_modes.appointments_until>?""", (current_time,current_time,current_time)).fetchall()
+            with db() as connection:
+                accounts = connection.execute("""SELECT users.id,users.name,users.username,users.role,users.active,organizations.name AS organization_name FROM users JOIN organizations ON organizations.id=users.organization_id ORDER BY organizations.name,users.id""").fetchall()
+                devices = connection.execute("""SELECT sessions.token_hash AS id,sessions.device_name,sessions.trusted,sessions.last_seen_at,sessions.created_at,sessions.expires_at,users.name AS user_name,users.username,organizations.name AS organization_name FROM sessions JOIN users ON users.id=sessions.user_id JOIN organizations ON organizations.id=users.organization_id WHERE sessions.expires_at>? ORDER BY sessions.last_seen_at DESC,sessions.created_at DESC""", (current_time,)).fetchall()
             services = [{"name": "خادم خدووم API", "running": True, "organization": ""}] + [{"name": row["service"], "running": False, "organization": row["organization_name"]} for row in stopped]
-            self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped),"services": services,"events": [dict(row) for row in events]})
+            account_items = [dict(row) for row in accounts]
+            for item in account_items:
+                item["active"] = bool(item["active"])
+            device_items = [dict(row) for row in devices]
+            for item in device_items:
+                item["trusted"] = bool(item["trusted"])
+            self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped),"services": services,"events": [dict(row) for row in events],"accounts": account_items,"devices": device_items})
+            return
+        if path.startswith("/owner/api/security/accounts/") and method == "PUT":
+            self._owner()
+            try:
+                account_id = int(path.rsplit("/", 1)[1])
+            except ValueError:
+                raise ApiError(400, "رقم الحساب غير صحيح")
+            active = 1 if self._body().get("active") is True else 0
+            with db() as connection:
+                account = connection.execute("SELECT id,organization_id,name FROM users WHERE id=?", (account_id,)).fetchone()
+                if account is None:
+                    raise ApiError(404, "الحساب غير موجود")
+                connection.execute("UPDATE users SET active=? WHERE id=?", (active, account_id))
+                if not active:
+                    connection.execute("DELETE FROM sessions WHERE user_id=?", (account_id,))
+                audit_log(connection, account["organization_id"], None, "owner_account_status", f"تم {'تفعيل' if active else 'تجميد'} الحساب {account['name']} من لوحة الأمن", "security", account_id)
+                connection.commit()
+            self._send(200, {"saved": True, "active": bool(active)})
+            return
+        if path.startswith("/owner/api/security/devices/") and method in ("PUT", "DELETE"):
+            self._owner()
+            session_id = path.rsplit("/", 1)[1]
+            with db() as connection:
+                session = connection.execute("""SELECT sessions.token_hash,users.organization_id,users.name,sessions.device_name FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=?""", (session_id,)).fetchone()
+                if session is None:
+                    raise ApiError(404, "الجهاز أو الجلسة غير موجودة")
+                if method == "PUT":
+                    trusted = 1 if self._body().get("trusted") is True else 0
+                    connection.execute("UPDATE sessions SET trusted=? WHERE token_hash=?", (trusted, session_id))
+                    summary = f"تم {'توثيق' if trusted else 'إلغاء توثيق'} جهاز {session['device_name']} للمستخدم {session['name']}"
+                    result = {"saved": True, "trusted": bool(trusted)}
+                else:
+                    connection.execute("DELETE FROM sessions WHERE token_hash=?", (session_id,))
+                    summary = f"تم فصل جهاز {session['device_name']} للمستخدم {session['name']}"
+                    result = {"disconnected": True}
+                audit_log(connection, session["organization_id"], None, "owner_device_action", summary, "security", session_id[:12])
+                connection.commit()
+            self._send(200, result)
             return
         if method == "GET" and path == "/owner/codes":
             self._send_html(
