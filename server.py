@@ -189,6 +189,17 @@ def ai_allowance(
         raise ApiError(429, "تم بلوغ الحد اليومي لموظفي AI")
     return package, daily_limit, used
 
+def ai_training_text(connection: Any, organization_id: int, employee_type: str) -> str:
+    rows = connection.execute(
+        "SELECT employee_type,content FROM ai_training WHERE organization_id=? AND employee_type IN (?,?)",
+        (organization_id, "shared", employee_type),
+    ).fetchall()
+    return "\n\n".join(
+        str(row["content"]).strip()
+        for row in rows
+        if str(row["content"]).strip()
+    )
+
 def _next_arabic_weekday(text: str) -> datetime | None:
     weekdays = {"الاثنين": 0, "الثلاثاء": 1, "الأربعاء": 2, "الاربعاء": 2, "الخميس": 3, "الجمعة": 4, "السبت": 5, "الأحد": 6, "الاحد": 6}
     base = datetime.now(timezone(timedelta(hours=3)))
@@ -414,6 +425,13 @@ def init_db() -> None:
           employee_type TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS ai_training (
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          employee_type TEXT NOT NULL,
+          content TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(organization_id, employee_type)
+        );
         CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);
         CREATE INDEX IF NOT EXISTS idx_vehicles_org ON vehicles(organization_id);
         CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id,created_at);
@@ -554,6 +572,13 @@ def init_db() -> None:
               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
               employee_type TEXT NOT NULL,
               created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ai_training (
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              employee_type TEXT NOT NULL,
+              content TEXT NOT NULL DEFAULT '',
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(organization_id, employee_type)
             );
             CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(active, approved);
@@ -923,7 +948,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                         "لا تطلب بيانات بنكية أو رموز تحقق."
                     )
                     organization_info = {"اسم المؤسسة": organization["name"], "نشاط المؤسسة": organization["activity"], "رقم المؤسسة للتواصل": organization["phone"]}
-                    user_prompt = "بيانات المؤسسة:\n" + json.dumps(organization_info, ensure_ascii=False) + "\nالمحادثة السابقة:\n" + json.dumps(safe_history, ensure_ascii=False) + "\nرسالة العميل الحالية:\n" + message
+                    training = ai_training_text(connection, organization["id"], "chat")
+                    user_prompt = "بيانات المؤسسة:\n" + json.dumps(organization_info, ensure_ascii=False) + "\nتدريب المؤسسة المعتمد:\n" + training + "\nالمحادثة السابقة:\n" + json.dumps(safe_history, ensure_ascii=False) + "\nرسالة العميل الحالية:\n" + message
                     reply = generate_ai_text(system_prompt, user_prompt)
                     connection.execute(
                         "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
@@ -1237,6 +1263,29 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         with db() as connection:
             user = self._user(connection)
             organization_id = user["organization_id"]
+            if path == "/api/ai-training" and method == "GET":
+                rows = connection.execute(
+                    "SELECT employee_type,content,updated_at FROM ai_training WHERE organization_id=?",
+                    (organization_id,),
+                ).fetchall()
+                self._send(200, [dict(row) for row in rows])
+                return
+            if path == "/api/ai-training" and method == "PUT":
+                data = self._body()
+                employee_type = str(data.get("employeeType", "")).strip()
+                allowed_types = {"shared", "assistant", "chat", "reception", "whatsapp", "calls", "commercial_research"}
+                if employee_type not in allowed_types:
+                    raise ApiError(400, "نوع موظف AI غير صحيح")
+                content = str(data.get("content", "")).strip()[:12000]
+                connection.execute(
+                    """INSERT INTO ai_training(organization_id,employee_type,content,updated_at)
+                       VALUES(?,?,?,?) ON CONFLICT(organization_id,employee_type)
+                       DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at""",
+                    (organization_id, employee_type, content, now()),
+                )
+                connection.commit()
+                self._send(200, {"saved": True})
+                return
             if path == "/api/ai/commercial-research" and method == "POST":
                 data = self._body()
                 keywords = str(data.get("keywords", "")).strip()[:300]
@@ -1247,6 +1296,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 package, daily_limit, used = ai_allowance(connection, organization_id)
                 if package != "vip":
                     raise ApiError(403, "موظف البحث التجاري متاح في باقة VIP")
+                training = ai_training_text(connection, organization_id, "commercial_research")
                 system_prompt = (
                     "أنت موظف بحث تجاري سعودي. ابحث في الإنترنت عن معلومات حديثة وعلنية فقط. "
                     "أجب بالعربية بوضوح، ولا تخترع أسماء أو أرقامًا. اذكر مصادر أو روابط مفيدة عند توفرها، "
@@ -1254,7 +1304,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 )
                 user_prompt = (
                     f"نوع البحث: {research_type}\nالمجال أو الكلمات: {keywords}\n"
-                    f"المدينة: {city}\nقدم نتيجة عملية مختصرة من 5 إلى 10 نقاط."
+                    f"المدينة: {city}\nتدريب المؤسسة المعتمد:\n{training}\nقدم نتيجة عملية مختصرة من 5 إلى 10 نقاط."
                 )
                 text = generate_ai_text(system_prompt, user_prompt, web_search=True)
                 connection.execute(
@@ -1280,6 +1330,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     key: str(settings.get(key, ""))[:1500]
                     for key in allowed_keys
                 }
+                training = ai_training_text(connection, organization_id, "reception")
                 system_prompt = (
                     "أنت موظف استقبال لمؤسسة سعودية. أجب بالعربية وفق بيانات المؤسسة فقط. "
                     "لا تخترع سعرًا أو موعدًا أو خدمة غير مذكورة. إذا نقصت معلومة فقل إن الموظف البشري سيتابع، "
@@ -1288,7 +1339,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 user_prompt = (
                     "إعدادات المؤسسة:\n"
                     + json.dumps(safe_settings, ensure_ascii=False, indent=2)
-                    + f"\nرسالة العميل الحالية:\n{message}"
+                    + "\nتدريب المؤسسة المعتمد:\n" + training + f"\nرسالة العميل الحالية:\n{message}"
                 )
                 text = generate_ai_text(system_prompt, user_prompt)
                 connection.execute(
