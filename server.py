@@ -230,6 +230,16 @@ def init_db() -> None:
           starts_at TEXT NOT NULL,
           expires_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS subscription_requests (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          requested_package TEXT NOT NULL CHECK(requested_package IN ('basic','vip')),
+          discount_code TEXT NOT NULL DEFAULT '',
+          discount_percent INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+          created_at TEXT NOT NULL,
+          processed_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS advertisements (
           id BIGSERIAL PRIMARY KEY,
           organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -328,6 +338,16 @@ def init_db() -> None:
               starts_at TEXT NOT NULL,
               expires_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS subscription_requests (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              requested_package TEXT NOT NULL CHECK(requested_package IN ('basic','vip')),
+              discount_code TEXT NOT NULL DEFAULT '',
+              discount_percent INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+              created_at TEXT NOT NULL,
+              processed_at TEXT
+            );
             CREATE TABLE IF NOT EXISTS advertisements (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -423,12 +443,8 @@ def init_db() -> None:
 
 
 def purge_expired_ads(connection: Any) -> int:
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
-    cursor = connection.execute(
-        "DELETE FROM advertisements WHERE approved=1 AND approved_at IS NOT NULL AND approved_at<=?",
-        (cutoff,),
-    )
-    return cursor.rowcount
+    """Keep approved advertisements visible until the owner rejects them."""
+    return 0
 
 def downgrade_expired_subscriptions(connection: Any) -> int:
     """Return expired paid subscriptions to the free package."""
@@ -649,8 +665,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}</style></head><body><div class="wrap"><h1>لوحة مالك خدووم</h1>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="ownerLogin()">دخول لوحة المالك</button><div id="loginStatus" class="result">أدخل المفتاح ثم اضغط دخول</div></div>
 <div class="card"><h2>أكواد الخصم</h2><p>إنشاء أكواد خصم للعروض والإعلانات، مثل خصم 15%.</p><button onclick="location.href='/owner/codes'">فتح صفحة أكواد الخصم</button></div>
-<div class="card"><h2>المؤسسات</h2><button onclick="loadOrganizations()">عرض المؤسسات</button><div id="organizations" class="result"></div></div><div class="card"><h2>مراجعة إعلانات VIP</h2><button class="vip" onclick="loadAds()">تحميل الإعلانات</button><div id="ads" class="result"></div></div></div>
-<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=pkg==='free'?1:+document.getElementById('days-'+id).value;if(pkg!=='free'&&(!days||days<1)){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:days})});let d=await r.json();if(r.ok&&d.saved){alert(pkg==='free'?'تم قفل الباقات وإعادة المؤسسة للمجانية':'تم فتح الباقة لمدة '+days+' يوم');await loadOrganizations()}else{alert(d.error||'تعذر تغيير الباقة')}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${esc(o.name)}</b><p>الباقة الحالية: ${o.package} | ${esc(o.phone)}</p><p>تنتهي: ${o.expires_at||'لا يوجد'}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><input id="days-${o.id}" type="number" min="1" value="30" placeholder="المدة بالأيام"><button onclick="setPackage(${o.id},'free')">🔒 قفل وإرجاعها مجانية</button><button onclick="setPackage(${o.id},'basic')">${o.package==='basic'?'🔓':'🔒'} فتح الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">${o.package==='vip'?'🔓':'🔒'} فتح VIP</button></div>`).join('')}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
+<div class="card"><h2>طلبات ترقية الباقات</h2><button onclick="loadSubscriptionRequests()">تحميل طلبات الترقية</button><div id="subscriptionRequests" class="result"></div></div><div class="card"><h2>المؤسسات</h2><button onclick="loadOrganizations()">عرض المؤسسات</button><div id="organizations" class="result"></div></div><div class="card"><h2>مراجعة إعلانات VIP</h2><button class="vip" onclick="loadAds()">تحميل الإعلانات</button><div id="ads" class="result"></div></div></div>
+<script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';loadOrganizations();loadSubscriptionRequests();loadAds()}else{s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=pkg==='free'?1:+document.getElementById('days-'+id).value;if(pkg!=='free'&&(!days||days<1)){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:days})});let d=await r.json();if(r.ok&&d.saved){alert(pkg==='free'?'تم قفل الباقات وإعادة المؤسسة للمجانية':'تم فتح الباقة لمدة '+days+' يوم');await loadOrganizations()}else{alert(d.error||'تعذر تغيير الباقة')}}async function loadSubscriptionRequests(){let r=await fetch('/owner/api/subscription-requests',{headers:headers()});let data=await r.json();let box=document.getElementById('subscriptionRequests');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل طلبات الترقية';return}box.innerHTML=data.length?data.map(x=>`<div class="card"><b>${esc(x.organization_name)}</b><p>التواصل: ${esc(x.phone)}</p><p>الباقة الحالية: ${x.current_package}</p><p>الباقة المطلوبة: ${x.requested_package==='basic'?'الأساسية':'VIP'}</p><p>كود الخصم: ${x.discount_code?esc(x.discount_code)+' — خصم '+x.discount_percent+'%':'بدون كود'}</p><p>الحالة: ${x.status==='pending'?'بانتظار المراجعة':x.status==='approved'?'مقبول':'مرفوض'}</p>${x.status==='pending'?`<input id="request-days-${x.id}" type="number" min="1" value="30" placeholder="مدة فتح الباقة بالأيام"><button onclick="reviewSubscriptionRequest(${x.id},'approve')">قبول وفتح الباقة</button><button class="vip" onclick="reviewSubscriptionRequest(${x.id},'reject')">رفض الطلب</button>`:''}</div>`).join(''):'لا توجد طلبات ترقية بعد'}async function reviewSubscriptionRequest(id,action){let days=+document.getElementById('request-days-'+id)?.value||30;let r=await fetch('/owner/api/subscription-requests/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action:action,durationDays:days})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الطلب وفتح الباقة':'تم رفض الطلب'):(d.error||'تعذر معالجة الطلب'));if(r.ok){loadSubscriptionRequests();loadOrganizations()}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}box.innerHTML=data.map(o=>`<div class="card"><b>${esc(o.name)}</b><p>الباقة الحالية: ${o.package} | ${esc(o.phone)}</p><p>تنتهي: ${o.expires_at||'لا يوجد'}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><input id="days-${o.id}" type="number" min="1" value="30" placeholder="المدة بالأيام"><button onclick="setPackage(${o.id},'free')">🔒 قفل وإرجاعها مجانية</button><button onclick="setPackage(${o.id},'basic')">${o.package==='basic'?'🔓':'🔒'} فتح الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">${o.package==='vip'?'🔓':'🔒'} فتح VIP</button></div>`).join('')}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
             )
             return
         if method == "GET" and path == "/owner/codes":
@@ -749,6 +765,60 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                        FROM activation_codes ORDER BY id DESC"""
                 ).fetchall()
             self._send(200, [dict(row) for row in rows])
+            return
+        if path == "/owner/api/subscription-requests" and method == "GET":
+            self._owner()
+            with db() as connection:
+                rows = connection.execute(
+                    """SELECT subscription_requests.id,subscription_requests.requested_package,
+                              subscription_requests.discount_code,subscription_requests.discount_percent,
+                              subscription_requests.status,subscription_requests.created_at,
+                              subscription_requests.processed_at,organizations.name AS organization_name,
+                              organizations.phone,subscriptions.package AS current_package
+                       FROM subscription_requests
+                       JOIN organizations ON organizations.id=subscription_requests.organization_id
+                       JOIN subscriptions ON subscriptions.organization_id=organizations.id
+                       ORDER BY CASE subscription_requests.status WHEN 'pending' THEN 0 ELSE 1 END,
+                                subscription_requests.id DESC"""
+                ).fetchall()
+            self._send(200, [dict(row) for row in rows])
+            return
+        if path.startswith("/owner/api/subscription-requests/") and method == "PUT":
+            self._owner()
+            try:
+                request_id = int(path.rsplit("/", 1)[1])
+            except ValueError:
+                raise ApiError(400, "رقم طلب الترقية غير صحيح")
+            data = self._body()
+            action = str(data.get("action", "")).strip()
+            if action not in ("approve", "reject"):
+                raise ApiError(400, "اختر قبول الطلب أو رفضه")
+            with db() as connection:
+                request_row = connection.execute(
+                    "SELECT * FROM subscription_requests WHERE id=? AND status='pending'",
+                    (request_id,),
+                ).fetchone()
+                if request_row is None:
+                    raise ApiError(404, "طلب الترقية غير موجود أو تمت معالجته")
+                if action == "approve":
+                    days = max(1, min(int(data.get("durationDays", 30)), 3650))
+                    expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+                    connection.execute(
+                        "UPDATE subscriptions SET package=?,starts_at=?,expires_at=? WHERE organization_id=?",
+                        (request_row["requested_package"], now(), expires_at, request_row["organization_id"]),
+                    )
+                    if request_row["discount_code"]:
+                        code_hash = hashlib.sha256(request_row["discount_code"].encode()).hexdigest()
+                        connection.execute(
+                            "UPDATE activation_codes SET used_count=used_count+1 WHERE code_hash=? AND used_count<max_uses",
+                            (code_hash,),
+                        )
+                connection.execute(
+                    "UPDATE subscription_requests SET status=?,processed_at=? WHERE id=?",
+                    ("approved" if action == "approve" else "rejected", now(), request_id),
+                )
+                connection.commit()
+            self._send(200, {"saved": True, "status": "approved" if action == "approve" else "rejected"})
             return
         if path == "/owner/api/organizations" and method == "GET":
             self._owner()
@@ -1165,6 +1235,49 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 )
                 connection.commit()
                 self._send(201, {"id": cursor.lastrowid, "approved": False})
+                return
+            if path == "/api/subscription-requests" and method == "POST":
+                if user["role"] != "admin":
+                    raise ApiError(403, "طلب ترقية الباقة متاح لمالك المؤسسة فقط")
+                data = self._body()
+                requested_package = str(data.get("package", "")).strip().lower()
+                if requested_package not in ("basic", "vip"):
+                    raise ApiError(400, "اختر الباقة الأساسية أو VIP")
+                discount_code = str(data.get("discountCode", "")).strip().upper()
+                discount_percent = 0
+                if discount_code:
+                    code_hash = hashlib.sha256(discount_code.encode()).hexdigest()
+                    code = connection.execute(
+                        """SELECT discount_percent FROM activation_codes WHERE code_hash=? AND active=1
+                           AND code_kind='discount' AND used_count<max_uses
+                           AND (expires_at IS NULL OR expires_at>?)""",
+                        (code_hash, now()),
+                    ).fetchone()
+                    if code is None:
+                        raise ApiError(400, "كود الخصم غير صحيح أو منتهي")
+                    discount_percent = int(code["discount_percent"])
+                pending = connection.execute(
+                    "SELECT id FROM subscription_requests WHERE organization_id=? AND status='pending' ORDER BY id DESC LIMIT 1",
+                    (organization_id,),
+                ).fetchone()
+                if pending:
+                    request_id = pending["id"]
+                    connection.execute(
+                        """UPDATE subscription_requests
+                           SET requested_package=?,discount_code=?,discount_percent=?,created_at=?
+                           WHERE id=?""",
+                        (requested_package, discount_code, discount_percent, now(), request_id),
+                    )
+                else:
+                    cursor = connection.execute(
+                        """INSERT INTO subscription_requests(
+                               organization_id,requested_package,discount_code,discount_percent,status,created_at
+                           ) VALUES(?,?,?,?,?,?)""",
+                        (organization_id, requested_package, discount_code, discount_percent, "pending", now()),
+                    )
+                    request_id = cursor.lastrowid
+                connection.commit()
+                self._send(201, {"id": request_id, "status": "pending", "discountPercent": discount_percent})
                 return
             if path == "/api/subscription" and method == "GET":
                 row = connection.execute("SELECT package,starts_at,expires_at FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()
