@@ -505,6 +505,17 @@ def init_db() -> None:
           updated_at TEXT NOT NULL,
           PRIMARY KEY(organization_id, employee_type)
         );
+        CREATE TABLE IF NOT EXISTS audit_logs (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+          action TEXT NOT NULL,
+          target_type TEXT NOT NULL DEFAULT '',
+          target_id TEXT NOT NULL DEFAULT '',
+          summary TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_org_date ON audit_logs(organization_id,created_at);
         CREATE TABLE IF NOT EXISTS ai_training_messages (
           id BIGSERIAL PRIMARY KEY,
           organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -669,6 +680,17 @@ def init_db() -> None:
               updated_at TEXT NOT NULL,
               PRIMARY KEY(organization_id, employee_type)
             );
+            CREATE TABLE IF NOT EXISTS audit_logs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              action TEXT NOT NULL,
+              target_type TEXT NOT NULL DEFAULT '',
+              target_id TEXT NOT NULL DEFAULT '',
+              summary TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_org_date ON audit_logs(organization_id,created_at);
             CREATE TABLE IF NOT EXISTS ai_training_messages (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -810,6 +832,22 @@ def issue_token(
     )
     return token
 
+
+def audit_log(
+    connection: Any,
+    organization_id: int,
+    actor_user_id: int | None,
+    action: str,
+    summary: str,
+    target_type: str = "",
+    target_id: object = "",
+) -> None:
+    connection.execute(
+        """INSERT INTO audit_logs(
+               organization_id,actor_user_id,action,target_type,target_id,summary,created_at
+           ) VALUES(?,?,?,?,?,?,?)""",
+        (organization_id, actor_user_id, action, target_type, str(target_id), summary[:500], now()),
+    )
 
 def require_permission(user: Any, *permission_names: str) -> None:
     if user["role"] == "admin":
@@ -1371,6 +1409,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     str(data.get("deviceName", "جهاز غير معروف")).strip(),
                 )
                 package = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (user["organization_id"],)).fetchone()["package"]
+                audit_log(connection, user["organization_id"], user["id"], "login", f"تسجيل دخول من {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "session")
+                connection.commit()
                 self._send(200, {"token": token, "user": {"id": user["id"], "name": user["name"], "role": user["role"], "permissions": json.loads(user["permissions"])}, "organizationId": user["organization_id"], "package": package})
             return
         if method == "POST" and path == "/api/activate-code-public":
@@ -1406,6 +1446,19 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         with db() as connection:
             user = self._user(connection)
             organization_id = user["organization_id"]
+            if path == "/api/audit-logs" and method == "GET":
+                require_permission(user, "viewAuditLog")
+                rows = connection.execute(
+                    """SELECT audit_logs.id,audit_logs.action,audit_logs.target_type,
+                              audit_logs.target_id,audit_logs.summary,audit_logs.created_at,
+                              users.name AS actor_name,users.username AS actor_username
+                       FROM audit_logs LEFT JOIN users ON users.id=audit_logs.actor_user_id
+                       WHERE audit_logs.organization_id=?
+                       ORDER BY audit_logs.id DESC LIMIT 300""",
+                    (organization_id,),
+                ).fetchall()
+                self._send(200, [dict(row) for row in rows])
+                return
             if path == "/api/security/sessions" and method == "GET":
                 if user["role"] != "admin":
                     raise ApiError(403, "قائمة الأجهزة متاحة للمالك فقط")
@@ -1705,6 +1758,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 require_permission(user, "manageSettings")
                 data = self._body()
                 connection.execute("UPDATE organizations SET name=?,activity=?,phone=? WHERE id=?", (str(data.get("name", "")).strip(), str(data.get("activity", "")).strip(), str(data.get("phone", "")).strip(), organization_id))
+                audit_log(connection, organization_id, user["id"], "organization_updated", "تم تعديل بيانات المؤسسة", "organization", organization_id)
                 connection.commit()
                 self._send(200, {"saved": True})
                 return
@@ -1748,6 +1802,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (organization_id, str(data.get("name", "")).strip(), str(data.get("username", "")).strip().lower(), str(data.get("phone", "")).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "employee", str(data.get("role", "موظف")).strip(), json.dumps(data.get("permissions", {}), ensure_ascii=False), 1 if data.get("active", True) else 0, now()),
                     )
+                    audit_log(connection, organization_id, user["id"], "employee_created", f"تمت إضافة الموظف {str(data.get('name', '')).strip()}", "employee", cursor.lastrowid)
                     connection.commit()
                     self._send(201, {"id": cursor.lastrowid})
                 except DB_INTEGRITY_ERRORS:
@@ -1792,6 +1847,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                             "DELETE FROM sessions WHERE user_id=?",
                             (employee_id,),
                         )
+                    audit_log(connection, organization_id, user["id"], "employee_updated", f"تم تعديل الموظف {name}", "employee", employee_id)
                     connection.commit()
                 except DB_INTEGRITY_ERRORS:
                     raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
@@ -1800,10 +1856,12 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             if path.startswith("/api/employees/") and method == "DELETE":
                 require_permission(user, "manageEmployees")
                 employee_id = int(path.rsplit("/", 1)[1])
+                employee = connection.execute("SELECT name FROM users WHERE id=? AND organization_id=? AND role='employee'", (employee_id, organization_id)).fetchone()
                 connection.execute(
                     "DELETE FROM users WHERE id=? AND organization_id=? AND role='employee'",
                     (employee_id, organization_id),
                 )
+                audit_log(connection, organization_id, user["id"], "employee_deleted", f"تم حذف الموظف {employee['name'] if employee else employee_id}", "employee", employee_id)
                 connection.commit()
                 self._send(200, {"deleted": True})
                 return
@@ -1876,6 +1934,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                         "UPDATE chat_sessions SET state=?,updated_at=? WHERE id=?",
                         ("closed" if status in ("accepted", "rejected", "completed") else "waiting_human", now(), appointment["chat_session_id"]),
                     )
+                audit_log(connection, organization_id, user["id"], "appointment_updated", f"تم تحديث {request_type} للعميل {customer_name} إلى حالة {status}", "appointment", appointment_id)
                 connection.commit()
                 self._send(200, {"saved": True, "status": status, "replyMessage": reply_message})
                 return
