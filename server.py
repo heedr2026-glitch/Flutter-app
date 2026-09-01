@@ -1318,6 +1318,29 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 connection.commit()
                 self._send(200, {"saved": True})
                 return
+            if path == "/api/ai-training/chat" and method == "POST":
+                data = self._body()
+                employee_type = str(data.get("employeeType", "")).strip()
+                message = str(data.get("message", "")).strip()[:2000]
+                allowed_types = {"shared", "assistant", "chat", "reception", "whatsapp", "calls", "commercial_research"}
+                if employee_type not in allowed_types or not message:
+                    raise ApiError(400, "رسالة التدريب غير صحيحة")
+                package, daily_limit, used = ai_allowance(connection, organization_id)
+                training = ai_training_text(connection, organization_id, employee_type)
+                system_prompt = (
+                    "أنت موظف AI في محادثة طبيعية مع صاحب المؤسسة. رد على التحية والأسئلة بالعربية بوضوح. "
+                    "اعتمد فقط على المعلومات المحفوظة ولا تخترع. إذا لم تعرف فقل لا أملك هذه المعلومة بعد. "
+                    "لا تدّعي أنك حفظت أو عدلت التدريب؛ الحفظ يتم فقط من الواجهة بعد أمر صريح."
+                )
+                user_prompt = f"المعلومات المحفوظة:\n{training or 'لا توجد معلومات محفوظة'}\n\nرسالة المستخدم:\n{message}"
+                text = generate_ai_text(system_prompt, user_prompt)
+                connection.execute(
+                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
+                    (organization_id, user["id"], "training_chat", now()),
+                )
+                connection.commit()
+                self._send(200, {"text": text, "remaining": daily_limit - used - 1})
+                return
             if path == "/api/ai/commercial-research" and method == "POST":
                 data = self._body()
                 keywords = str(data.get("keywords", "")).strip()[:300]
