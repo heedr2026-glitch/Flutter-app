@@ -59,7 +59,7 @@ class PostgresCursor:
 
 
 class PostgresConnection:
-    _id_tables = {"organizations", "users", "vehicles", "advertisements", "activation_codes", "ai_usage"}
+    _id_tables = {"organizations", "users", "vehicles", "advertisements", "activation_codes", "ai_usage", "subscription_requests", "appointment_requests", "chat_sessions", "chat_messages"}
 
     def __init__(self, connection: Any):
         self._connection = connection
@@ -182,6 +182,109 @@ def ai_allowance(
         raise ApiError(429, "تم بلوغ الحد اليومي لموظفي AI")
     return package, daily_limit, used
 
+def _next_arabic_weekday(text: str) -> datetime | None:
+    weekdays = {"الاثنين": 0, "الثلاثاء": 1, "الأربعاء": 2, "الاربعاء": 2, "الخميس": 3, "الجمعة": 4, "السبت": 5, "الأحد": 6, "الاحد": 6}
+    base = datetime.now(timezone(timedelta(hours=3)))
+    target = next((value for name, value in weekdays.items() if name in text), None)
+    if target is None:
+        return None
+    days = (target - base.weekday()) % 7
+    if days == 0:
+        days = 7
+    hour = 16 if "العصر" in text else 9 if "الصباح" in text else 13 if "الظهر" in text else 18 if "المساء" in text else 17
+    match = re.search(r"(?:الساعة\s*)?(\d{1,2})(?::(\d{2}))?", text)
+    if match:
+        candidate = int(match.group(1))
+        if 0 <= candidate <= 23:
+            hour = candidate
+            if any(word in text for word in ("مساء", "العصر")) and hour < 12:
+                hour += 12
+    minute = int(match.group(2)) if match and match.group(2) else 0
+    result = (base + timedelta(days=days)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return result
+
+
+def _appointment_chat_reply(connection: Any, organization_id: int, session: Any, message: str) -> str | None:
+    state = session["state"]
+    try:
+        context = json.loads(session["context_json"] or "{}")
+    except json.JSONDecodeError:
+        context = {}
+    lowered = message.strip().lower()
+    if state == "waiting_human":
+        return "طلبك أُرسل للموظف البشري، وسأكتب لك هنا فور قبوله أو تعديله أو رفضه."
+    if state == "idle":
+        if not any(word in lowered for word in ("موعد", "حجز", "احجز")):
+            return None
+        desired = _next_arabic_weekday(lowered)
+        context = {"original_request": message}
+        if desired:
+            context["scheduled_at"] = desired.isoformat()
+        state = "await_name"
+        reply = "أكيد. ما اسمك الكامل لتسجيل طلب الموعد؟"
+    elif state == "await_name":
+        context["customer_name"] = message.strip()[:120]
+        state = "await_phone"
+        reply = "شكرًا. اكتب رقم التواصل من فضلك."
+    elif state == "await_phone":
+        phone = re.sub(r"[^0-9+]", "", message)
+        if len(phone) < 6:
+            return "رقم التواصل غير واضح. اكتبه بالأرقام من فضلك."
+        context["phone"] = phone[:40]
+        state = "await_type"
+        reply = "ما نوع الطلب: موعد مقاس، موعد صيانة، أم طلب عميل؟"
+    elif state == "await_type":
+        request_type = "موعد مقاس" if "مقاس" in lowered else "موعد صيانة" if "صيانة" in lowered else "طلب عميل"
+        context["request_type"] = request_type
+        if context.get("scheduled_at"):
+            state = "await_confirmation"
+            scheduled = datetime.fromisoformat(context["scheduled_at"])
+            reply = f"سأسجل {request_type} يوم {scheduled.strftime('%Y-%m-%d')} الساعة {scheduled.strftime('%H:%M')}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
+        else:
+            state = "await_datetime"
+            reply = "اكتب اليوم والوقت المناسب، مثل: السبت الساعة 4 العصر."
+    elif state == "await_datetime":
+        desired = _next_arabic_weekday(lowered)
+        if desired is None:
+            return "لم أفهم الموعد. اكتبه مثل: السبت الساعة 4 العصر."
+        context["scheduled_at"] = desired.isoformat()
+        state = "await_confirmation"
+        reply = f"الموعد المقترح يوم {desired.strftime('%Y-%m-%d')} الساعة {desired.strftime('%H:%M')}. هل أرسله للموظف؟ اكتب نعم أو لا."
+    elif state == "await_confirmation":
+        if any(word in lowered for word in ("لا", "غير", "غيّر", "غيره")):
+            state = "await_datetime"
+            reply = "حسنًا، اكتب يومًا ووقتًا آخر مناسبًا."
+        elif any(word in lowered for word in ("نعم", "اي", "أيوه", "موافق", "تمام")):
+            scheduled_at = context.get("scheduled_at")
+            if not scheduled_at:
+                state = "await_datetime"
+                reply = "اكتب اليوم والوقت المناسب أولًا."
+            else:
+                cursor = connection.execute(
+                    """INSERT INTO appointment_requests(
+                           organization_id,chat_session_id,request_type,title,customer_name,phone,notes,
+                           scheduled_at,status,source,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (organization_id, session["id"], context.get("request_type", "طلب عميل"),
+                     context.get("original_request", "طلب موعد")[:160], context.get("customer_name", ""),
+                     context.get("phone", ""), context.get("original_request", "")[:1000],
+                     scheduled_at, "pending", "public_chat", now(), now()),
+                )
+                context["appointment_id"] = cursor.lastrowid
+                state = "waiting_human"
+                reply = "تم إرسال طلب الموعد للموظف البشري ✓ سأبلغك هنا عند القبول أو التعديل أو الرفض."
+        else:
+            return "للتأكيد اكتب «نعم»، ولتغيير الموعد اكتب «لا»."
+    else:
+        state = "idle"
+        context = {}
+        reply = "كيف أقدر أخدمك؟"
+    connection.execute(
+        "UPDATE chat_sessions SET state=?,context_json=?,updated_at=? WHERE id=?",
+        (state, json.dumps(context, ensure_ascii=False), now(), session["id"]),
+    )
+    return reply
+
 def init_db() -> None:
     if DATABASE_URL:
         postgres_schema = """
@@ -240,9 +343,26 @@ def init_db() -> None:
           created_at TEXT NOT NULL,
           processed_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          public_token TEXT NOT NULL UNIQUE,
+          state TEXT NOT NULL DEFAULT 'idle',
+          context_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS chat_messages (
+          id BIGSERIAL PRIMARY KEY,
+          session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+          sender TEXT NOT NULL CHECK(sender IN ('customer','bot','human')),
+          message TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS appointment_requests (
           id BIGSERIAL PRIMARY KEY,
           organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          chat_session_id BIGINT REFERENCES chat_sessions(id) ON DELETE SET NULL,
           request_type TEXT NOT NULL DEFAULT 'طلب عميل',
           title TEXT NOT NULL,
           customer_name TEXT NOT NULL,
@@ -294,6 +414,7 @@ def init_db() -> None:
         """
         with db() as connection:
             connection.executescript(postgres_schema)
+            connection.execute("ALTER TABLE appointment_requests ADD COLUMN IF NOT EXISTS chat_session_id BIGINT")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS expires_at TEXT")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS code_kind TEXT NOT NULL DEFAULT 'activation'")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0")
@@ -364,9 +485,26 @@ def init_db() -> None:
               created_at TEXT NOT NULL,
               processed_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              public_token TEXT NOT NULL UNIQUE,
+              state TEXT NOT NULL DEFAULT 'idle',
+              context_json TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chat_messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+              sender TEXT NOT NULL CHECK(sender IN ('customer','bot','human')),
+              message TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS appointment_requests (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              chat_session_id INTEGER REFERENCES chat_sessions(id) ON DELETE SET NULL,
               request_type TEXT NOT NULL DEFAULT 'طلب عميل',
               title TEXT NOT NULL,
               customer_name TEXT NOT NULL,
@@ -439,6 +577,12 @@ def init_db() -> None:
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_public_chat_token ON organizations(public_chat_token)"
         )
+        appointment_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(appointment_requests)")
+        }
+        if "chat_session_id" not in appointment_columns:
+            connection.execute("ALTER TABLE appointment_requests ADD COLUMN chat_session_id INTEGER")
         ad_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(advertisements)")
@@ -635,8 +779,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             if organization["package"] not in ("basic", "vip"):
                 raise ApiError(403, "موظف الاستقبال غير متاح لهذه المؤسسة حاليًا")
             page = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف استقبال __ORG_NAME__</title>
-<style>body{margin:0;background:linear-gradient(160deg,#071126,#142454);color:#fff;font-family:Tahoma,Arial;min-height:100vh}.wrap{max-width:720px;margin:auto;padding:22px}.head,.chat{background:#111f42;border:1px solid #24618d;border-radius:22px;padding:20px;margin-bottom:14px}h1{color:#38d4ff;margin:0 0 8px}.messages{min-height:260px;max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:14px}.msg{padding:12px 15px;border-radius:16px;white-space:pre-wrap;line-height:1.65}.bot{background:#15345f;align-self:flex-start}.customer{background:#087cab;align-self:flex-end}textarea,input,select,button{box-sizing:border-box;width:100%;padding:14px;border-radius:13px;border:1px solid #2f6b99;color:#fff;font:inherit}textarea,input,select{background:#09152e}textarea{min-height:88px;resize:vertical}.appointment{display:none}.appointment.open{display:block}.appointment label{display:block;margin-top:10px;color:#9bdcf5}button{background:#7c3aed;font-weight:bold;margin-top:10px;cursor:pointer}.note{color:#9bdcf5;font-size:13px}.error{color:#fbbf24}</style></head><body><main class="wrap"><section class="head"><h1>__ORG_NAME__</h1><p>مرحبًا بك، أنا موظف الاستقبال الذكي. كيف أقدر أخدمك؟</p><p class="note">لا ترسل بيانات بنكية أو رموز تحقق. قد يتابع معك موظف بشري عند الحاجة.</p></section><section class="chat"><div id="messages" class="messages"><div class="msg bot">مرحبًا بك في __ORG_NAME__. اكتب استفسارك أو تفاصيل طلبك.</div></div><textarea id="message" maxlength="1500" placeholder="اكتب رسالتك هنا"></textarea><button id="send" onclick="sendMessage()">إرسال</button><div id="status" class="note"></div></section><section id="appointmentForm" class="chat appointment"><h2>طلب موعد جديد</h2><p class="note">يصل الطلب إلى موظف المؤسسة للموافقة.</p><label>نوع الطلب</label><select id="appointmentType"><option>موعد مقاس</option><option>موعد صيانة</option><option>طلب عميل</option></select><label>اسم العميل</label><input id="customerName" maxlength="120"><label>رقم التواصل</label><input id="customerPhone" inputmode="tel" maxlength="40"><label>عنوان الطلب</label><input id="appointmentTitle" maxlength="160" placeholder="مثال: قياس زجاج المنزل"><label>تاريخ ووقت الموعد — يجب أن يكون في المستقبل</label><input id="appointmentDate" type="datetime-local" step="60"><label>ملاحظات</label><textarea id="appointmentNotes" maxlength="1000"></textarea><button id="appointmentSend" onclick="submitAppointment()">إرسال طلب الموعد</button><div id="appointmentStatus" class="note"></div></section><button onclick="document.getElementById('appointmentForm').classList.toggle('open')">📅 طلب موعد</button></main>
-<script>const appointmentDateInput=document.getElementById('appointmentDate');function localDateTimeValue(date){const pad=value=>String(value).padStart(2,'0');return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`}const minimumAppointmentDate=new Date(Date.now()+60000);const suggestedAppointmentDate=new Date(Date.now()+86400000);suggestedAppointmentDate.setMinutes(0,0,0);appointmentDateInput.min=localDateTimeValue(minimumAppointmentDate);appointmentDateInput.value=localDateTimeValue(suggestedAppointmentDate);const history=[];function addMessage(text,type){const item=document.createElement('div');item.className='msg '+type;item.textContent=text;const box=document.getElementById('messages');box.appendChild(item);box.scrollTop=box.scrollHeight}async function sendMessage(){const input=document.getElementById('message'),button=document.getElementById('send'),status=document.getElementById('status'),message=input.value.trim();if(!message)return;addMessage(message,'customer');history.push({role:'customer',text:message});input.value='';button.disabled=true;status.textContent='جاري تجهيز الرد...';try{const response=await fetch('/api/public-chat/__CHAT_TOKEN__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history:history.slice(-8)})});const data=await response.json();if(!response.ok)throw new Error(data.error||'تعذر الرد الآن');addMessage(data.text,'bot');history.push({role:'assistant',text:data.text});status.textContent=''}catch(error){status.textContent=error.message;status.className='note error'}finally{button.disabled=false;input.focus()}}async function submitAppointment(){const status=document.getElementById('appointmentStatus'),button=document.getElementById('appointmentSend'),date=document.getElementById('appointmentDate').value;status.className='note';if(!date){status.textContent='اختر تاريخ ووقت الموعد';return}button.disabled=true;status.textContent='جاري إرسال الطلب...';try{const response=await fetch('/api/public-chat/__CHAT_TOKEN__/appointments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:document.getElementById('appointmentType').value,customer:document.getElementById('customerName').value.trim(),phone:document.getElementById('customerPhone').value.trim(),title:document.getElementById('appointmentTitle').value.trim(),scheduledAt:new Date(date).toISOString(),notes:document.getElementById('appointmentNotes').value.trim()})});const data=await response.json();if(!response.ok)throw new Error(data.error||'تعذر إرسال الموعد');status.textContent='تم إرسال طلبك للمؤسسة، وبانتظار موافقة الموظف ✓';addMessage('تم استلام طلب الموعد وسيؤكده موظف المؤسسة قريبًا.','bot')}catch(error){status.textContent=error.message;status.className='note error'}finally{button.disabled=false}}</script></body></html>"""
+<style>body{margin:0;background:linear-gradient(160deg,#071126,#142454);color:#fff;font-family:Tahoma,Arial;min-height:100vh}.wrap{max-width:720px;margin:auto;padding:22px}.head,.chat{background:#111f42;border:1px solid #24618d;border-radius:22px;padding:20px;margin-bottom:14px}h1{color:#38d4ff;margin:0 0 8px}.messages{min-height:260px;max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:14px}.msg{padding:12px 15px;border-radius:16px;white-space:pre-wrap;line-height:1.65}.bot{background:#15345f;align-self:flex-start}.customer{background:#087cab;align-self:flex-end}textarea,input,select,button{box-sizing:border-box;width:100%;padding:14px;border-radius:13px;border:1px solid #2f6b99;color:#fff;font:inherit}textarea,input,select{background:#09152e}textarea{min-height:88px;resize:vertical}.appointment{display:none}.appointment.open{display:block}.appointment label{display:block;margin-top:10px;color:#9bdcf5}button{background:#7c3aed;font-weight:bold;margin-top:10px;cursor:pointer}.note{color:#9bdcf5;font-size:13px}.error{color:#fbbf24}</style></head><body><main class="wrap"><section class="head"><h1>__ORG_NAME__</h1><p>مرحبًا بك، أنا موظف الاستقبال الذكي. كيف أقدر أخدمك؟</p><p class="note">لا ترسل بيانات بنكية أو رموز تحقق. قد يتابع معك موظف بشري عند الحاجة.</p></section><section class="chat"><div id="messages" class="messages"><div class="msg bot">مرحبًا بك في __ORG_NAME__. اكتب استفسارك أو تفاصيل طلبك.</div></div><textarea id="message" maxlength="1500" placeholder="اكتب رسالتك هنا"></textarea><button id="send" onclick="sendMessage()">إرسال</button><div id="status" class="note"></div></section><button onclick="startAppointmentConversation()">📅 ابدأ حجز موعد داخل المحادثة</button></main>
+<script>const history=[];const sessionStorageKey='khdoom_chat___CHAT_TOKEN__';let sessionToken=localStorage.getItem(sessionStorageKey)||'';let lastMessageId=0;function addMessage(text,type){const item=document.createElement('div');item.className='msg '+type;item.textContent=text;const box=document.getElementById('messages');box.appendChild(item);box.scrollTop=box.scrollHeight}async function sendMessage(){const input=document.getElementById('message'),button=document.getElementById('send'),status=document.getElementById('status'),message=input.value.trim();if(!message)return;addMessage(message,'customer');history.push({role:'customer',text:message});input.value='';button.disabled=true;status.textContent='جاري تجهيز الرد...';try{const response=await fetch('/api/public-chat/__CHAT_TOKEN__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history:history.slice(-8),sessionToken})});const data=await response.json();if(!response.ok)throw new Error(data.error||'تعذر الرد الآن');if(data.sessionToken){sessionToken=data.sessionToken;localStorage.setItem(sessionStorageKey,sessionToken)}if(data.lastMessageId)lastMessageId=Math.max(lastMessageId,data.lastMessageId);addMessage(data.text,'bot');history.push({role:'assistant',text:data.text});status.textContent=''}catch(error){status.textContent=error.message;status.className='note error'}finally{button.disabled=false;input.focus()}}function startAppointmentConversation(){const input=document.getElementById('message');input.value='أريد حجز موعد';sendMessage()}async function pollMessages(){if(!sessionToken)return;try{const response=await fetch(`/api/public-chat/__CHAT_TOKEN__/sessions/${sessionToken}/messages?after=${lastMessageId}`);const data=await response.json();if(!response.ok||!Array.isArray(data))return;for(const message of data){lastMessageId=Math.max(lastMessageId,message.id);addMessage(message.message,message.sender==='customer'?'customer':'bot')}}catch(_){}}setInterval(pollMessages,5000);pollMessages();</script></body></html>"""
             page = page.replace("__ORG_NAME__", html.escape(organization["name"])).replace("__CHAT_TOKEN__", chat_token)
             self._send_html(page)
             return
@@ -688,12 +832,36 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 connection.commit()
             self._send(201, {"id": cursor.lastrowid, "status": "pending", "message": "تم إرسال طلب الموعد للمؤسسة"})
             return
+        if method == "GET" and path.startswith("/api/public-chat/") and "/sessions/" in path and path.endswith("/messages"):
+            parts = path.split("/")
+            if len(parts) != 7:
+                raise ApiError(404, "رابط متابعة المحادثة غير صحيح")
+            chat_token, session_token = parts[3], parts[5]
+            after = int(urlparse(self.path).query.replace("after=", "") or "0")
+            with db() as connection:
+                session = connection.execute(
+                    """SELECT chat_sessions.id FROM chat_sessions JOIN organizations
+                       ON organizations.id=chat_sessions.organization_id
+                       WHERE organizations.public_chat_token=? AND chat_sessions.public_token=?""",
+                    (chat_token, session_token),
+                ).fetchone()
+                if session is None:
+                    self._send(200, [])
+                    return
+                rows = connection.execute(
+                    """SELECT id,sender,message,created_at FROM chat_messages
+                       WHERE session_id=? AND id>? ORDER BY id ASC""",
+                    (session["id"], after),
+                ).fetchall()
+            self._send(200, [dict(row) for row in rows])
+            return
         if method == "POST" and path.startswith("/api/public-chat/"):
             chat_token = path.rsplit("/", 1)[1]
             data = self._body()
             message = str(data.get("message", "")).strip()[:1500]
             if not message:
                 raise ApiError(400, "اكتب رسالة العميل")
+            supplied_session_token = str(data.get("sessionToken", "")).strip()
             history = data.get("history")
             if not isinstance(history, list):
                 history = []
@@ -716,34 +884,50 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 package, daily_limit, used = ai_allowance(connection, organization["id"])
                 if package not in ("basic", "vip"):
                     raise ApiError(403, "موظف الاستقبال متاح من الباقة الأساسية")
-                admin = connection.execute(
-                    "SELECT id FROM users WHERE organization_id=? AND role='admin' AND active=1 ORDER BY id LIMIT 1",
-                    (organization["id"],),
-                ).fetchone()
-                if admin is None:
-                    raise ApiError(503, "لا يوجد مسؤول نشط للمؤسسة")
-                system_prompt = (
-                    "أنت موظف استقبال تابع للمؤسسة المذكورة. أجب بالعربية وباختصار وفق بيانات المؤسسة فقط. "
-                    "لا تخترع أسعارًا أو خدمات أو مواعيد. إذا نقصت معلومة فقل إن موظفًا بشريًا سيتابع. "
-                    "اطلب اسم العميل ورقم التواصل ونوع الطلب عند الحاجة، ولا تطلب بيانات بنكية أو رموز تحقق. إذا أراد موعدًا فاطلب منه الضغط على زر «طلب موعد» أسفل الشات لإرساله إلى الموظف البشري."
+                session = None
+                if supplied_session_token:
+                    session = connection.execute(
+                        "SELECT * FROM chat_sessions WHERE organization_id=? AND public_token=?",
+                        (organization["id"], supplied_session_token),
+                    ).fetchone()
+                if session is None:
+                    supplied_session_token = secrets.token_urlsafe(24)
+                    cursor = connection.execute(
+                        """INSERT INTO chat_sessions(organization_id,public_token,state,context_json,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?)""",
+                        (organization["id"], supplied_session_token, "idle", "{}", now(), now()),
+                    )
+                    session = connection.execute("SELECT * FROM chat_sessions WHERE id=?", (cursor.lastrowid,)).fetchone()
+                customer_cursor = connection.execute(
+                    "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
+                    (session["id"], "customer", message, now()),
                 )
-                organization_info = {
-                    "اسم المؤسسة": organization["name"],
-                    "نشاط المؤسسة": organization["activity"],
-                    "رقم المؤسسة للتواصل": organization["phone"],
-                }
-                user_prompt = (
-                    "بيانات المؤسسة:\n" + json.dumps(organization_info, ensure_ascii=False)
-                    + "\nالمحادثة السابقة:\n" + json.dumps(safe_history, ensure_ascii=False)
-                    + "\nرسالة العميل الحالية:\n" + message
-                )
-                reply = generate_ai_text(system_prompt, user_prompt)
-                connection.execute(
-                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
-                    (organization["id"], admin["id"], "public_reception_chat", now()),
+                reply = _appointment_chat_reply(connection, organization["id"], session, message)
+                if reply is None:
+                    admin = connection.execute(
+                        "SELECT id FROM users WHERE organization_id=? AND role='admin' AND active=1 ORDER BY id LIMIT 1",
+                        (organization["id"],),
+                    ).fetchone()
+                    if admin is None:
+                        raise ApiError(503, "لا يوجد مسؤول نشط للمؤسسة")
+                    system_prompt = (
+                        "أنت موظف استقبال تابع للمؤسسة المذكورة. أجب بالعربية وباختصار وفق بيانات المؤسسة فقط. "
+                        "لا تخترع أسعارًا أو خدمات أو مواعيد. إذا أراد العميل موعدًا ابدأ بجمعه داخل المحادثة. "
+                        "لا تطلب بيانات بنكية أو رموز تحقق."
+                    )
+                    organization_info = {"اسم المؤسسة": organization["name"], "نشاط المؤسسة": organization["activity"], "رقم المؤسسة للتواصل": organization["phone"]}
+                    user_prompt = "بيانات المؤسسة:\n" + json.dumps(organization_info, ensure_ascii=False) + "\nالمحادثة السابقة:\n" + json.dumps(safe_history, ensure_ascii=False) + "\nرسالة العميل الحالية:\n" + message
+                    reply = generate_ai_text(system_prompt, user_prompt)
+                    connection.execute(
+                        "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
+                        (organization["id"], admin["id"], "public_reception_chat", now()),
+                    )
+                bot_cursor = connection.execute(
+                    "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
+                    (session["id"], "bot", reply, now()),
                 )
                 connection.commit()
-            self._send(200, {"text": reply, "remaining": daily_limit - used - 1})
+            self._send(200, {"text": reply, "remaining": daily_limit - used - 1, "sessionToken": supplied_session_token, "lastMessageId": bot_cursor.lastrowid})
             return
         if method == "GET" and path == "/owner":
             self._send_html(
@@ -1289,14 +1473,60 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 status = str(data.get("status", "")).strip()
                 if status not in ("pending", "accepted", "completed", "rejected"):
                     raise ApiError(400, "حالة الطلب غير صحيحة")
-                cursor = connection.execute(
-                    "UPDATE appointment_requests SET status=?,updated_at=? WHERE id=? AND organization_id=?",
-                    (status, now(), appointment_id, organization_id),
-                )
-                connection.commit()
-                if cursor.rowcount == 0:
+                appointment = connection.execute(
+                    "SELECT * FROM appointment_requests WHERE id=? AND organization_id=?",
+                    (appointment_id, organization_id),
+                ).fetchone()
+                if appointment is None:
                     raise ApiError(404, "طلب الموعد غير موجود")
-                self._send(200, {"saved": True, "status": status})
+                request_type = str(data.get("type", appointment["request_type"])).strip()
+                if request_type not in ("موعد مقاس", "موعد صيانة", "طلب عميل"):
+                    raise ApiError(400, "نوع الطلب غير صحيح")
+                title = str(data.get("title", appointment["title"])).strip()[:160]
+                customer_name = str(data.get("customer", appointment["customer_name"])).strip()[:120]
+                phone = str(data.get("phone", appointment["phone"])).strip()[:40]
+                notes = str(data.get("notes", appointment["notes"])).strip()[:1000]
+                scheduled_at = str(data.get("scheduledAt", appointment["scheduled_at"])).strip()
+                try:
+                    parsed_time = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+                    if parsed_time.tzinfo is None:
+                        parsed_time = parsed_time.replace(tzinfo=timezone(timedelta(hours=3)))
+                except ValueError:
+                    raise ApiError(400, "تاريخ الموعد غير صحيح")
+                try:
+                    original_time = datetime.fromisoformat(str(appointment["scheduled_at"]).replace("Z", "+00:00"))
+                    if original_time.tzinfo is None:
+                        original_time = original_time.replace(tzinfo=timezone(timedelta(hours=3)))
+                    time_changed = abs((parsed_time.astimezone(timezone.utc) - original_time.astimezone(timezone.utc)).total_seconds()) >= 30
+                except ValueError:
+                    time_changed = scheduled_at != appointment["scheduled_at"]
+                connection.execute(
+                    """UPDATE appointment_requests SET request_type=?,title=?,customer_name=?,phone=?,notes=?,
+                              scheduled_at=?,status=?,updated_at=? WHERE id=? AND organization_id=?""",
+                    (request_type, title, customer_name, phone, notes, scheduled_at, status, now(), appointment_id, organization_id),
+                )
+                reply_message = str(data.get("replyMessage", "")).strip()[:1000]
+                if not reply_message:
+                    display_time = parsed_time.astimezone(timezone(timedelta(hours=3))).strftime("%Y-%m-%d الساعة %H:%M")
+                    if status == "rejected":
+                        reply_message = "نعتذر، تعذر قبول الموعد المطلوب. يرجى اختيار موعد آخر."
+                    elif time_changed:
+                        reply_message = f"الوقت المطلوب غير مناسب، وتم تعديل موعدك إلى {display_time}."
+                    elif status == "accepted":
+                        reply_message = f"تم تأكيد موعدك بتاريخ {display_time} ✓"
+                    elif status == "completed":
+                        reply_message = "تم إنجاز طلبك، وشكرًا لتواصلك معنا."
+                if appointment["chat_session_id"] and reply_message:
+                    connection.execute(
+                        "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
+                        (appointment["chat_session_id"], "human", reply_message, now()),
+                    )
+                    connection.execute(
+                        "UPDATE chat_sessions SET state=?,updated_at=? WHERE id=?",
+                        ("closed" if status in ("accepted", "rejected", "completed") else "waiting_human", now(), appointment["chat_session_id"]),
+                    )
+                connection.commit()
+                self._send(200, {"saved": True, "status": status, "replyMessage": reply_message})
                 return
             if path == "/api/vehicles" and method == "GET":
                 rows = connection.execute("SELECT * FROM vehicles WHERE organization_id=? ORDER BY id DESC", (organization_id,)).fetchall()
