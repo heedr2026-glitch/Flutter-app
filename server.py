@@ -462,6 +462,14 @@ def init_db() -> None:
           updated_at TEXT NOT NULL,
           PRIMARY KEY(organization_id, employee_type)
         );
+        CREATE TABLE IF NOT EXISTS ai_training_messages (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          employee_type TEXT NOT NULL,
+          sender TEXT NOT NULL CHECK(sender IN ('owner','assistant')),
+          message TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);
         CREATE INDEX IF NOT EXISTS idx_vehicles_org ON vehicles(organization_id);
         CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id,created_at);
@@ -609,6 +617,14 @@ def init_db() -> None:
               content TEXT NOT NULL DEFAULT '',
               updated_at TEXT NOT NULL,
               PRIMARY KEY(organization_id, employee_type)
+            );
+            CREATE TABLE IF NOT EXISTS ai_training_messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              employee_type TEXT NOT NULL,
+              sender TEXT NOT NULL CHECK(sender IN ('owner','assistant')),
+              message TEXT NOT NULL,
+              created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(active, approved);
@@ -1318,6 +1334,14 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 connection.commit()
                 self._send(200, {"saved": True})
                 return
+            if path == "/api/ai-training/messages" and method == "GET":
+                rows = connection.execute(
+                    """SELECT id,employee_type,sender,message,created_at FROM ai_training_messages
+                       WHERE organization_id=? ORDER BY id DESC LIMIT 300""",
+                    (organization_id,),
+                ).fetchall()
+                self._send(200, [dict(row) for row in reversed(rows)])
+                return
             if path == "/api/ai-training/chat" and method == "POST":
                 data = self._body()
                 employee_type = str(data.get("employeeType", "")).strip()
@@ -1325,22 +1349,45 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 allowed_types = {"shared", "assistant", "chat", "reception", "whatsapp", "calls", "commercial_research"}
                 if employee_type not in allowed_types or not message:
                     raise ApiError(400, "رسالة التدريب غير صحيحة")
-                package, daily_limit, used = ai_allowance(connection, organization_id)
-                training = ai_training_text(connection, organization_id, employee_type)
-                system_prompt = (
-                    "أنت موظف AI خاص بهذه المؤسسة فقط. رد بالعربية برد قصير ومباشر وبأسلوب طبيعي. "
-                    "اعتمد فقط على المعلومات المحفوظة ولا تخترع. إذا لم تعرف فقل: ما علمتني هذه المعلومة بعد. "
-                    "ممنوع الخروج إلى البرمجة أو الإلكترونيات أو التقنية أو أي موضوع خارج عمل المؤسسة، إلا إذا كان نشاط المؤسسة أو تدريبها متعلقًا به. "
-                    "لا تدّعي أنك حفظت أو عدلت التدريب؛ الحفظ يتم فقط من الواجهة بعد أمر صريح."
-                )
-                user_prompt = f"المعلومات المحفوظة:\n{training or 'لا توجد معلومات محفوظة'}\n\nرسالة المستخدم:\n{message}"
-                text = generate_ai_text(system_prompt, user_prompt)
                 connection.execute(
-                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
-                    (organization_id, user["id"], "training_chat", now()),
+                    "INSERT INTO ai_training_messages(organization_id,employee_type,sender,message,created_at) VALUES(?,?,?,?,?)",
+                    (organization_id, employee_type, "owner", message, now()),
+                )
+                normalized = message.lower().strip()
+                greeting = normalized.strip(" .،!؟") in {"السلام", "السلام عليكم", "هلا", "مرحبا", "مرحبًا", "صباح الخير", "مساء الخير"}
+                is_question = "?" in message or "؟" in message or any(normalized.startswith(word) for word in ("وش", "شنو", "ماذا", "ما ", "هل", "كم", "متى", "وين", "أين", "كيف"))
+                training = ai_training_text(connection, organization_id, employee_type)
+                action = "answered"
+                if greeting:
+                    text = "وعليكم السلام ورحمة الله 👋 كيف أقدر أخدمك؟"
+                elif any(word in normalized for word in ("انسَ", "انسى", "احذف", "امسح")):
+                    text = "حتى لا أحذف معلومة بالخطأ، اختر المعلومة من قائمة المعلومات المحفوظة ثم أكد حذفها."
+                    action = "delete_confirmation_required"
+                elif not is_question:
+                    fact = re.sub(r"^(علمني|اعلمك|معلومة|عدّل|عدل|غير)\s*[:：-]?\s*", "", message).strip()
+                    new_content = (training + "\n• " + fact).strip() if training else "• " + fact
+                    connection.execute(
+                        """INSERT INTO ai_training(organization_id,employee_type,content,updated_at) VALUES(?,?,?,?)
+                           ON CONFLICT(organization_id,employee_type) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at""",
+                        (organization_id, employee_type, new_content[:12000], now()),
+                    )
+                    text = f"تمام، تعلمت وحفظت: {fact} ✓"
+                    action = "saved"
+                else:
+                    package, daily_limit, used = ai_allowance(connection, organization_id)
+                    system_prompt = "أنت موظف AI خاص بهذه المؤسسة. أجب بالعربية باختصار من المعلومات المحفوظة فقط. إذا لم تعرف قل: ما علمتني هذه المعلومة بعد. لا تخرج عن نشاط المؤسسة."
+                    user_prompt = f"المعلومات المحفوظة:\n{training or 'لا توجد معلومات'}\n\nالسؤال:\n{message}"
+                    text = generate_ai_text(system_prompt, user_prompt)
+                    connection.execute(
+                        "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
+                        (organization_id, user["id"], "training_chat", now()),
+                    )
+                connection.execute(
+                    "INSERT INTO ai_training_messages(organization_id,employee_type,sender,message,created_at) VALUES(?,?,?,?,?)",
+                    (organization_id, employee_type, "assistant", text, now()),
                 )
                 connection.commit()
-                self._send(200, {"text": text, "remaining": daily_limit - used - 1})
+                self._send(200, {"text": text, "action": action})
                 return
             if path == "/api/ai/commercial-research" and method == "POST":
                 data = self._body()
