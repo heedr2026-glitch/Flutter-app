@@ -1401,15 +1401,28 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     "SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1",
                     (str(data.get("username", "")).strip().lower(),),
                 ).fetchone()
-                if user is None or not verify_password(str(data.get("password", "")), user["password_hash"], user["password_salt"]):
+                if user is None:
                     raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
+                if not verify_password(str(data.get("password", "")), user["password_hash"], user["password_salt"]):
+                    audit_log(connection, user["organization_id"], user["id"], "failed_login", f"محاولة دخول فاشلة من {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "security")
+                    connection.commit()
+                    raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
+                device_id = str(data.get("deviceId", "")).strip()
+                known_device = connection.execute(
+                    """SELECT 1 FROM sessions JOIN users ON users.id=sessions.user_id
+                       WHERE users.organization_id=? AND sessions.device_id=? LIMIT 1""",
+                    (user["organization_id"], device_id),
+                ).fetchone() if device_id else None
                 token = issue_token(
                     connection, user["id"],
                     str(data.get("deviceId", "")).strip(),
                     str(data.get("deviceName", "جهاز غير معروف")).strip(),
                 )
                 package = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (user["organization_id"],)).fetchone()["package"]
-                audit_log(connection, user["organization_id"], user["id"], "login", f"تسجيل دخول من {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "session")
+                if known_device is None:
+                    audit_log(connection, user["organization_id"], user["id"], "new_device", f"دخول من جهاز جديد: {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "security")
+                else:
+                    audit_log(connection, user["organization_id"], user["id"], "login", f"تسجيل دخول من {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "session")
                 connection.commit()
                 self._send(200, {"token": token, "user": {"id": user["id"], "name": user["name"], "role": user["role"], "permissions": json.loads(user["permissions"])}, "organizationId": user["organization_id"], "package": package})
             return
@@ -1496,6 +1509,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 )
                 if cursor.rowcount == 0:
                     raise ApiError(404, "الجهاز غير موجود")
+                audit_log(connection, organization_id, user["id"], "device_trust_updated", "تم توثيق جهاز" if trusted else "تم إلغاء توثيق جهاز", "security", session_id[:12])
                 connection.commit()
                 self._send(200, {"saved": True, "trusted": bool(trusted)})
                 return
@@ -1508,6 +1522,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                        (SELECT id FROM users WHERE organization_id=?)""",
                     (session_id, organization_id),
                 )
+                audit_log(connection, organization_id, user["id"], "device_disconnected", "تم فصل جهاز من حساب المؤسسة", "security", session_id[:12])
                 connection.commit()
                 self._send(200, {"disconnected": True})
                 return
@@ -1526,6 +1541,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     query += " AND token_hash<>?"
                     params = (organization_id, current_hash)
                 cursor = connection.execute(query, params)
+                audit_log(connection, organization_id, user["id"], "sessions_disconnected", f"تم فصل {cursor.rowcount} جلسة من حساب المؤسسة", "security")
                 connection.commit()
                 self._send(200, {"disconnected": cursor.rowcount})
                 return
