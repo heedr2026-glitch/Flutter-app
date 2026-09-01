@@ -401,6 +401,10 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS sessions (
           token_hash TEXT PRIMARY KEY,
           user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          device_id TEXT NOT NULL DEFAULT '',
+          device_name TEXT NOT NULL DEFAULT 'جهاز غير معروف',
+          trusted INTEGER NOT NULL DEFAULT 0,
+          last_seen_at TEXT NOT NULL DEFAULT '',
           expires_at TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
@@ -520,6 +524,10 @@ def init_db() -> None:
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS expires_at TEXT")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS code_kind TEXT NOT NULL DEFAULT 'activation'")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0")
+            connection.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_id TEXT NOT NULL DEFAULT ''")
+            connection.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_name TEXT NOT NULL DEFAULT 'جهاز غير معروف'")
+            connection.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS trusted INTEGER NOT NULL DEFAULT 0")
+            connection.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TEXT NOT NULL DEFAULT ''")
             organizations_without_chat = connection.execute(
                 "SELECT id FROM organizations WHERE public_chat_token IS NULL OR public_chat_token=''"
             ).fetchall()
@@ -558,6 +566,10 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS sessions (
               token_hash TEXT PRIMARY KEY,
               user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              device_id TEXT NOT NULL DEFAULT '',
+              device_name TEXT NOT NULL DEFAULT 'جهاز غير معروف',
+              trusted INTEGER NOT NULL DEFAULT 0,
+              last_seen_at TEXT NOT NULL DEFAULT '',
               expires_at TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
@@ -677,6 +689,18 @@ def init_db() -> None:
             connection.execute(
                 "ALTER TABLE users ADD COLUMN job_title TEXT NOT NULL DEFAULT 'موظف'"
             )
+        session_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(sessions)")
+        }
+        if "device_id" not in session_columns:
+            connection.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT NOT NULL DEFAULT ''")
+        if "device_name" not in session_columns:
+            connection.execute("ALTER TABLE sessions ADD COLUMN device_name TEXT NOT NULL DEFAULT 'جهاز غير معروف'")
+        if "trusted" not in session_columns:
+            connection.execute("ALTER TABLE sessions ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0")
+        if "last_seen_at" not in session_columns:
+            connection.execute("ALTER TABLE sessions ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT ''")
         organization_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(organizations)")
@@ -768,13 +792,21 @@ def verify_password(password: str, expected: str, salt: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
-def issue_token(connection: Any, user_id: int) -> str:
+def issue_token(
+    connection: Any,
+    user_id: int,
+    device_id: str = "",
+    device_name: str = "جهاز غير معروف",
+) -> str:
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     connection.execute(
-        "INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)",
-        (token_hash, user_id, expires, now()),
+        """INSERT INTO sessions(
+               token_hash,user_id,device_id,device_name,trusted,last_seen_at,
+               expires_at,created_at
+           ) VALUES(?,?,?,?,?,?,?,?)""",
+        (token_hash, user_id, device_id[:160], device_name[:160], 0, now(), expires, now()),
     )
     return token
 
@@ -861,6 +893,10 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchone()
         if row is None:
             raise ApiError(401, "جلسة الدخول منتهية")
+        connection.execute(
+            "UPDATE sessions SET last_seen_at=? WHERE token_hash=?",
+            (now(), token_hash),
+        )
         return row
 
     def _owner(self) -> None:
@@ -1311,7 +1347,11 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     )
                     if code:
                         connection.execute("UPDATE activation_codes SET used_count=used_count+1 WHERE id=?", (code["id"],))
-                    token = issue_token(connection, cursor.lastrowid)
+                    token = issue_token(
+                        connection, cursor.lastrowid,
+                        str(data.get("deviceId", "")).strip(),
+                        str(data.get("deviceName", "جهاز غير معروف")).strip(),
+                    )
                 self._send(201, {"token": token, "organizationId": organization_id, "package": package, "expiresAt": package_expires})
             except DB_INTEGRITY_ERRORS:
                 raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
@@ -1325,7 +1365,11 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 ).fetchone()
                 if user is None or not verify_password(str(data.get("password", "")), user["password_hash"], user["password_salt"]):
                     raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
-                token = issue_token(connection, user["id"])
+                token = issue_token(
+                    connection, user["id"],
+                    str(data.get("deviceId", "")).strip(),
+                    str(data.get("deviceName", "جهاز غير معروف")).strip(),
+                )
                 package = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (user["organization_id"],)).fetchone()["package"]
                 self._send(200, {"token": token, "user": {"id": user["id"], "name": user["name"], "role": user["role"], "permissions": json.loads(user["permissions"])}, "organizationId": user["organization_id"], "package": package})
             return
@@ -1362,6 +1406,76 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         with db() as connection:
             user = self._user(connection)
             organization_id = user["organization_id"]
+            if path == "/api/security/sessions" and method == "GET":
+                if user["role"] != "admin":
+                    raise ApiError(403, "قائمة الأجهزة متاحة للمالك فقط")
+                current_hash = hashlib.sha256(
+                    self.headers.get("Authorization", "")[7:].encode()
+                ).hexdigest()
+                rows = connection.execute(
+                    """SELECT sessions.token_hash,sessions.device_id,sessions.device_name,
+                              sessions.trusted,sessions.last_seen_at,sessions.created_at,
+                              sessions.expires_at,users.name AS user_name,users.username
+                       FROM sessions JOIN users ON users.id=sessions.user_id
+                       WHERE users.organization_id=? AND sessions.expires_at>?
+                       ORDER BY sessions.last_seen_at DESC,sessions.created_at DESC""",
+                    (organization_id, now()),
+                ).fetchall()
+                result = []
+                for row in rows:
+                    item = dict(row)
+                    item["id"] = item.pop("token_hash")
+                    item["current"] = item["id"] == current_hash
+                    item["trusted"] = bool(item["trusted"])
+                    result.append(item)
+                self._send(200, result)
+                return
+            if path.startswith("/api/security/sessions/") and method == "PUT":
+                if user["role"] != "admin":
+                    raise ApiError(403, "إدارة الأجهزة متاحة للمالك فقط")
+                session_id = path.rsplit("/", 1)[1]
+                data = self._body()
+                trusted = 1 if data.get("trusted") is True else 0
+                cursor = connection.execute(
+                    """UPDATE sessions SET trusted=? WHERE token_hash=? AND user_id IN
+                       (SELECT id FROM users WHERE organization_id=?)""",
+                    (trusted, session_id, organization_id),
+                )
+                if cursor.rowcount == 0:
+                    raise ApiError(404, "الجهاز غير موجود")
+                connection.commit()
+                self._send(200, {"saved": True, "trusted": bool(trusted)})
+                return
+            if path.startswith("/api/security/sessions/") and method == "DELETE":
+                if user["role"] != "admin":
+                    raise ApiError(403, "إدارة الأجهزة متاحة للمالك فقط")
+                session_id = path.rsplit("/", 1)[1]
+                connection.execute(
+                    """DELETE FROM sessions WHERE token_hash=? AND user_id IN
+                       (SELECT id FROM users WHERE organization_id=?)""",
+                    (session_id, organization_id),
+                )
+                connection.commit()
+                self._send(200, {"disconnected": True})
+                return
+            if path == "/api/security/logout-all" and method == "POST":
+                if user["role"] != "admin":
+                    raise ApiError(403, "إدارة الأجهزة متاحة للمالك فقط")
+                current_hash = hashlib.sha256(
+                    self.headers.get("Authorization", "")[7:].encode()
+                ).hexdigest()
+                data = self._body()
+                keep_current = data.get("keepCurrent", True) is not False
+                query = """DELETE FROM sessions WHERE user_id IN
+                           (SELECT id FROM users WHERE organization_id=?)"""
+                params: tuple[Any, ...] = (organization_id,)
+                if keep_current:
+                    query += " AND token_hash<>?"
+                    params = (organization_id, current_hash)
+                cursor = connection.execute(query, params)
+                connection.commit()
+                self._send(200, {"disconnected": cursor.rowcount})
+                return
             if path == "/api/ai-training" and method == "GET":
                 rows = connection.execute(
                     "SELECT employee_type,content,updated_at FROM ai_training WHERE organization_id=?",
@@ -1673,6 +1787,11 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                         )
                     if cursor.rowcount == 0:
                         raise ApiError(404, "الموظف غير موجود")
+                    if data.get("active", True) is False:
+                        connection.execute(
+                            "DELETE FROM sessions WHERE user_id=?",
+                            (employee_id,),
+                        )
                     connection.commit()
                 except DB_INTEGRITY_ERRORS:
                     raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
