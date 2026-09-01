@@ -242,6 +242,26 @@ def _next_arabic_weekday(text: str) -> datetime | None:
     return result
 
 
+def _appointment_date_from_text(text: str) -> datetime | None:
+    base = datetime.now(timezone(timedelta(hours=3)))
+    normalized = text.strip().lower()
+    if "بعد بكرة" in normalized or "بعد غد" in normalized:
+        target = base + timedelta(days=2)
+    elif "بكرة" in normalized or "غدا" in normalized or "غدًا" in normalized:
+        target = base + timedelta(days=1)
+    elif "اليوم" in normalized:
+        target = base
+    else:
+        return _next_arabic_weekday(normalized)
+    hour = 9 if "صباح" in normalized else 18
+    return target.replace(hour=hour, minute=0, second=0, microsecond=0)
+
+
+def _chat_phone(text: str) -> str | None:
+    candidate = re.sub(r"[^0-9+]", "", text)
+    return candidate[:40] if len(candidate) >= 6 else None
+
+
 def _appointment_period(text: str) -> str | None:
     if any(word in text for word in ("صباح", "الصباح")):
         return "صباحًا"
@@ -284,7 +304,14 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         return "تم إلغاء الحجز غير المكتمل. كيف أقدر أخدمك؟"
     greeting = lowered.strip(" .،!؟") in {"السلام", "السلام عليكم", "هلا", "مرحبا", "مرحبًا", "صباح الخير", "مساء الخير"}
     if greeting and state in active_booking_states:
-        return "عندك طلب غير مكتمل. اكتب «نكمل» للمتابعة أو «إلغاء الحجز» لإلغائه."
+        prompts = {
+            "await_name": "وعليكم السلام 👋 ما اسمك لتسجيل الطلب؟",
+            "await_phone": "وعليكم السلام 👋 اكتب رقم التواصل من فضلك.",
+            "await_type": "وعليكم السلام 👋 هل الطلب مقاس أم صيانة؟",
+            "await_datetime": "وعليكم السلام 👋 أي يوم يناسبك: اليوم، بكرة، أو يوم محدد؟ وهل تفضله صباحًا أم مساءً؟",
+            "await_confirmation": "وعليكم السلام 👋 طلبك جاهز للإرسال. اكتب نعم للتأكيد أو لا لتغيير الموعد.",
+        }
+        return prompts[state]
     if lowered.strip() == "نكمل" and state in active_booking_states:
         prompts = {
             "await_name": "ما اسمك الكامل لتسجيل طلب الموعد؟",
@@ -300,7 +327,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         if not booking_intent:
             return None
         period = _appointment_period(lowered)
-        desired = _next_arabic_weekday(lowered) if period else None
+        desired = _appointment_date_from_text(lowered) if period else None
         context = {"original_request": message}
         if period:
             context["time_period"] = period
@@ -313,14 +340,29 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         state = "await_name"
         reply = "أكيد. ما اسمك الكامل لتسجيل طلب الموعد؟"
     elif state == "await_name":
-        context["customer_name"] = message.strip()[:120]
-        state = "await_phone"
-        reply = "شكرًا. اكتب رقم التواصل من فضلك."
+        supplied_phone = _chat_phone(message)
+        name = re.sub(r"(?:\+?\d[\d\s-]{4,})", "", message).strip(" .،-")
+        context["customer_name"] = (name or "عميل")[:120]
+        if supplied_phone:
+            context["phone"] = supplied_phone
+            if context.get("request_type") and context.get("scheduled_at"):
+                state = "await_confirmation"
+                scheduled = datetime.fromisoformat(context["scheduled_at"])
+                reply = f"شكرًا. سأسجل {context['request_type']} يوم {_format_appointment_slot(scheduled, context.get('time_period') or ('صباحًا' if scheduled.hour < 12 else 'مساءً'))}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
+            elif context.get("request_type"):
+                state = "await_datetime"
+                reply = "شكرًا. أي يوم يناسبك، وهل تفضله صباحًا أم مساءً؟"
+            else:
+                state = "await_type"
+                reply = "شكرًا. هل الطلب موعد مقاس أم موعد صيانة؟"
+        else:
+            state = "await_phone"
+            reply = "شكرًا. اكتب رقم التواصل من فضلك."
     elif state == "await_phone":
-        phone = re.sub(r"[^0-9+]", "", message)
-        if len(phone) < 6:
+        phone = _chat_phone(message)
+        if phone is None:
             return "رقم التواصل غير واضح. اكتبه بالأرقام من فضلك."
-        context["phone"] = phone[:40]
+        context["phone"] = phone
         if context.get("request_type"):
             if context.get("scheduled_at"):
                 state = "await_confirmation"
@@ -344,7 +386,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
             reply = "اكتب اليوم والفترة المناسبة، مثل: السبت صباحًا أو السبت مساءً."
     elif state == "await_datetime":
         period = _appointment_period(lowered)
-        desired = _next_arabic_weekday(lowered) if period else None
+        desired = _appointment_date_from_text(lowered) if period else None
         if desired is None:
             return "لم أفهم الفترة. اكتب اليوم وحدد صباحًا أو مساءً، مثل: السبت صباحًا."
         context["scheduled_at"] = desired.isoformat()
