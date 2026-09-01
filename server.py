@@ -2213,7 +2213,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(200, {"saved": True})
                 return
             if path.startswith("/api/employees/") and method == "DELETE":
-                require_permission(user, "manageEmployees")
+                require_permission(user, "deleteEmployees")
                 employee_id = int(path.rsplit("/", 1)[1])
                 employee = connection.execute("SELECT name FROM users WHERE id=? AND organization_id=? AND role='employee'", (employee_id, organization_id)).fetchone()
                 connection.execute(
