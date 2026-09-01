@@ -779,6 +779,17 @@ def issue_token(connection: Any, user_id: int) -> str:
     return token
 
 
+def require_permission(user: Any, *permission_names: str) -> None:
+    if user["role"] == "admin":
+        return
+    try:
+        permissions = json.loads(user["permissions"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        permissions = {}
+    if any(permissions.get(name) is True for name in permission_names):
+        return
+    raise ApiError(403, "ليس لديك صلاحية لتنفيذ هذه العملية")
+
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
         self.status = status
@@ -1577,16 +1588,14 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(200, dict(org))
                 return
             if method == "PUT" and path == "/api/organization":
-                if user["role"] != "admin":
-                    raise ApiError(403, "هذه العملية للمدير فقط")
+                require_permission(user, "manageSettings")
                 data = self._body()
                 connection.execute("UPDATE organizations SET name=?,activity=?,phone=? WHERE id=?", (str(data.get("name", "")).strip(), str(data.get("activity", "")).strip(), str(data.get("phone", "")).strip(), organization_id))
                 connection.commit()
                 self._send(200, {"saved": True})
                 return
             if path == "/api/employees" and method == "GET":
-                if user["role"] != "admin":
-                    raise ApiError(403, "هذه العملية للمدير فقط")
+                require_permission(user, "viewEmployees", "manageEmployees", "employees")
                 rows = connection.execute(
                     """SELECT id,name,username,phone,email,job_title,permissions,active,created_at
                        FROM users WHERE organization_id=? AND role='employee' ORDER BY id DESC""",
@@ -1601,8 +1610,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(200, result)
                 return
             if path == "/api/employees" and method == "POST":
-                if user["role"] != "admin":
-                    raise ApiError(403, "هذه العملية للمدير فقط")
+                require_permission(user, "manageEmployees")
                 data = self._body()
                 package_row = connection.execute(
                     "SELECT package FROM subscriptions WHERE organization_id=?",
@@ -1632,8 +1640,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
                 return
             if path.startswith("/api/employees/") and method == "PUT":
-                if user["role"] != "admin":
-                    raise ApiError(403, "هذه العملية للمدير فقط")
+                require_permission(user, "manageEmployees")
                 employee_id = int(path.rsplit("/", 1)[1])
                 data = self._body()
                 name = str(data.get("name", "")).strip()
@@ -1672,8 +1679,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(200, {"saved": True})
                 return
             if path.startswith("/api/employees/") and method == "DELETE":
-                if user["role"] != "admin":
-                    raise ApiError(403, "هذه العملية للمدير فقط")
+                require_permission(user, "manageEmployees")
                 employee_id = int(path.rsplit("/", 1)[1])
                 connection.execute(
                     "DELETE FROM users WHERE id=? AND organization_id=? AND role='employee'",
@@ -1683,6 +1689,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(200, {"deleted": True})
                 return
             if path == "/api/appointments" and method == "GET":
+                require_permission(user, "viewAppointments", "manageAppointments", "appointments")
                 rows = connection.execute(
                     """SELECT id,request_type,title,customer_name,phone,notes,scheduled_at,
                               status,source,created_at,updated_at
@@ -1692,6 +1699,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(200, [dict(row) for row in rows])
                 return
             if path.startswith("/api/appointments/") and method == "PUT":
+                require_permission(user, "manageAppointments")
                 appointment_id = int(path.rsplit("/", 1)[1])
                 data = self._body()
                 status = str(data.get("status", "")).strip()
@@ -1753,10 +1761,12 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(200, {"saved": True, "status": status, "replyMessage": reply_message})
                 return
             if path == "/api/vehicles" and method == "GET":
+                require_permission(user, "viewVehicles", "editVehicles", "vehicles")
                 rows = connection.execute("SELECT * FROM vehicles WHERE organization_id=? ORDER BY id DESC", (organization_id,)).fetchall()
                 self._send(200, [dict(row) for row in rows])
                 return
             if path == "/api/vehicles" and method == "POST":
+                require_permission(user, "editVehicles")
                 data = self._body()
                 cursor = connection.execute(
                     """INSERT INTO vehicles(organization_id,name,plate,registration_expiry,inspection_expiry,insurance_expiry,created_at)
@@ -1767,6 +1777,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 self._send(201, {"id": cursor.lastrowid})
                 return
             if path.startswith("/api/vehicles/") and method == "DELETE":
+                require_permission(user, "deleteVehicles")
                 vehicle_id = int(path.rsplit("/", 1)[1])
                 connection.execute("DELETE FROM vehicles WHERE id=? AND organization_id=?", (vehicle_id, organization_id))
                 connection.commit()
