@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
@@ -410,7 +410,13 @@ def init_db() -> None:
           expires_at TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS vehicles (
+        CREATE TABLE IF NOT EXISTS blocked_devices (
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          device_id TEXT NOT NULL,
+          device_name TEXT NOT NULL DEFAULT 'جهاز غير معروف',
+          blocked_at TEXT NOT NULL,
+          PRIMARY KEY(organization_id,device_id)
+        );        CREATE TABLE IF NOT EXISTS vehicles (
           id BIGSERIAL PRIMARY KEY,
           organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
           name TEXT NOT NULL,
@@ -603,7 +609,13 @@ def init_db() -> None:
               expires_at TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS vehicles (
+            CREATE TABLE IF NOT EXISTS blocked_devices (
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          device_id TEXT NOT NULL,
+          device_name TEXT NOT NULL DEFAULT 'جهاز غير معروف',
+          blocked_at TEXT NOT NULL,
+          PRIMARY KEY(organization_id,device_id)
+        );        CREATE TABLE IF NOT EXISTS vehicles (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
               name TEXT NOT NULL,
@@ -1230,15 +1242,18 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:1100px;margin:auto}h1{color:#28c7ff}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.metric{text-align:center}.metric strong{display:block;font-size:34px;color:#38bdf8;margin:8px}.ok{color:#4ade80}.warn{color:#facc15}.danger{color:#fb7185}input,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.event{border-right:4px solid #f59e0b;padding:12px 14px;margin:9px 0;background:#0b1733;border-radius:10px}.muted{color:#94a3b8}a{color:#7dd3fc}</style></head><body><div class="wrap"><h1>لوحة أمن خدووم 🔐</h1><p><a href="/owner">العودة إلى لوحة المالك</a></p>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="loadSecurity()">دخول وتحديث لوحة الأمن</button><div id="status" class="muted">أدخل مفتاح المالك لعرض البيانات الأمنية.</div></div>
 <div id="dashboard" style="display:none"><div class="grid"><div class="card metric"><span>الحسابات النشطة</span><strong id="activeUsers">0</strong></div><div class="card metric"><span>محاولات مشبوهة خلال 24 ساعة</span><strong id="failedLogins" class="danger">0</strong></div><div class="card metric"><span>الأجهزة غير الموثوقة</span><strong id="untrustedDevices" class="warn">0</strong></div><div class="card metric"><span>تنبيهات آخر 7 أيام</span><strong id="securityAlerts">0</strong></div><div class="card metric"><span>خدمات متوقفة</span><strong id="stoppedServices">0</strong></div></div>
-<div class="card"><h2>حالة خدمات خدووم</h2><div id="services"></div></div><div class="card"><h2>محاولات الدخول</h2><p class="muted">آخر المحاولات الفاشلة مع الجهاز والوقت وعدد التكرار.</p><div id="loginAttempts"></div></div><div class="card"><h2>الحسابات</h2><p class="muted">التجميد يمنع الدخول دون حذف بيانات الحساب.</p><div id="accounts"></div></div><div class="card"><h2>الأجهزة والجلسات</h2><p class="muted">كل جهاز موضح معه اسم المؤسسة والمستخدم.</p><div id="devices"></div></div><div class="card"><h2>آخر التنبيهات الأمنية</h2><div id="events"></div></div></div></div>
+<div class="card"><h2>حالة خدمات خدووم</h2><div id="services"></div></div><div class="card"><h2>محاولات الدخول</h2><p class="muted">آخر المحاولات الفاشلة مع الجهاز والوقت وعدد التكرار.</p><div id="loginAttempts"></div></div><div class="card"><h2>الحسابات</h2><p class="muted">التجميد يمنع الدخول دون حذف بيانات الحساب.</p><div id="accounts"></div></div><div class="card"><h2>الأجهزة والجلسات</h2><p class="muted">كل جهاز موضح معه اسم المؤسسة والمستخدم.</p><div id="devices"></div></div><div class="card"><h2>الأجهزة المحظورة</h2><p class="muted">لا تستطيع هذه الأجهزة تسجيل الدخول حتى فك الحظر.</p><div id="blockedDevices"></div></div><div class="card"><h2>آخر التنبيهات الأمنية</h2><div id="events"></div></div></div></div>
 <script>
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});
-async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderLoginAttempts(d.loginAttempts||[]);renderAccounts(d.accounts||[]);renderDevices(d.devices||[])}
+async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderLoginAttempts(d.loginAttempts||[]);renderAccounts(d.accounts||[]);renderDevices(d.devices||[]);renderBlockedDevices(d.blockedDevices||[])}
 function renderLoginAttempts(a){document.getElementById('loginAttempts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.user_name||x.username)}</b><p>${esc(x.summary)}</p><p>التكرار لنفس الحساب والجهاز: ${x.attempt_count} | الوقت: ${esc(x.created_at)}</p></div>`).join('')||'<p class="ok">لا توجد محاولات دخول فاشلة ✓</p>'}function renderAccounts(a){document.getElementById('accounts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.name)}</b><p>المستخدم: ${esc(x.username)} | ${x.role==='admin'?'مالك':'موظف'} | ${x.active?'نشط':'مجمّد'}</p><button onclick="accountAction(${x.id},${!x.active})">${x.active?'تجميد الحساب':'إعادة تفعيل الحساب'}</button></div>`).join('')||'<p>لا توجد حسابات.</p>'}
-function renderDevices(a){document.getElementById('devices').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.user_name)}</b><p>الجهاز: ${esc(x.device_name||'جهاز غير معروف')} | المستخدم: ${esc(x.username)}</p><p>آخر استخدام: ${esc(x.last_seen_at||x.created_at)} | ${x.trusted?'موثوق':'غير موثوق'}</p><button onclick="deviceTrust('${x.id}',${!x.trusted})">${x.trusted?'إلغاء التوثيق':'توثيق الجهاز'}</button><button onclick="disconnectDevice('${x.id}')">فصل الجهاز</button></div>`).join('')||'<p>لا توجد أجهزة نشطة.</p>'}
+function renderDevices(a){document.getElementById('devices').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.user_name)}</b><p>الجهاز: ${esc(x.device_name||'جهاز غير معروف')} | المستخدم: ${esc(x.username)}</p><p>آخر استخدام: ${esc(x.last_seen_at||x.created_at)} | ${x.trusted?'موثوق':'غير موثوق'}</p><button onclick="deviceTrust('${x.id}',${!x.trusted})">${x.trusted?'إلغاء التوثيق':'توثيق الجهاز'}</button><button onclick="disconnectDevice('${x.id}')">فصل الجهاز</button><button onclick="blockDevice('${x.id}')">حظر الجهاز</button></div>`).join('')||'<p>لا توجد أجهزة نشطة.</p>'}
+function renderBlockedDevices(a){document.getElementById('blockedDevices').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.device_name||'جهاز غير معروف')}</b><p>معرّف الجهاز: ${esc(x.device_id)} | حُظر: ${esc(x.blocked_at)}</p><button onclick="unblockDevice(${x.organization_id},'${x.device_id}')">فك الحظر</button></div>`).join('')||'<p class="ok">لا توجد أجهزة محظورة ✓</p>'}
 async function accountAction(id,active){if(!confirm(active?'تأكيد إعادة تفعيل الحساب؟':'تأكيد تجميد الحساب؟'))return;await act('/owner/api/security/accounts/'+id,'PUT',{active})}
 async function deviceTrust(id,trusted){if(!confirm('تأكيد تغيير حالة توثيق الجهاز؟'))return;await act('/owner/api/security/devices/'+id,'PUT',{trusted})}
+async function blockDevice(id){if(!confirm('تأكيد حظر هذا الجهاز ومنعه من الدخول؟'))return;await act('/owner/api/security/devices/'+id+'/block','POST')}
+async function unblockDevice(organizationId,deviceId){if(!confirm('تأكيد فك حظر الجهاز؟'))return;await act('/owner/api/security/device-blocks/'+organizationId+'/'+encodeURIComponent(deviceId),'DELETE')}
 async function disconnectDevice(id){if(!confirm('تأكيد فصل هذا الجهاز وإنهاء جلسته؟'))return;await act('/owner/api/security/devices/'+id,'DELETE')}
 async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),body:body?JSON.stringify(body):null}),d=await r.json();alert(r.ok?'تم تنفيذ العملية ✓':(d.error||'تعذر تنفيذ العملية'));if(r.ok)loadSecurity()}
 </script></body></html>"""
@@ -1261,7 +1276,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             with db() as connection:
                 login_attempts = connection.execute("""SELECT audit_logs.id,audit_logs.summary,audit_logs.created_at,users.name AS user_name,users.username,organizations.name AS organization_name,COUNT(1) OVER (PARTITION BY audit_logs.actor_user_id,audit_logs.summary) AS attempt_count FROM audit_logs JOIN organizations ON organizations.id=audit_logs.organization_id LEFT JOIN users ON users.id=audit_logs.actor_user_id WHERE audit_logs.action='failed_login' ORDER BY audit_logs.id DESC LIMIT 100""").fetchall()
                 accounts = connection.execute("""SELECT users.id,users.name,users.username,users.role,users.active,organizations.name AS organization_name FROM users JOIN organizations ON organizations.id=users.organization_id ORDER BY organizations.name,users.id""").fetchall()
-                devices = connection.execute("""SELECT sessions.token_hash AS id,sessions.device_name,sessions.trusted,sessions.last_seen_at,sessions.created_at,sessions.expires_at,users.name AS user_name,users.username,organizations.name AS organization_name FROM sessions JOIN users ON users.id=sessions.user_id JOIN organizations ON organizations.id=users.organization_id WHERE sessions.expires_at>? ORDER BY sessions.last_seen_at DESC,sessions.created_at DESC""", (current_time,)).fetchall()
+                devices = connection.execute("""SELECT sessions.token_hash AS id,sessions.device_id,sessions.device_name,sessions.trusted,sessions.last_seen_at,sessions.created_at,sessions.expires_at,users.name AS user_name,users.username,organizations.name AS organization_name FROM sessions JOIN users ON users.id=sessions.user_id JOIN organizations ON organizations.id=users.organization_id WHERE sessions.expires_at>? ORDER BY sessions.last_seen_at DESC,sessions.created_at DESC""", (current_time,)).fetchall()
+                blocked_devices = connection.execute("""SELECT blocked_devices.organization_id,blocked_devices.device_id,blocked_devices.device_name,blocked_devices.blocked_at,organizations.name AS organization_name FROM blocked_devices JOIN organizations ON organizations.id=blocked_devices.organization_id ORDER BY blocked_devices.blocked_at DESC""").fetchall()
             services = [{"name": "خادم خدووم API", "running": True, "organization": ""}] + [{"name": row["service"], "running": False, "organization": row["organization_name"]} for row in stopped]
             account_items = [dict(row) for row in accounts]
             for item in account_items:
@@ -1269,7 +1285,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             device_items = [dict(row) for row in devices]
             for item in device_items:
                 item["trusted"] = bool(item["trusted"])
-            self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped),"services": services,"events": [dict(row) for row in events],"loginAttempts": [dict(row) for row in login_attempts],"accounts": account_items,"devices": device_items})
+            self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped),"services": services,"events": [dict(row) for row in events],"loginAttempts": [dict(row) for row in login_attempts],"accounts": account_items,"devices": device_items,"blockedDevices": [dict(row) for row in blocked_devices]})
             return
         if path.startswith("/owner/api/security/accounts/") and method == "PUT":
             self._owner()
@@ -1288,6 +1304,36 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 audit_log(connection, account["organization_id"], None, "owner_account_status", f"تم {'تفعيل' if active else 'تجميد'} الحساب {account['name']} من لوحة الأمن", "security", account_id)
                 connection.commit()
             self._send(200, {"saved": True, "active": bool(active)})
+            return
+        if path.startswith("/owner/api/security/devices/") and path.endswith("/block") and method == "POST":
+            self._owner()
+            session_id = path.split("/")[-2]
+            with db() as connection:
+                session = connection.execute("""SELECT sessions.device_id,sessions.device_name,users.organization_id,users.name FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=?""", (session_id,)).fetchone()
+                if session is None or not session["device_id"]:
+                    raise ApiError(404, "الجهاز غير موجود أو لا يملك معرّفًا صالحًا")
+                connection.execute("""INSERT INTO blocked_devices(organization_id,device_id,device_name,blocked_at) VALUES(?,?,?,?) ON CONFLICT(organization_id,device_id) DO UPDATE SET device_name=excluded.device_name,blocked_at=excluded.blocked_at""", (session["organization_id"], session["device_id"], session["device_name"], now()))
+                connection.execute("DELETE FROM sessions WHERE device_id=? AND user_id IN (SELECT id FROM users WHERE organization_id=?)", (session["device_id"], session["organization_id"]))
+                audit_log(connection, session["organization_id"], None, "device_blocked", f"تم حظر جهاز {session['device_name']} للمستخدم {session['name']}", "security", session["device_id"][:40])
+                connection.commit()
+            self._send(200, {"blocked": True})
+            return
+        if path.startswith("/owner/api/security/device-blocks/") and method == "DELETE":
+            self._owner()
+            parts = path.split("/")
+            try:
+                organization_id = int(parts[-2])
+            except ValueError:
+                raise ApiError(400, "رقم المؤسسة غير صحيح")
+            device_id = unquote(parts[-1])
+            with db() as connection:
+                blocked = connection.execute("SELECT device_name FROM blocked_devices WHERE organization_id=? AND device_id=?", (organization_id, device_id)).fetchone()
+                if blocked is None:
+                    raise ApiError(404, "الجهاز غير موجود في قائمة الحظر")
+                connection.execute("DELETE FROM blocked_devices WHERE organization_id=? AND device_id=?", (organization_id, device_id))
+                audit_log(connection, organization_id, None, "device_unblocked", f"تم فك حظر جهاز {blocked['device_name']}", "security", device_id[:40])
+                connection.commit()
+            self._send(200, {"unblocked": True})
             return
         if path.startswith("/owner/api/security/devices/") and method in ("PUT", "DELETE"):
             self._owner()
@@ -1611,6 +1657,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     connection.commit()
                     raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
                 device_id = str(data.get("deviceId", "")).strip()
+                blocked_device = connection.execute(
+                    "SELECT 1 FROM blocked_devices WHERE organization_id=? AND device_id=?",
+                    (user["organization_id"], device_id),
+                ).fetchone() if device_id else None
+                if blocked_device is not None:
+                    audit_log(connection, user["organization_id"], user["id"], "blocked_device_login", f"محاولة دخول من جهاز محظور: {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "security", device_id[:40])
+                    connection.commit()
+                    raise ApiError(403, "هذا الجهاز محظور. تواصل مع مالك المؤسسة")
                 known_device = connection.execute(
                     """SELECT 1 FROM sessions JOIN users ON users.id=sessions.user_id
                        WHERE users.organization_id=? AND sessions.device_id=? LIMIT 1""",
