@@ -229,10 +229,17 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     except json.JSONDecodeError:
         context = {}
     lowered = message.strip().lower()
+    booking_intent = any(
+        phrase in lowered
+        for phrase in ("موعد", "حجز", "احجز", "زيارة", "موظف يجي", "نبيكم تجون", "أبيكم تجون")
+    )
+    if state == "closed":
+        state = "idle"
+        context = {}
     if state == "waiting_human":
         return "طلبك أُرسل للموظف البشري، وسأكتب لك هنا فور قبوله أو تعديله أو رفضه."
     if state == "idle":
-        if not any(word in lowered for word in ("موعد", "حجز", "احجز")):
+        if not booking_intent:
             return None
         desired = _next_arabic_weekday(lowered)
         context = {"original_request": message}
@@ -943,8 +950,10 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     if admin is None:
                         raise ApiError(503, "لا يوجد مسؤول نشط للمؤسسة")
                     system_prompt = (
-                        "أنت موظف استقبال تابع للمؤسسة المذكورة. أجب بالعربية وباختصار وفق بيانات المؤسسة فقط. "
-                        "لا تخترع أسعارًا أو خدمات أو مواعيد. إذا أراد العميل موعدًا ابدأ بجمعه داخل المحادثة. "
+                        "أنت موظف استقبال تابع للمؤسسة المذكورة. أجب بالعربية بوضوح وفق بيانات المؤسسة فقط. "
+                        "لا تخترع أسعارًا أو خدمات أو مواعيد. ممنوع أن تقول تم تأكيد أو تسجيل أو حجز موعد. "
+                        "تأكيد الموعد لا يتم إلا بواسطة نظام الحجز بعد جمع الاسم ورقم التواصل والنوع واليوم والوقت، "
+                        "ثم موافقة الموظف البشري. عند طلب موعد وجّه العميل لإكمال الأسئلة التي يعرضها النظام. "
                         "لا تطلب بيانات بنكية أو رموز تحقق."
                     )
                     organization_info = {"اسم المؤسسة": organization["name"], "نشاط المؤسسة": organization["activity"], "رقم المؤسسة للتواصل": organization["phone"]}
