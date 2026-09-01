@@ -530,7 +530,11 @@ def init_db() -> None:
           appointments_until TEXT,
           message TEXT NOT NULL DEFAULT 'الخدمة تحت الصيانة مؤقتًا'
         );
-        CREATE TABLE IF NOT EXISTS audit_logs (
+        CREATE TABLE IF NOT EXISTS global_maintenance (
+          service TEXT PRIMARY KEY,
+          expires_at TEXT,
+          message TEXT NOT NULL DEFAULT 'الخدمة متوقفة مؤقتًا'
+        );        CREATE TABLE IF NOT EXISTS audit_logs (
           id BIGSERIAL PRIMARY KEY,
           organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
           actor_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
@@ -728,7 +732,11 @@ def init_db() -> None:
               appointments_until TEXT,
               message TEXT NOT NULL DEFAULT 'الخدمة تحت الصيانة مؤقتًا'
             );
-            CREATE TABLE IF NOT EXISTS audit_logs (
+            CREATE TABLE IF NOT EXISTS global_maintenance (
+          service TEXT PRIMARY KEY,
+          expires_at TEXT,
+          message TEXT NOT NULL DEFAULT 'الخدمة متوقفة مؤقتًا'
+        );        CREATE TABLE IF NOT EXISTS audit_logs (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
               actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -830,34 +838,50 @@ def init_db() -> None:
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
 
 
+def _maintenance_active(value: object) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc) > datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
+
+def global_maintenance_status(connection: Any, service: str) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT expires_at,message FROM global_maintenance WHERE service=?",
+        (service,),
+    ).fetchone()
+    return {
+        "active": _maintenance_active(row["expires_at"]) if row else False,
+        "until": row["expires_at"] if row else None,
+        "message": row["message"] if row else "الخدمة متوقفة مؤقتًا",
+    }
+
+
 def maintenance_status(connection: Any, organization_id: int) -> dict[str, Any]:
     row = connection.execute("SELECT chat_until,appointments_until,message FROM maintenance_modes WHERE organization_id=?", (organization_id,)).fetchone()
-    current = datetime.now(timezone.utc)
-    def active(value: object) -> bool:
-        if not value: return False
-        try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            if parsed.tzinfo is None: parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc) > current
-        except ValueError: return False
-    return {"chat": active(row["chat_until"]) if row else False, "appointments": active(row["appointments_until"]) if row else False, "chatUntil": row["chat_until"] if row else None, "appointmentsUntil": row["appointments_until"] if row else None, "message": row["message"] if row else "الخدمة تحت الصيانة مؤقتًا"}
+    global_chat = global_maintenance_status(connection, "chat")
+    global_appointments = global_maintenance_status(connection, "appointments")
+    chat_active = global_chat["active"] or (_maintenance_active(row["chat_until"]) if row else False)
+    appointments_active = global_appointments["active"] or (_maintenance_active(row["appointments_until"]) if row else False)
+    message = global_chat["message"] if global_chat["active"] else global_appointments["message"] if global_appointments["active"] else row["message"] if row else "الخدمة تحت الصيانة مؤقتًا"
+    return {"chat": chat_active, "appointments": appointments_active, "chatUntil": global_chat["until"] if global_chat["active"] else row["chat_until"] if row else None, "appointmentsUntil": global_appointments["until"] if global_appointments["active"] else row["appointments_until"] if row else None, "message": message}
+
 
 def service_maintenance_status(connection: Any, organization_id: int, service: str) -> dict[str, Any]:
+    global_status = global_maintenance_status(connection, service)
+    if global_status["active"]:
+        return global_status
     row = connection.execute(
         "SELECT expires_at,message FROM service_maintenance WHERE organization_id=? AND service=?",
         (organization_id, service),
     ).fetchone()
-    active = False
-    if row and row["expires_at"]:
-        try:
-            expires = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-            active = expires.astimezone(timezone.utc) > datetime.now(timezone.utc)
-        except ValueError:
-            pass
     return {
-        "active": active,
+        "active": _maintenance_active(row["expires_at"]) if row else False,
         "until": row["expires_at"] if row else None,
         "message": row["message"] if row else "الخدمة متوقفة مؤقتًا",
     }
@@ -1242,12 +1266,13 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:1100px;margin:auto}h1{color:#28c7ff}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.metric{text-align:center}.metric strong{display:block;font-size:34px;color:#38bdf8;margin:8px}.ok{color:#4ade80}.warn{color:#facc15}.danger{color:#fb7185}input,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.event{border-right:4px solid #f59e0b;padding:12px 14px;margin:9px 0;background:#0b1733;border-radius:10px}.muted{color:#94a3b8}a{color:#7dd3fc}</style></head><body><div class="wrap"><h1>لوحة أمن خدووم 🔐</h1><p><a href="/owner">العودة إلى لوحة المالك</a></p>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="loadSecurity()">دخول وتحديث لوحة الأمن</button><div id="status" class="muted">أدخل مفتاح المالك لعرض البيانات الأمنية.</div></div>
 <div id="dashboard" style="display:none"><div class="grid"><div class="card metric"><span>الحسابات النشطة</span><strong id="activeUsers">0</strong></div><div class="card metric"><span>محاولات مشبوهة خلال 24 ساعة</span><strong id="failedLogins" class="danger">0</strong></div><div class="card metric"><span>الأجهزة غير الموثوقة</span><strong id="untrustedDevices" class="warn">0</strong></div><div class="card metric"><span>تنبيهات آخر 7 أيام</span><strong id="securityAlerts">0</strong></div><div class="card metric"><span>خدمات متوقفة</span><strong id="stoppedServices">0</strong></div></div>
-<div class="card"><h2>حالة خدمات خدووم</h2><div id="services"></div></div><div class="card"><h2>محاولات الدخول</h2><p class="muted">آخر المحاولات الفاشلة مع الجهاز والوقت وعدد التكرار.</p><div id="loginAttempts"></div></div><div class="card"><h2>الحسابات</h2><p class="muted">التجميد يمنع الدخول دون حذف بيانات الحساب.</p><div id="accounts"></div></div><div class="card"><h2>الأجهزة والجلسات</h2><p class="muted">كل جهاز موضح معه اسم المؤسسة والمستخدم.</p><div id="devices"></div></div><div class="card"><h2>الأجهزة المحظورة</h2><p class="muted">لا تستطيع هذه الأجهزة تسجيل الدخول حتى فك الحظر.</p><div id="blockedDevices"></div></div><div class="card"><h2>سجل العمليات الكامل</h2><select id="auditOrg"><option value="">جميع المؤسسات</option></select><select id="auditAction"><option value="">جميع العمليات</option><option value="security">العمليات الأمنية</option><option value="employee">الموظفون والصلاحيات</option><option value="appointment">المواعيد والطلبات</option><option value="organization">بيانات المؤسسة</option></select><input id="auditDate" type="date"><button onclick="loadAuditLogs()">تطبيق الفلاتر</button><div id="auditLogs"></div></div><div class="card"><h2>آخر التنبيهات الأمنية</h2><div id="events"></div></div></div></div>
+<div class="card"><h2>حالة خدمات خدووم</h2><div id="services"></div></div><div class="card"><h2>وضع الطوارئ العام 🚨</h2><p class="muted">يوقف خدمة محددة لجميع المؤسسات حتى انتهاء المدة أو فتحها يدويًا.</p><input id="emergencyHours" type="number" min="1" value="2" placeholder="المدة بالساعات"><input id="emergencyMessage" value="الخدمة تحت الصيانة مؤقتًا" placeholder="الرسالة للمستخدمين"><div id="emergencyStatus"></div><button onclick="setEmergency('chat',true)">🔒 إيقاف شات العملاء للجميع</button><button onclick="setEmergency('chat',false)">🔓 تشغيل شات العملاء</button><button onclick="setEmergency('appointments',true)">🔒 إيقاف المواعيد للجميع</button><button onclick="setEmergency('appointments',false)">🔓 تشغيل المواعيد</button><button onclick="setEmergency('assistant',true)">🔒 إيقاف مساعد المؤسسة للجميع</button><button onclick="setEmergency('assistant',false)">🔓 تشغيل مساعد المؤسسة</button></div><div class="card"><h2>محاولات الدخول</h2><p class="muted">آخر المحاولات الفاشلة مع الجهاز والوقت وعدد التكرار.</p><div id="loginAttempts"></div></div><div class="card"><h2>الحسابات</h2><p class="muted">التجميد يمنع الدخول دون حذف بيانات الحساب.</p><div id="accounts"></div></div><div class="card"><h2>الأجهزة والجلسات</h2><p class="muted">كل جهاز موضح معه اسم المؤسسة والمستخدم.</p><div id="devices"></div></div><div class="card"><h2>الأجهزة المحظورة</h2><p class="muted">لا تستطيع هذه الأجهزة تسجيل الدخول حتى فك الحظر.</p><div id="blockedDevices"></div></div><div class="card"><h2>سجل العمليات الكامل</h2><select id="auditOrg"><option value="">جميع المؤسسات</option></select><select id="auditAction"><option value="">جميع العمليات</option><option value="security">العمليات الأمنية</option><option value="employee">الموظفون والصلاحيات</option><option value="appointment">المواعيد والطلبات</option><option value="organization">بيانات المؤسسة</option></select><input id="auditDate" type="date"><button onclick="loadAuditLogs()">تطبيق الفلاتر</button><div id="auditLogs"></div></div><div class="card"><h2>آخر التنبيهات الأمنية</h2><div id="events"></div></div></div></div>
 <script>
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});
-async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderLoginAttempts(d.loginAttempts||[]);renderAccounts(d.accounts||[]);renderDevices(d.devices||[]);renderBlockedDevices(d.blockedDevices||[]);setupAuditOrganizations(d.accounts||[]);loadAuditLogs()}
-function setupAuditOrganizations(accounts){let select=document.getElementById('auditOrg'),current=select.value,seen=new Map();for(let x of accounts)seen.set(x.organization_id||x.organization_name,x.organization_name);select.innerHTML='<option value="">جميع المؤسسات</option>'+[...seen].map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('');select.value=current}
+async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderEmergency(d.emergency||[]);renderLoginAttempts(d.loginAttempts||[]);renderAccounts(d.accounts||[]);renderDevices(d.devices||[]);renderBlockedDevices(d.blockedDevices||[]);setupAuditOrganizations(d.accounts||[]);loadAuditLogs()}
+function renderEmergency(items){document.getElementById('emergencyStatus').innerHTML=items.map(x=>`<p><b>${x.service==='chat'?'شات العملاء':x.service==='appointments'?'المواعيد':'مساعد المؤسسة'}:</b> <span class="${x.active?'danger':'ok'}">${x.active?'متوقفة حتى '+esc(x.until):'تعمل'}</span></p>`).join('')}
+async function setEmergency(service,enabled){let hours=+document.getElementById('emergencyHours').value||2,message=document.getElementById('emergencyMessage').value;if(!confirm(enabled?'تأكيد إيقاف الخدمة لجميع المؤسسات؟':'تأكيد تشغيل الخدمة لجميع المؤسسات؟'))return;await act('/owner/api/security/emergency','PUT',{service,enabled,hours,message})}function setupAuditOrganizations(accounts){let select=document.getElementById('auditOrg'),current=select.value,seen=new Map();for(let x of accounts)seen.set(x.organization_id||x.organization_name,x.organization_name);select.innerHTML='<option value="">جميع المؤسسات</option>'+[...seen].map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('');select.value=current}
 async function loadAuditLogs(){let q=new URLSearchParams(),org=document.getElementById('auditOrg').value,action=document.getElementById('auditAction').value,date=document.getElementById('auditDate').value;if(org)q.set('organization',org);if(action)q.set('type',action);if(date)q.set('date',date);let r=await fetch('/owner/api/security/audit-logs?'+q,{headers:hdr()}),d=await r.json(),box=document.getElementById('auditLogs');if(!r.ok){box.innerHTML=`<p class="danger">${esc(d.error||'تعذر تحميل السجل')}</p>`;return}box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.action)}</b><p>${esc(x.summary)}</p><small class="muted">بواسطة: ${esc(x.actor_name||x.actor_username||'النظام')} — ${esc(x.created_at)}</small></div>`).join('')||'<p>لا توجد عمليات مطابقة.</p>'}function renderLoginAttempts(a){document.getElementById('loginAttempts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.user_name||x.username)}</b><p>${esc(x.summary)}</p><p>التكرار لنفس الحساب والجهاز: ${x.attempt_count} | الوقت: ${esc(x.created_at)}</p></div>`).join('')||'<p class="ok">لا توجد محاولات دخول فاشلة ✓</p>'}function renderAccounts(a){document.getElementById('accounts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.name)}</b><p>المستخدم: ${esc(x.username)} | ${x.role==='admin'?'مالك':'موظف'} | ${x.active?'نشط':'مجمّد'}</p><button onclick="accountAction(${x.id},${!x.active})">${x.active?'تجميد الحساب':'إعادة تفعيل الحساب'}</button></div>`).join('')||'<p>لا توجد حسابات.</p>'}
 function renderDevices(a){document.getElementById('devices').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.user_name)}</b><p>الجهاز: ${esc(x.device_name||'جهاز غير معروف')} | المستخدم: ${esc(x.username)}</p><p>آخر استخدام: ${esc(x.last_seen_at||x.created_at)} | ${x.trusted?'موثوق':'غير موثوق'}</p><button onclick="deviceTrust('${x.id}',${!x.trusted})">${x.trusted?'إلغاء التوثيق':'توثيق الجهاز'}</button><button onclick="disconnectDevice('${x.id}')">فصل الجهاز</button><button onclick="blockDevice('${x.id}')">حظر الجهاز</button></div>`).join('')||'<p>لا توجد أجهزة نشطة.</p>'}
 function renderBlockedDevices(a){document.getElementById('blockedDevices').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.device_name||'جهاز غير معروف')}</b><p>معرّف الجهاز: ${esc(x.device_id)} | حُظر: ${esc(x.blocked_at)}</p><button onclick="unblockDevice(${x.organization_id},'${x.device_id}')">فك الحظر</button></div>`).join('')||'<p class="ok">لا توجد أجهزة محظورة ✓</p>'}
@@ -1279,6 +1304,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 accounts = connection.execute("""SELECT users.id,users.name,users.username,users.role,users.active,organizations.id AS organization_id,organizations.name AS organization_name FROM users JOIN organizations ON organizations.id=users.organization_id ORDER BY organizations.name,users.id""").fetchall()
                 devices = connection.execute("""SELECT sessions.token_hash AS id,sessions.device_id,sessions.device_name,sessions.trusted,sessions.last_seen_at,sessions.created_at,sessions.expires_at,users.name AS user_name,users.username,organizations.name AS organization_name FROM sessions JOIN users ON users.id=sessions.user_id JOIN organizations ON organizations.id=users.organization_id WHERE sessions.expires_at>? ORDER BY sessions.last_seen_at DESC,sessions.created_at DESC""", (current_time,)).fetchall()
                 blocked_devices = connection.execute("""SELECT blocked_devices.organization_id,blocked_devices.device_id,blocked_devices.device_name,blocked_devices.blocked_at,organizations.name AS organization_name FROM blocked_devices JOIN organizations ON organizations.id=blocked_devices.organization_id ORDER BY blocked_devices.blocked_at DESC""").fetchall()
+                emergency = [{"service": service, **global_maintenance_status(connection, service)} for service in ("chat", "appointments", "assistant")]
             services = [{"name": "خادم خدووم API", "running": True, "organization": ""}] + [{"name": row["service"], "running": False, "organization": row["organization_name"]} for row in stopped]
             account_items = [dict(row) for row in accounts]
             for item in account_items:
@@ -1286,7 +1312,26 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             device_items = [dict(row) for row in devices]
             for item in device_items:
                 item["trusted"] = bool(item["trusted"])
-            self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped),"services": services,"events": [dict(row) for row in events],"loginAttempts": [dict(row) for row in login_attempts],"accounts": account_items,"devices": device_items,"blockedDevices": [dict(row) for row in blocked_devices]})
+            self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped) + sum(1 for item in emergency if item["active"]),"services": services,"events": [dict(row) for row in events],"loginAttempts": [dict(row) for row in login_attempts],"accounts": account_items,"devices": device_items,"blockedDevices": [dict(row) for row in blocked_devices]})
+            return
+        if path == "/owner/api/security/emergency" and method == "PUT":
+            self._owner()
+            data = self._body()
+            service = str(data.get("service", "")).strip()
+            if service not in ("chat", "appointments", "assistant"):
+                raise ApiError(400, "اختر خدمة صحيحة")
+            enabled = data.get("enabled") is True
+            hours = max(1, min(int(data.get("hours", 2)), 24 * 30))
+            until = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat() if enabled else None
+            message = str(data.get("message", "الخدمة تحت الصيانة مؤقتًا")).strip()[:300] or "الخدمة تحت الصيانة مؤقتًا"
+            with db() as connection:
+                connection.execute("""INSERT INTO global_maintenance(service,expires_at,message) VALUES(?,?,?) ON CONFLICT(service) DO UPDATE SET expires_at=excluded.expires_at,message=excluded.message""", (service, until, message))
+                organizations = connection.execute("SELECT id FROM organizations").fetchall()
+                service_name = {"chat": "شات العملاء", "appointments": "المواعيد", "assistant": "مساعد المؤسسة"}[service]
+                for organization in organizations:
+                    audit_log(connection, organization["id"], None, "global_emergency", f"تم {'إيقاف' if enabled else 'تشغيل'} {service_name} {'لجميع المؤسسات' if enabled else 'بعد الطوارئ'}", "security", service)
+                connection.commit()
+            self._send(200, {"saved": True, "service": service, "enabled": enabled, "until": until})
             return
         if path == "/owner/api/security/audit-logs" and method == "GET":
             self._owner()
