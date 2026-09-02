@@ -1987,6 +1987,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         with db() as connection:
             user = self._user(connection)
             organization_id = user["organization_id"]
+            if path == "/api/session-status" and method == "GET":
+                self._send(200, {"valid": True})
+                return
             if path == "/api/support-tickets" and method == "GET":
                 rows = connection.execute("SELECT id,category,message,status,owner_reply,created_at,updated_at FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
                 self._send(200, [dict(row) for row in rows])
