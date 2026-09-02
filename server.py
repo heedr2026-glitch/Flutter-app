@@ -584,6 +584,9 @@ def init_db() -> None:
           appointments_until TEXT,
           message TEXT NOT NULL DEFAULT 'الخدمة تحت الصيانة مؤقتًا'
         );
+        CREATE TABLE IF NOT EXISTS support_tickets (
+          id BIGSERIAL PRIMARY KEY, organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id BIGINT REFERENCES users(id) ON DELETE SET NULL, category TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', owner_reply TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS global_maintenance (
           service TEXT PRIMARY KEY,
           expires_at TEXT,
@@ -785,6 +788,9 @@ def init_db() -> None:
               chat_until TEXT,
               appointments_until TEXT,
               message TEXT NOT NULL DEFAULT 'الخدمة تحت الصيانة مؤقتًا'
+            );
+            CREATE TABLE IF NOT EXISTS support_tickets (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, category TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', owner_reply TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS global_maintenance (
           service TEXT PRIMARY KEY,
@@ -1330,7 +1336,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <button class="category-button" onclick="showSecurityPanel('devicesPanel')">الأجهزة<span>الجلسات والحظر</span></button>
 <button class="category-button" onclick="showSecurityPanel('alertsPanel')">التنبيهات<span>الدخول المشبوه</span></button>
 <button class="category-button" onclick="showSecurityPanel('auditPanel')">سجل العمليات<span>كل التعديلات</span></button>
-<button class="category-button emergency-button" onclick="showSecurityPanel('emergencyPanel')">الطوارئ العامة 🚨<span>لجميع المؤسسات فقط</span></button>
+<button class="category-button emergency-button" onclick="showSecurityPanel('emergencyPanel');loadSupportTickets()">الدعم الفني 🚨<span>بلاغات المؤسسات والحسابات</span></button><button class="category-button" onclick="showSecurityPanel('maintenancePanel')">الصيانة العامة<span>إيقاف خدمات جميع المؤسسات</span></button>
 </div>
 <section id="overviewPanel" class="security-panel active">
 <div class="grid"><div class="card metric" onclick="showSecurityPanel('accountsPanel')"><span>الحسابات النشطة</span><strong id="activeUsers">0</strong></div><div class="card metric" onclick="showSecurityPanel('alertsPanel')"><span>محاولات مشبوهة خلال 24 ساعة</span><strong id="failedLogins" class="danger">0</strong></div><div class="card metric" onclick="showSecurityPanel('devicesPanel')"><span>الأجهزة غير الموثوقة</span><strong id="untrustedDevices" class="warn">0</strong></div><div class="card metric" onclick="showSecurityPanel('alertsPanel')"><span>تنبيهات آخر 7 أيام</span><strong id="securityAlerts">0</strong></div><div class="card metric" onclick="showSecurityPanel('emergencyPanel')"><span>خدمات متوقفة</span><strong id="stoppedServices">0</strong></div></div>
@@ -1342,7 +1348,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <section id="devicesPanel" class="security-panel"><div class="card"><h2>الأجهزة والجلسات</h2><p class="muted">اختر المؤسسة لفتح صفحة أجهزتها ومستخدميها.</p><div id="devices"></div></div></section>
 <section id="alertsPanel" class="security-panel"><div class="card"><h2>محاولات الدخول</h2><div id="loginAttempts"></div></div><div class="card"><h2>آخر التنبيهات الأمنية</h2><div id="events"></div></div></section>
 <section id="auditPanel" class="security-panel"><div class="card"><h2>سجل العمليات الكامل</h2><select id="auditOrg"><option value="">جميع المؤسسات</option></select><select id="auditAction"><option value="">جميع العمليات</option><option value="security">العمليات الأمنية</option><option value="employee">الموظفون والصلاحيات</option><option value="appointment">المواعيد والطلبات</option><option value="organization">بيانات المؤسسة</option></select><input id="auditDate" type="date"><button onclick="loadAuditLogs()">تطبيق الفلاتر</button><div id="auditLogs"></div></div></section>
-<section id="emergencyPanel" class="security-panel"><div class="card"><h2>وضع الطوارئ العام 🚨</h2><p class="muted">يوقف خدمة محددة لجميع المؤسسات.</p><input id="emergencyHours" type="number" min="1" value="2" placeholder="المدة بالساعات"><input id="emergencyMessage" value="الخدمة تحت الصيانة مؤقتًا" placeholder="الرسالة للمستخدمين"><p class="muted">المفتاح الأزرق يعني أن الخدمة تعمل للجميع.</p><div id="emergencyStatus"></div></div></section>
+<section id="emergencyPanel" class="security-panel"><div class="card"><h2>طلبات الدعم الفني 🚨</h2><p class="muted">بلاغات تعليق الحساب والحظر والمشكلات الفنية. الطلبات الجديدة تظهر أولًا.</p><button onclick="loadSupportTickets()">تحديث طلبات الدعم</button><div id="supportTickets"></div></div></section><section id="maintenancePanel" class="security-panel"><div class="card"><h2>الصيانة العامة</h2><p class="muted">إيقاف خدمة محددة لجميع المؤسسات.</p><input id="emergencyHours" type="number" min="1" value="2" placeholder="المدة بالساعات"><input id="emergencyMessage" value="الخدمة تحت الصيانة مؤقتًا" placeholder="الرسالة للمستخدمين"><p class="muted">المفتاح الأزرق يعني أن الخدمة تعمل للجميع.</p><div id="emergencyStatus"></div></div></section>
 </div></div>
 
 <script>
@@ -1351,7 +1357,8 @@ const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElem
 async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderIntegrations(d.integrations||[]);renderEmergency(d.emergency||[]);renderBackup(d.backup||{});renderLoginAttempts(d.loginAttempts||[]);renderAccounts(d.accounts||[]);renderDevices(d.devices||[],d.blockedDevices||[],d.accounts||[]);setupAuditOrganizations(d.accounts||[]);loadAuditLogs()}
 function renderIntegrations(items){document.getElementById('integrations').innerHTML=items.map(x=>`<div class="event"><b>${esc(x.name)}</b> — <span class="${x.status==='ready'?'ok':x.status==='maintenance'?'warn':'muted'}">${x.status==='ready'?'جاهز ✓':x.status==='maintenance'?'تحت الصيانة':'غير مربوط'}</span><p>${esc(x.detail||'')}</p></div>`).join('')||'<p class="muted">لا توجد خدمات مسجلة.</p>'}
 function renderBackup(x){document.getElementById('backupStatus').innerHTML=`<p><b>قاعدة البيانات:</b> ${esc(x.provider||'غير معروفة')}</p><p><b>الاتصال:</b> <span class="${x.connected?'ok':'danger'}">${x.connected?'سليم ✓':'متعطل'}</span></p><p><b>آخر فحص:</b> ${esc(x.checkedAt||'غير متاح')}</p><p><b>نافذة الاستعادة:</b> ${x.recoveryHours?esc(x.recoveryHours)+' ساعات':'غير متاحة'}</p><p><b>Snapshot يدوي:</b> ${x.manualSnapshots?'متاح':'غير متاح في الخطة الحالية'}</p><p><b>نسخ مجدولة:</b> ${x.scheduledBackups?'مفعلة':'غير مفعلة'}</p><p class="muted">${esc(x.note||'')}</p>`}function renderEmergency(items){document.getElementById('emergencyStatus').innerHTML=items.map(x=>`<div class="service-row"><div><b>${x.service==='chat'?'شات العملاء':x.service==='appointments'?'المواعيد':'مساعد المؤسسة'}</b><small class="${x.active?'danger':'ok'}">${x.active?'تحت الصيانة حتى '+esc(x.until):'تعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${x.active?'':'checked'} onchange="toggleEmergency(this,'${x.service}')"><span class="slider"></span></label></div>`).join('')}
-async function toggleEmergency(input,service){let ok=await setEmergency(service,!input.checked);if(!ok)input.checked=!input.checked}async function setEmergency(service,enabled){let hours=+document.getElementById('emergencyHours').value||2,message=document.getElementById('emergencyMessage').value;if(enabled&&!confirm('تأكيد إيقاف الخدمة لجميع المؤسسات؟'))return false;let r=await fetch('/owner/api/security/emergency',{method:'PUT',headers:hdr(),body:JSON.stringify({service,enabled,hours,message})}),d=await r.json();alert(r.ok?(enabled?'تم وضع الخدمة تحت الصيانة للجميع':'تم تشغيل الخدمة للجميع'):(d.error||'تعذر تنفيذ العملية'));if(r.ok){await loadSecurity();return true}return false}function setupAuditOrganizations(accounts){let select=document.getElementById('auditOrg'),current=select.value,seen=new Map();for(let x of accounts)seen.set(x.organization_id||x.organization_name,x.organization_name);select.innerHTML='<option value="">جميع المؤسسات</option>'+[...seen].map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('');select.value=current}
+async function loadSupportTickets(){let r=await fetch('/owner/api/support-tickets',{headers:hdr()}),d=await r.json(),box=document.getElementById('supportTickets');if(!r.ok){box.innerHTML=`<p class="danger">${esc(d.error||'تعذر تحميل طلبات الدعم')}</p>`;return}box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.category)}</b><p>المستخدم: ${esc(x.user_name||x.username||'غير محدد')}</p><p>${esc(x.message)}</p><p>الحالة: <span class="status-chip ${x.status==='resolved'?'ok':x.status==='in_progress'?'warn':'danger'}">${x.status==='resolved'?'تم الحل':x.status==='in_progress'?'قيد المعالجة':'طلب جديد'}</span></p>${x.owner_reply?`<p>رد الدعم: ${esc(x.owner_reply)}</p>`:''}<textarea id="support-reply-${x.id}" style="box-sizing:border-box;width:100%;min-height:80px;background:#09152e;color:white;border:1px solid #285682;border-radius:10px;padding:10px" placeholder="اكتب الرد أو توضيح الحل">${esc(x.owner_reply||'')}</textarea><div class="device-actions"><button onclick="updateSupportTicket(${x.id},'in_progress')">قيد المعالجة</button><button onclick="updateSupportTicket(${x.id},'resolved')">تم الحل</button></div><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد طلبات دعم جديدة ✓</p>'}
+async function updateSupportTicket(id,status){let reply=document.getElementById('support-reply-'+id).value;let r=await fetch('/owner/api/support-tickets/'+id,{method:'PUT',headers:hdr(),body:JSON.stringify({status,reply})}),d=await r.json();alert(r.ok?'تم تحديث الطلب وإرسال الرد للمشترك ✓':(d.error||'تعذر تحديث الطلب'));if(r.ok)loadSupportTickets()}async function toggleEmergency(input,service){let ok=await setEmergency(service,!input.checked);if(!ok)input.checked=!input.checked}async function setEmergency(service,enabled){let hours=+document.getElementById('emergencyHours').value||2,message=document.getElementById('emergencyMessage').value;if(enabled&&!confirm('تأكيد إيقاف الخدمة لجميع المؤسسات؟'))return false;let r=await fetch('/owner/api/security/emergency',{method:'PUT',headers:hdr(),body:JSON.stringify({service,enabled,hours,message})}),d=await r.json();alert(r.ok?(enabled?'تم وضع الخدمة تحت الصيانة للجميع':'تم تشغيل الخدمة للجميع'):(d.error||'تعذر تنفيذ العملية'));if(r.ok){await loadSecurity();return true}return false}function setupAuditOrganizations(accounts){let select=document.getElementById('auditOrg'),current=select.value,seen=new Map();for(let x of accounts)seen.set(x.organization_id||x.organization_name,x.organization_name);select.innerHTML='<option value="">جميع المؤسسات</option>'+[...seen].map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('');select.value=current}
 async function loadAuditLogs(){let q=new URLSearchParams(),org=document.getElementById('auditOrg').value,action=document.getElementById('auditAction').value,date=document.getElementById('auditDate').value;if(org)q.set('organization',org);if(action)q.set('type',action);if(date)q.set('date',date);let r=await fetch('/owner/api/security/audit-logs?'+q,{headers:hdr()}),d=await r.json(),box=document.getElementById('auditLogs');if(!r.ok){box.innerHTML=`<p class="danger">${esc(d.error||'تعذر تحميل السجل')}</p>`;return}box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.action)}</b><p>${esc(x.summary)}</p><small class="muted">بواسطة: ${esc(x.actor_name||x.actor_username||'النظام')} — ${esc(x.created_at)}</small></div>`).join('')||'<p>لا توجد عمليات مطابقة.</p>'}function renderLoginAttempts(a){document.getElementById('loginAttempts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.user_name||x.username)}</b><p>${esc(x.summary)}</p><p>التكرار لنفس الحساب والجهاز: ${x.attempt_count} | الوقت: ${esc(x.created_at)}</p></div>`).join('')||'<p class="ok">لا توجد محاولات دخول فاشلة ✓</p>'}function renderAccounts(a){document.getElementById('accounts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.name)}</b><p>المستخدم: ${esc(x.username)} | ${x.role==='admin'?'مالك':'موظف'} | ${x.active?'نشط':'مجمّد'}</p><button onclick="accountAction(${x.id},${!x.active})">${x.active?'تجميد الحساب':'إعادة تفعيل الحساب'}</button></div>`).join('')||'<p>لا توجد حسابات.</p>'}
 let deviceGroups=[];
 function recentlySeen(value){let t=new Date(value).getTime();return Number.isFinite(t)&&Date.now()-t<5*60*1000}
@@ -1416,6 +1423,25 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 {"name": "الاتصال", "status": "ready" if calls_configured else "not_connected", "detail": "تم العثور على إعدادات الربط." if calls_configured else "مرحلة لاحقة — لم يتم ربط خدمة الاتصال حتى الآن."},
             ]
             self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped) + sum(1 for item in emergency if item["active"]),"services": services,"integrations": integrations,"backup": backup,"events": [dict(row) for row in events],"loginAttempts": [dict(row) for row in login_attempts],"accounts": account_items,"devices": device_items,"blockedDevices": [dict(row) for row in blocked_devices]})
+            return
+        if path == "/owner/api/support-tickets" and method == "GET":
+            self._owner()
+            with db() as connection:
+                rows = connection.execute("""SELECT support_tickets.*,organizations.name AS organization_name,users.name AS user_name,users.username FROM support_tickets JOIN organizations ON organizations.id=support_tickets.organization_id LEFT JOIN users ON users.id=support_tickets.user_id ORDER BY CASE support_tickets.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END,support_tickets.id DESC""").fetchall()
+            self._send(200, [dict(row) for row in rows])
+            return
+        if path.startswith("/owner/api/support-tickets/") and method == "PUT":
+            self._owner()
+            ticket_id = int(path.rsplit("/", 1)[1])
+            data = self._body()
+            status = str(data.get("status", "in_progress"))
+            if status not in ("open", "in_progress", "resolved"):
+                raise ApiError(400, "حالة الطلب غير صحيحة")
+            reply = str(data.get("reply", "")).strip()[:1000]
+            with db() as connection:
+                connection.execute("UPDATE support_tickets SET status=?,owner_reply=?,updated_at=? WHERE id=?", (status,reply,now(),ticket_id))
+                connection.commit()
+            self._send(200, {"saved": True})
             return
         if path == "/owner/api/security/emergency" and method == "PUT":
             self._owner()
@@ -1938,6 +1964,22 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         with db() as connection:
             user = self._user(connection)
             organization_id = user["organization_id"]
+            if path == "/api/support-tickets" and method == "GET":
+                rows = connection.execute("SELECT id,category,message,status,owner_reply,created_at,updated_at FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
+                self._send(200, [dict(row) for row in rows])
+                return
+            if path == "/api/support-tickets" and method == "POST":
+                data = self._body()
+                category = str(data.get("category", "مشكلة في الحساب")).strip()[:80] or "مشكلة في الحساب"
+                message = str(data.get("message", "")).strip()[:2000]
+                if len(message) < 5:
+                    raise ApiError(400, "اكتب تفاصيل المشكلة")
+                created = now()
+                row = connection.execute("INSERT INTO support_tickets(organization_id,user_id,category,message,status,owner_reply,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id", (organization_id,user["id"],category,message,"open","",created,created)).fetchone()
+                audit_log(connection, organization_id, user["id"], "support_request", "تم إرسال طلب دعم فني: " + category, "security", str(row["id"]))
+                connection.commit()
+                self._send(201, {"saved": True, "id": row["id"], "status": "open"})
+                return
             if path == "/api/maintenance-status" and method == "GET":
                 self._send(200, {"assistant": service_maintenance_status(connection, organization_id, "assistant")})
                 return
