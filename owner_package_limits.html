@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>حدود الباقات — خدوم</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#071126;color:#fff;font-family:Tahoma,Arial;line-height:1.7;padding:24px}
+    main{max-width:850px;margin:auto}h1,a{color:#7dd3fc}a{display:inline-block;margin-bottom:12px}
+    .card{background:#111f42;border:1px solid #285682;border-radius:18px;padding:22px;margin-bottom:16px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+    input,button{font:inherit;width:100%;padding:12px;border:1px solid #285682;border-radius:10px;margin:6px 0 14px}
+    input{background:#09152e;color:#fff}button{background:#0284c7;color:#fff;cursor:pointer;font-weight:bold}
+    button:disabled{opacity:.5;cursor:wait}label{display:block}p{color:#cbd5e1}.note{color:#fbbf24}
+    #status{white-space:pre-wrap}#settings[hidden]{display:none}
+  </style>
+</head>
+<body><main>
+  <a href="/owner">العودة إلى لوحة الإدارة</a>
+  <h1>التحكم بحدود الباقات</h1>
+  <p>تطبق هذه الحدود على جميع المؤسسات المشتركة في الباقة المحددة.</p>
+  <form id="login" class="card">
+    <label for="ownerKey">مفتاح المالك</label>
+    <input id="ownerKey" type="password" required autocomplete="off">
+    <button id="load" type="submit">دخول وتحميل الحدود</button>
+  </form>
+  <div id="status" role="status" aria-live="polite"></div>
+  <form id="settings" hidden>
+    <div class="grid">
+      <section class="card">
+        <h2>الباقة المجانية</h2>
+        <label for="free-employees">عدد الموظفين</label>
+        <input id="free-employees" type="number" min="0" max="100000" step="1" required>
+        <label for="free-vehicles">عدد المركبات</label>
+        <input id="free-vehicles" type="number" min="0" max="100000" step="1" required>
+      </section>
+      <section class="card">
+        <h2>الباقة الأساسية</h2>
+        <label for="basic-employees">عدد الموظفين</label>
+        <input id="basic-employees" type="number" min="0" max="100000" step="1" required>
+        <label for="basic-vehicles">عدد المركبات</label>
+        <input id="basic-vehicles" type="number" min="0" max="100000" step="1" required>
+      </section>
+    </div>
+    <section class="card">
+      <p>VIP: موظفون ومركبات دون حد — لم تتغير.</p>
+      <p class="note">الصفر يمنع الإضافات الجديدة. تخفيض الحدود لا يحذف الموظفين أو المركبات الموجودة. عدد الموظفين لا يشمل حساب المالك.</p>
+      <button id="save" type="submit">حفظ حدود الباقات</button>
+    </section>
+  </form>
+</main>
+<script>
+const el=id=>document.getElementById(id);
+const headers=()=>({'Content-Type':'application/json','X-Owner-Key':el('ownerKey').value.trim()});
+function render(data){
+  for(const plan of ['free','basic'])for(const resource of ['employees','vehicles'])
+    el(plan+'-'+resource).value=data[plan][resource];
+}
+async function request(options){
+  const response=await fetch('/owner/api/package-limits',options);
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.error||'تعذر تنفيذ الطلب');
+  return data;
+}
+el('ownerKey').addEventListener('input',()=>{el('settings').hidden=true;el('status').textContent='';});
+el('login').addEventListener('submit',async event=>{
+  event.preventDefault();el('load').disabled=true;el('settings').hidden=true;
+  el('status').textContent='جارٍ تحميل الحدود...';
+  try{
+    render(await request({headers:headers()}));
+    el('settings').hidden=false;el('status').textContent='تم تحميل الحدود الحالية.';
+  }catch(error){el('status').textContent=error.message;}
+  finally{el('load').disabled=false;}
+});
+el('settings').addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(!confirm('تطبيق الحدود الجديدة على جميع المؤسسات في المجانية والأساسية؟ لن تُحذف البيانات الموجودة.'))return;
+  const payload={};
+  for(const plan of ['free','basic']){
+    payload[plan]={};
+    for(const resource of ['employees','vehicles'])payload[plan][resource]=Number(el(plan+'-'+resource).value);
+  }
+  el('save').disabled=true;el('status').textContent='جارٍ الحفظ...';
+  try{
+    render(await request({method:'PUT',headers:headers(),body:JSON.stringify(payload)}));
+    el('status').textContent='تم حفظ الحدود في الخادم. تستخدم النسخة المحدثة من التطبيق الحدود عند الإضافة التالية.';
+  }catch(error){el('status').textContent=error.message;}
+  finally{el('save').disabled=false;}
+});
+</script></body></html>

@@ -9,6 +9,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY server.py /app/server.py
+COPY package_limits.py owner_package_limits.html /app/
 
 RUN mkdir -p /data && useradd --create-home khdoom && chown -R khdoom:khdoom /app /data
 USER khdoom

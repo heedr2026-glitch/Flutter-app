@@ -11,6 +11,7 @@ import os
 import secrets
 import sqlite3
 import re
+import package_limits
 from typing import Any
 
 try:
@@ -80,6 +81,7 @@ class PostgresCursor:
 
 class PostgresConnection:
     _id_tables = {"organizations", "users", "vehicles", "advertisements", "activation_codes", "ai_usage", "subscription_requests", "appointment_requests", "chat_sessions", "chat_messages", "platform_advertisements"}
+    _id_tables.add("package_offers")
 
     def __init__(self, connection: Any):
         self._connection = connection
@@ -429,7 +431,29 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     )
     return reply
 
+def seed_package_offers(connection: Any) -> None:
+    if connection.execute("SELECT COUNT(*) AS count FROM package_offers").fetchone()["count"]:
+        return
+    created = now()
+    defaults = (
+        ("basic", 1, 0, 49, "شهري"),
+        ("basic", 6, 0, 249, "6 أشهر"),
+        ("basic", 12, 0, 449, "سنة"),
+        ("vip", 1, 0, 99, "شهري"),
+        ("vip", 6, 0, 499, "6 أشهر"),
+        ("vip", 12, 0, 899, "سنة"),
+    )
+    for package, paid_months, bonus_months, price_sar, label in defaults:
+        connection.execute(
+            "INSERT INTO package_offers(package,paid_months,bonus_months,price_sar,label,active,created_at) VALUES(?,?,?,?,?,?,?)",
+            (package, paid_months, bonus_months, price_sar, label, 1, created),
+        )
+
+
 def init_db() -> None:
+    with db() as connection:
+        package_limits.initialize(connection)
+        connection.commit()
     if DATABASE_URL:
         postgres_schema = """
         CREATE TABLE IF NOT EXISTS organizations (
@@ -487,12 +511,26 @@ def init_db() -> None:
           starts_at TEXT NOT NULL,
           expires_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS package_offers (
+          id BIGSERIAL PRIMARY KEY,
+          package TEXT NOT NULL CHECK(package IN ('basic','vip')),
+          paid_months INTEGER NOT NULL,
+          bonus_months INTEGER NOT NULL DEFAULT 0,
+          price_sar REAL NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS subscription_requests (
           id BIGSERIAL PRIMARY KEY,
           organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
           requested_package TEXT NOT NULL CHECK(requested_package IN ('basic','vip')),
           discount_code TEXT NOT NULL DEFAULT '',
           discount_percent INTEGER NOT NULL DEFAULT 0,
+          offer_id BIGINT,
+          paid_months INTEGER NOT NULL DEFAULT 1,
+          bonus_months INTEGER NOT NULL DEFAULT 0,
+          quoted_price REAL NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
           created_at TEXT NOT NULL,
           processed_at TEXT
@@ -630,6 +668,10 @@ def init_db() -> None:
         with db() as connection:
             connection.executescript(postgres_schema)
             connection.execute("ALTER TABLE appointment_requests ADD COLUMN IF NOT EXISTS chat_session_id BIGINT")
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS offer_id BIGINT")
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS paid_months INTEGER NOT NULL DEFAULT 1")
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS bonus_months INTEGER NOT NULL DEFAULT 0")
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS quoted_price REAL NOT NULL DEFAULT 0")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS expires_at TEXT")
             connection.execute("ALTER TABLE platform_advertisements ADD COLUMN IF NOT EXISTS image_data TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS code_kind TEXT NOT NULL DEFAULT 'activation'")
@@ -646,6 +688,7 @@ def init_db() -> None:
                     "UPDATE organizations SET public_chat_token=? WHERE id=?",
                     (secrets.token_urlsafe(18), organization["id"]),
                 )
+            seed_package_offers(connection)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
         return
@@ -705,12 +748,26 @@ def init_db() -> None:
               starts_at TEXT NOT NULL,
               expires_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS package_offers (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              package TEXT NOT NULL CHECK(package IN ('basic','vip')),
+              paid_months INTEGER NOT NULL,
+              bonus_months INTEGER NOT NULL DEFAULT 0,
+              price_sar REAL NOT NULL,
+              label TEXT NOT NULL DEFAULT '',
+              active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS subscription_requests (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
               requested_package TEXT NOT NULL CHECK(requested_package IN ('basic','vip')),
               discount_code TEXT NOT NULL DEFAULT '',
               discount_percent INTEGER NOT NULL DEFAULT 0,
+              offer_id INTEGER,
+              paid_months INTEGER NOT NULL DEFAULT 1,
+              bonus_months INTEGER NOT NULL DEFAULT 0,
+              quoted_price REAL NOT NULL DEFAULT 0,
               status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
               created_at TEXT NOT NULL,
               processed_at TEXT
@@ -886,6 +943,18 @@ def init_db() -> None:
         }
         if "chat_session_id" not in appointment_columns:
             connection.execute("ALTER TABLE appointment_requests ADD COLUMN chat_session_id INTEGER")
+        request_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(subscription_requests)")
+        }
+        if "offer_id" not in request_columns:
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN offer_id INTEGER")
+        if "paid_months" not in request_columns:
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN paid_months INTEGER NOT NULL DEFAULT 1")
+        if "bonus_months" not in request_columns:
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN bonus_months INTEGER NOT NULL DEFAULT 0")
+        if "quoted_price" not in request_columns:
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN quoted_price REAL NOT NULL DEFAULT 0")
         ad_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(advertisements)")
@@ -924,6 +993,7 @@ def init_db() -> None:
             connection.execute(
                 "ALTER TABLE activation_codes ADD COLUMN discount_percent INTEGER NOT NULL DEFAULT 0"
             )
+        seed_package_offers(connection)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
 
@@ -996,6 +1066,12 @@ def downgrade_expired_subscriptions(connection: Any) -> int:
         (now(), now()),
     )
     return cursor.rowcount
+
+
+def package_resource_limit(package: str, resource: str, connection=None) -> int | None:
+    """Return the server-enforced resource cap; None means unlimited."""
+    limits = package_limits.read_limits(connection) if connection is not None else package_limits.DEFAULT_LIMITS
+    return limits.get(package, {}).get(resource, 0)
 
 def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
     salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
@@ -1344,9 +1420,9 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة مالك خدووم</title>
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}.top-nav{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 18px}.top-nav a{flex:1;min-width:130px;text-align:center;padding:12px;background:#172554;border:1px solid #285682;border-radius:12px;text-decoration:none;font-weight:bold;color:#7dd3fc}.category-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:16px}.category-button{min-height:76px;margin:0;background:#132b61;border:1px solid #2563eb;font-size:15px}.category-button span{display:block;font-size:12px;color:#bae6fd;margin-top:5px}.support-badge{display:none;position:absolute;top:6px;left:8px;background:#ef4444;color:white;border-radius:999px;min-width:24px;height:24px;line-height:24px;font-size:12px}.category-button{position:relative}.support-badge.show{display:block}.owner-dashboard{display:none}.owner-panel{display:none}.owner-panel.active{display:block}.service-row{direction:rtl;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:48px;padding:11px 13px;margin:8px 0;background:#12295f;border:1px solid #285682;border-radius:12px}.service-row b{font-size:15px}.service-row small{display:block;color:#bfdbfe;margin-top:4px;font-size:12px}.switch{position:relative;display:inline-block;width:52px;height:28px;flex:0 0 52px}.switch input{opacity:0;width:0;height:0;margin:0;padding:0}.slider{position:absolute;inset:0;cursor:pointer;background:#475569;border-radius:28px;transition:.2s}.slider:before{content:"";position:absolute;width:22px;height:22px;right:3px;top:3px;background:#e2e8f0;border-radius:50%;transition:.2s;box-shadow:0 1px 4px #02061788}.switch input:checked+.slider{background:#0ea5e9;box-shadow:0 0 9px #0ea5e977}.switch input:checked+.slider:before{transform:translateX(-24px);background:white}</style></head><body><div class="wrap"><h1>لوحة مالك خدووم</h1>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="ownerLogin()">دخول لوحة المالك</button><div id="loginStatus" class="result">أدخل المفتاح ثم اضغط دخول</div></div>
-<nav class="top-nav"><a href="/owner">لوحة الإدارة</a><a href="/owner/security">لوحة الأمن</a><a href="/owner/codes">أكواد الخصم</a></nav>
+<nav class="top-nav"><a href="/owner">لوحة الإدارة</a><a href="/owner/package-limits">حدود الباقات</a><a href="/owner/security">لوحة الأمن</a><a href="/owner/codes">أكواد الخصم</a></nav>
 <div id="ownerDashboard" class="owner-dashboard">
-<div class="category-grid"><button class="category-button" onclick="showOwnerPanel('organizationsPanel')">المؤسسات<span>الباقة والخدمات والإعدادات</span></button><button class="category-button" onclick="showOwnerPanel('subscriptionsPanel')">طلبات الترقية<span>قبول أو رفض الطلبات</span></button><button class="category-button" onclick="showOwnerPanel('adsPanel')">الإعلانات<span>إعلانات المنصة ومراجعة المؤسسات</span></button><button class="category-button" onclick="location.href='/owner/codes'">أكواد الخصم<span>إنشاء وإدارة الأكواد</span></button><button class="category-button" onclick="location.href='/owner/security'">لوحة الأمن<span>الحسابات والأجهزة والتنبيهات</span></button></div>
+<div class="category-grid"><button class="category-button" onclick="showOwnerPanel('organizationsPanel')">المؤسسات<span>الباقة والخدمات والإعدادات</span></button><button class="category-button" onclick="showOwnerPanel('subscriptionsPanel')">طلبات الترقية<span>قبول أو رفض الطلبات</span></button><button class="category-button" onclick="location.href='/owner/offers'">عروض الباقات<span>السعر والمدة والأشهر المجانية</span></button><button class="category-button" onclick="showOwnerPanel('adsPanel')">الإعلانات<span>إعلانات المنصة ومراجعة المؤسسات</span></button><button class="category-button" onclick="location.href='/owner/codes'">أكواد الخصم<span>إنشاء وإدارة الأكواد</span></button><button class="category-button" onclick="location.href='/owner/security'">لوحة الأمن<span>الحسابات والأجهزة والتنبيهات</span></button></div>
 <section id="organizationsPanel" class="owner-panel active"><div class="card"><h2>المؤسسات</h2><p>اختر المؤسسة ثم افتح إدارتها لتعديل الباقة أو الخدمات.</p><button onclick="loadOrganizations()">تحديث المؤسسات</button><div id="organizations" class="result"></div></div></section>
 <section id="subscriptionsPanel" class="owner-panel"><div class="card"><h2>طلبات ترقية الباقات</h2><button onclick="loadSubscriptionRequests()">تحديث الطلبات</button><div id="subscriptionRequests" class="result"></div></div></section>
 <section id="adsPanel" class="owner-panel"><div class="card"><h2>إنشاء إعلان للمنصة</h2><input id="platformAdTitle" maxlength="120" placeholder="عنوان الإعلان"><input id="platformAdMessage" maxlength="1000" placeholder="نص العرض"><input id="platformAdCode" maxlength="40" placeholder="كود الخصم أو العرض (اختياري)"><label style="display:block;color:#bae6fd;font-weight:bold;margin-top:10px">صورة الإعلان (اختيارية، حتى 600 كيلوبايت)</label><input id="platformAdImage" type="file" accept="image/jpeg,image/png,image/webp" onchange="readPlatformAdImage(this)"><img id="platformAdPreview" alt="معاينة الإعلان" style="display:none;width:100%;max-height:220px;object-fit:contain;border-radius:12px;margin:8px 0"><input id="platformAdDays" type="number" min="1" max="3650" value="30" placeholder="مدة العرض بالأيام"><button class="vip" onclick="createPlatformAd()">نشر الإعلان الآن</button><div id="platformAds" class="result"></div></div><div class="card"><h2>مراجعة إعلانات المؤسسات</h2><button class="vip" onclick="loadAds()">تحديث الإعلانات</button><div id="ads" class="result"></div></div></section>
@@ -1629,8 +1705,71 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
 <script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function login(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();document.getElementById('status').textContent=r.ok?'تم الدخول بنجاح ✓':(d.error||'تعذر الدخول');if(r.ok)render(d)}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,customCode:document.getElementById('customCode').value,discountPercent:+document.getElementById('discount').value,validityDays:+document.getElementById('validityDays').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?(d.renewed?'تم تجديد الكود: ':'تم إنشاء الكود: ')+d.code+'\\nالحملة: '+(d.recipientName||'غير محدد')+'\\nالخصم: '+d.discountPercent+'%':(d.error||'تعذر إنشاء الكود');if(r.ok)loadCodes()}async function loadCodes(){let r=await fetch('/owner/api/codes',{headers:headers()});let d=await r.json();if(r.ok)render(d);else document.getElementById('codes').textContent=d.error||'تعذر تحميل الأكواد'}function render(data){let box=document.getElementById('codes');box.innerHTML=data.length?data.map(c=>`<div class="card code"><b>${c.code_prefix}...</b><p><b>الحملة أو المعلن:</b> ${c.recipient_name||'غير محدد'}</p><p><b>نسبة الخصم:</b> ${c.discount_percent||0}%</p><p><b>مرات الاستخدام:</b> ${c.used_count} من ${c.max_uses}</p><p><b>تاريخ انتهاء الكود:</b> ${c.expires_at||'بدون انتهاء'}</p><p><b>النوع:</b> ${c.code_kind==='discount'?'كود خصم':'كود قديم'}</p></div>`).join(''):'لا توجد أكواد بعد'}</script></body></html>"""
             )
             return
+        if method == "GET" and path == "/owner/package-limits":
+            self._send_html((ROOT / "owner_package_limits.html").read_text(encoding="utf-8"))
+            return
+        if path == "/api/package-limits" and method == "GET":
+            with db() as connection:
+                result = package_limits.read_limits(connection)
+            self._send(200, result)
+            return
+        if path == "/owner/api/package-limits" and method in ("GET", "PUT"):
+            self._owner()
+            payload = self._body() if method == "PUT" else None
+            with db() as connection:
+                if method == "PUT":
+                    try:
+                        result = package_limits.save_limits(connection, payload)
+                    except ValueError as error:
+                        raise ApiError(400, str(error))
+                    connection.commit()
+                else:
+                    result = package_limits.read_limits(connection)
+            self._send(200, result)
+            return
+        if method == "GET" and path == "/owner/offers":
+            self._send_html(
+                """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>عروض باقات خدووم</title><style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:18px;padding:20px;margin-bottom:14px}h1{color:#38bdf8}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold}.delete{background:#b91c1c}.offer{border-right:4px solid #f59e0b}a{color:#7dd3fc}</style></head><body><div class="wrap"><h1>عروض الباقات</h1><p><a href="/owner">العودة إلى لوحة المالك</a></p><div class="card"><h2>مفتاح المالك</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="loadOffers()">دخول وتحميل العروض</button></div><div class="card"><h2>إضافة عرض</h2><select id="package"><option value="basic">الأساسية</option><option value="vip">VIP</option></select><input id="paidMonths" type="number" min="1" max="60" value="1" placeholder="الأشهر المدفوعة"><input id="bonusMonths" type="number" min="0" max="60" value="0" placeholder="الأشهر المجانية"><input id="price" type="number" min="0" step="0.01" value="49" placeholder="السعر بالريال"><input id="label" maxlength="80" placeholder="اسم العرض — مثال: 6 أشهر + 6 مجانًا"><button onclick="saveOffer()">حفظ العرض</button></div><div id="offers"></div></div><script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function loadOffers(){let r=await fetch('/owner/api/package-offers',{headers:headers()}),d=await r.json(),box=document.getElementById('offers');if(!r.ok){box.textContent=d.error||'تعذر التحميل';return}box.innerHTML=d.length?d.map(o=>`<div class="card offer"><b>${o.package==='basic'?'الأساسية':'VIP'} — ${esc(o.label||'عرض')}</b><p>الدفع: ${o.paid_months} شهر | هدية: ${o.bonus_months} شهر</p><p>إجمالي التفعيل: ${o.paid_months+o.bonus_months} شهر</p><p>السعر: ${o.price_sar} ريال</p><button class="delete" onclick="removeOffer(${o.id})">حذف العرض</button></div>`).join(''):'لا توجد عروض'}async function saveOffer(){let body={package:document.getElementById('package').value,paidMonths:+document.getElementById('paidMonths').value,bonusMonths:+document.getElementById('bonusMonths').value,priceSar:+document.getElementById('price').value,label:document.getElementById('label').value};let r=await fetch('/owner/api/package-offers',{method:'POST',headers:headers(),body:JSON.stringify(body)}),d=await r.json();alert(r.ok?'تم حفظ العرض':(d.error||'تعذر الحفظ'));if(r.ok)loadOffers()}async function removeOffer(id){if(!confirm('حذف العرض؟'))return;let r=await fetch('/owner/api/package-offers/'+id,{method:'DELETE',headers:headers()}),d=await r.json();alert(r.ok?'تم الحذف':(d.error||'تعذر الحذف'));if(r.ok)loadOffers()}function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
+            )
+            return
+        if path == "/owner/api/package-offers" and method == "GET":
+            self._owner()
+            with db() as connection:
+                rows = connection.execute("SELECT * FROM package_offers ORDER BY package,paid_months,bonus_months,id").fetchall()
+            self._send(200, [dict(row) for row in rows])
+            return
+        if path == "/owner/api/package-offers" and method == "POST":
+            self._owner()
+            data = self._body()
+            package = str(data.get("package", "")).strip().lower()
+            if package not in ("basic", "vip"):
+                raise ApiError(400, "اختر الباقة الأساسية أو VIP")
+            paid_months = max(1, min(int(data.get("paidMonths", 1)), 60))
+            bonus_months = max(0, min(int(data.get("bonusMonths", 0)), 60))
+            price_sar = round(max(0, float(data.get("priceSar", 0))), 2)
+            label = str(data.get("label", "")).strip()[:80] or f"{paid_months} شهر"
+            with db() as connection:
+                cursor = connection.execute("INSERT INTO package_offers(package,paid_months,bonus_months,price_sar,label,active,created_at) VALUES(?,?,?,?,?,?,?)", (package,paid_months,bonus_months,price_sar,label,1,now()))
+                connection.commit()
+            self._send(201, {"id": cursor.lastrowid, "saved": True})
+            return
+        if path.startswith("/owner/api/package-offers/") and method == "DELETE":
+            self._owner()
+            offer_id = int(path.rsplit("/", 1)[1])
+            with db() as connection:
+                cursor = connection.execute("DELETE FROM package_offers WHERE id=?", (offer_id,))
+                connection.commit()
+            if cursor.rowcount == 0:
+                raise ApiError(404, "العرض غير موجود")
+            self._send(200, {"deleted": True})
+            return
         if method == "GET" and path == "/health":
             self._send(200, {"status": "ok", "service": "khdoom-api"})
+            return
+        if method == "GET" and path == "/api/package-offers":
+            with db() as connection:
+                rows = connection.execute("SELECT id,package,paid_months,bonus_months,price_sar,label FROM package_offers WHERE active=1 ORDER BY package,paid_months,bonus_months,id").fetchall()
+            self._send(200, [dict(row) for row in rows])
             return
         if path == "/owner/api/platform-ads" and method == "GET":
             self._owner()
@@ -1803,7 +1942,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     selected_package = str(data.get("selectedPackage", request_row["requested_package"])).strip().lower()
                     if selected_package not in ("free", "basic", "vip"):
                         raise ApiError(400, "اختر الباقة المجانية أو الأساسية أو VIP")
-                    days = max(1, min(int(data.get("durationDays", 30)), 3650))
+                    offer_months = int(request_row["paid_months"] or 0) + int(request_row["bonus_months"] or 0)
+                    days = max(1, min(offer_months * 30 if request_row["offer_id"] else int(data.get("durationDays", 30)), 3650))
                     expires_at = None if selected_package == "free" else (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
                     connection.execute(
                         "UPDATE subscriptions SET package=?,starts_at=?,expires_at=? WHERE organization_id=?",
@@ -1991,6 +2131,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if method == "POST" and path == "/api/login":
             data = self._body()
             with db() as connection:
+                if downgrade_expired_subscriptions(connection):
+                    connection.commit()
                 user = connection.execute(
                     "SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1",
                     (str(data.get("username", "")).strip().lower(),),
@@ -2074,6 +2216,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             return
 
         with db() as connection:
+            if downgrade_expired_subscriptions(connection):
+                connection.commit()
             user = self._user(connection)
             organization_id = user["organization_id"]
             if path == "/api/session-status" and method == "GET":
@@ -2453,13 +2597,13 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     (organization_id,),
                 ).fetchone()
                 package = package_row["package"] if package_row else "free"
-                employee_limit = {"free": 1, "basic": 5}.get(package)
+                employee_limit = package_resource_limit(package, "employees", connection)
                 employee_count = connection.execute(
                     "SELECT COUNT(*) AS count FROM users WHERE organization_id=? AND role='employee'",
                     (organization_id,),
                 ).fetchone()["count"]
                 if employee_limit is not None and employee_count >= employee_limit:
-                    message = "الباقة المجانية تسمح بموظف واحد فقط" if package == "free" else "الباقة الأساسية تسمح بخمسة موظفين فقط"
+                    message = f"وصلت إلى حد الباقة: {employee_limit} موظفين"
                     raise ApiError(403, message)
                 if len(str(data.get("password", ""))) < 8:
                     raise ApiError(400, "كلمة مرور الموظف 8 خانات على الأقل")
@@ -2614,6 +2758,19 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if path == "/api/vehicles" and method == "POST":
                 require_permission(user, "editVehicles")
                 data = self._body()
+                package_row = connection.execute(
+                    "SELECT package FROM subscriptions WHERE organization_id=?",
+                    (organization_id,),
+                ).fetchone()
+                package = package_row["package"] if package_row else "free"
+                vehicle_limit = package_resource_limit(package, "vehicles", connection)
+                vehicle_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM vehicles WHERE organization_id=?",
+                    (organization_id,),
+                ).fetchone()["count"]
+                if vehicle_limit is not None and vehicle_count >= vehicle_limit:
+                    message = f"وصلت إلى حد الباقة: {vehicle_limit} مركبات"
+                    raise ApiError(403, message)
                 cursor = connection.execute(
                     """INSERT INTO vehicles(organization_id,name,plate,registration_expiry,inspection_expiry,insurance_expiry,created_at)
                        VALUES(?,?,?,?,?,?,?)""",
@@ -2678,6 +2835,16 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 requested_package = str(data.get("package", "")).strip().lower()
                 if requested_package not in ("basic", "vip"):
                     raise ApiError(400, "اختر الباقة الأساسية أو VIP")
+                offer_id = int(data.get("offerId", 0) or 0)
+                offer = connection.execute(
+                    "SELECT * FROM package_offers WHERE id=? AND package=? AND active=1",
+                    (offer_id, requested_package),
+                ).fetchone() if offer_id else connection.execute(
+                    "SELECT * FROM package_offers WHERE package=? AND active=1 ORDER BY paid_months,id LIMIT 1",
+                    (requested_package,),
+                ).fetchone()
+                if offer is None:
+                    raise ApiError(400, "عرض الاشتراك غير موجود أو متوقف")
                 discount_code = str(data.get("discountCode", "")).strip().upper()
                 discount_percent = 0
                 if discount_code:
@@ -2691,6 +2858,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     if code is None:
                         raise ApiError(400, "كود الخصم غير صحيح أو منتهي")
                     discount_percent = int(code["discount_percent"])
+                quoted_price = round(float(offer["price_sar"]) * (100 - discount_percent) / 100, 2)
                 pending = connection.execute(
                     "SELECT id FROM subscription_requests WHERE organization_id=? AND status='pending' ORDER BY id DESC LIMIT 1",
                     (organization_id,),
@@ -2699,20 +2867,20 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     request_id = pending["id"]
                     connection.execute(
                         """UPDATE subscription_requests
-                           SET requested_package=?,discount_code=?,discount_percent=?,created_at=?
+                           SET requested_package=?,discount_code=?,discount_percent=?,offer_id=?,paid_months=?,bonus_months=?,quoted_price=?,created_at=?
                            WHERE id=?""",
-                        (requested_package, discount_code, discount_percent, now(), request_id),
+                        (requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, now(), request_id),
                     )
                 else:
                     cursor = connection.execute(
                         """INSERT INTO subscription_requests(
-                               organization_id,requested_package,discount_code,discount_percent,status,created_at
-                           ) VALUES(?,?,?,?,?,?)""",
-                        (organization_id, requested_package, discount_code, discount_percent, "pending", now()),
+                               organization_id,requested_package,discount_code,discount_percent,offer_id,paid_months,bonus_months,quoted_price,status,created_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                        (organization_id, requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, "pending", now()),
                     )
                     request_id = cursor.lastrowid
                 connection.commit()
-                self._send(201, {"id": request_id, "status": "pending", "discountPercent": discount_percent})
+                self._send(201, {"id": request_id, "status": "pending", "discountPercent": discount_percent, "paidMonths": offer["paid_months"], "bonusMonths": offer["bonus_months"], "quotedPrice": quoted_price})
                 return
             if path == "/api/subscription" and method == "GET":
                 row = connection.execute("SELECT package,starts_at,expires_at FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()
