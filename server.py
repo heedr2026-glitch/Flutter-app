@@ -1439,7 +1439,13 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 raise ApiError(400, "حالة الطلب غير صحيحة")
             reply = str(data.get("reply", "")).strip()[:1000]
             with db() as connection:
+                ticket = connection.execute("SELECT organization_id,user_id,category FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
+                if ticket is None:
+                    raise ApiError(404, "طلب الدعم غير موجود")
                 connection.execute("UPDATE support_tickets SET status=?,owner_reply=?,updated_at=? WHERE id=?", (status,reply,now(),ticket_id))
+                status_name = "تم الحل" if status == "resolved" else "قيد المعالجة" if status == "in_progress" else "طلب جديد"
+                summary = f"تحديث طلب الدعم ({ticket['category']}): {status_name}" + ((" — " + reply) if reply else "")
+                audit_log(connection, ticket["organization_id"], ticket["user_id"], "support_ticket_updated", summary, "security", str(ticket_id))
                 connection.commit()
             self._send(200, {"saved": True})
             return
