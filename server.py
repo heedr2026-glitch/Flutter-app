@@ -1987,6 +1987,17 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 rows = connection.execute("SELECT id,category,message,status,owner_reply,created_at,updated_at FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
                 self._send(200, [dict(row) for row in rows])
                 return
+            if path.startswith("/api/support-tickets/") and method == "DELETE":
+                ticket_id = int(path.rsplit("/", 1)[1])
+                ticket = connection.execute("SELECT status FROM support_tickets WHERE id=? AND organization_id=?", (ticket_id, organization_id)).fetchone()
+                if ticket is None:
+                    raise ApiError(404, "طلب الدعم غير موجود")
+                if ticket["status"] != "resolved":
+                    raise ApiError(400, "يمكن حذف الطلب بعد حله فقط")
+                connection.execute("DELETE FROM support_tickets WHERE id=? AND organization_id=?", (ticket_id, organization_id))
+                connection.commit()
+                self._send(200, {"deleted": True})
+                return
             if path == "/api/support-tickets" and method == "POST":
                 data = self._body()
                 category = str(data.get("category", "مشكلة في الحساب")).strip()[:80] or "مشكلة في الحساب"
