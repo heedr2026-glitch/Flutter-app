@@ -18,6 +18,7 @@ import appointment_context
 import appointment_followups
 import training_context
 import reception_actions
+import signup_offer
 from typing import Any
 
 try:
@@ -720,6 +721,7 @@ def init_db() -> None:
                     (secrets.token_urlsafe(18), organization["id"]),
                 )
             branch_appointments.migrate(connection, postgres=True)
+            signup_offer.migrate(connection)
             appointment_followups.migrate(connection)
             seed_package_offers(connection)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
@@ -1031,6 +1033,7 @@ def init_db() -> None:
                 "ALTER TABLE activation_codes ADD COLUMN discount_percent INTEGER NOT NULL DEFAULT 0"
             )
         branch_appointments.migrate(connection)
+        signup_offer.migrate(connection)
         appointment_followups.migrate(connection)
         seed_package_offers(connection)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
@@ -1758,6 +1761,17 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     result = package_limits.read_limits(connection)
             self._send(200, result)
             return
+        if path == '/owner/api/signup-offer' and method in ('GET', 'PUT'):
+            self._owner()
+            with db() as connection:
+                result = signup_offer.overview(connection) if method == 'GET' else signup_offer.configure(connection, self._body(), ApiError)
+                if method == 'PUT':
+                    connection.commit()
+            self._send(200, result)
+            return
+        if method == 'GET' and path == '/owner/signup-offer':
+            self._send_html((ROOT / 'owner_signup_offer.html').read_text(encoding='utf-8'))
+            return
         if method == "GET" and path == "/owner/offers":
             self._send_html(
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>عروض باقات خدووم</title><style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:18px;padding:20px;margin-bottom:14px}h1{color:#38bdf8}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold}.delete{background:#b91c1c}.offer{border-right:4px solid #f59e0b}a{color:#7dd3fc}</style></head><body><div class="wrap"><h1>عروض الباقات</h1><p><a href="/owner">العودة إلى لوحة المالك</a></p><div class="card"><h2>مفتاح المالك</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="loadOffers()">دخول وتحميل العروض</button></div><div class="card"><h2>إضافة عرض</h2><select id="package"><option value="basic">الأساسية</option><option value="vip">VIP</option></select><input id="paidMonths" type="number" min="1" max="60" value="1" placeholder="الأشهر المدفوعة"><input id="bonusMonths" type="number" min="0" max="60" value="0" placeholder="الأشهر المجانية"><input id="price" type="number" min="0" step="0.01" value="49" placeholder="السعر بالريال"><input id="label" maxlength="80" placeholder="اسم العرض — مثال: 6 أشهر + 6 مجانًا"><button onclick="saveOffer()">حفظ العرض</button></div><div id="offers"></div></div><script>const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function loadOffers(){let r=await fetch('/owner/api/package-offers',{headers:headers()}),d=await r.json(),box=document.getElementById('offers');if(!r.ok){box.textContent=d.error||'تعذر التحميل';return}box.innerHTML=d.length?d.map(o=>`<div class="card offer"><b>${o.package==='basic'?'الأساسية':'VIP'} — ${esc(o.label||'عرض')}</b><p>الدفع: ${o.paid_months} شهر | هدية: ${o.bonus_months} شهر</p><p>إجمالي التفعيل: ${o.paid_months+o.bonus_months} شهر</p><p>السعر: ${o.price_sar} ريال</p><button class="delete" onclick="removeOffer(${o.id})">حذف العرض</button></div>`).join(''):'لا توجد عروض'}async function saveOffer(){let body={package:document.getElementById('package').value,paidMonths:+document.getElementById('paidMonths').value,bonusMonths:+document.getElementById('bonusMonths').value,priceSar:+document.getElementById('price').value,label:document.getElementById('label').value};let r=await fetch('/owner/api/package-offers',{method:'POST',headers:headers(),body:JSON.stringify(body)}),d=await r.json();alert(r.ok?'تم حفظ العرض':(d.error||'تعذر الحفظ'));if(r.ok)loadOffers()}async function removeOffer(id){if(!confirm('حذف العرض؟'))return;let r=await fetch('/owner/api/package-offers/'+id,{method:'DELETE',headers:headers()}),d=await r.json();alert(r.ok?'تم الحذف':(d.error||'تعذر الحذف'));if(r.ok)loadOffers()}function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
@@ -2148,6 +2162,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     )
                     package = code["package"] if code else "free"
                     package_expires = (datetime.now(timezone.utc) + timedelta(days=code["duration_days"])).isoformat() if code else None
+                    gift = signup_offer.claim(connection, organization_id, now()) if code is None else None
+                    if gift:
+                        package, package_expires = gift['package'], gift['expires_at']
                     connection.execute(
                         "INSERT INTO subscriptions(organization_id,package,starts_at,expires_at) VALUES(?,?,?,?)",
                         (organization_id, package, now(), package_expires),

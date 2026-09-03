@@ -16,6 +16,7 @@ COPY appointment_followups.py /app/appointment_followups.py
 COPY training_context.py /app/training_context.py
 COPY reception_actions.py /app/reception_actions.py
 COPY owner_ads.js /app/owner_ads.js
+COPY signup_offer.py owner_signup_offer.html /app/
 COPY package_limits.py owner_package_limits.html /app/
 
 RUN mkdir -p /data && useradd --create-home khdoom && chown -R khdoom:khdoom /app /data

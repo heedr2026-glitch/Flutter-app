@@ -1,5 +1,12 @@
 // Owner durations are independent of the subscriber's 1–10 day request limit.
 let adLoadVersion = 0;
+const ownerCategories = document.querySelector('.category-grid');
+if (ownerCategories) {
+  const giftLink = document.createElement('a');
+  giftLink.className = 'category-button'; giftLink.href = '/owner/signup-offer';
+  giftLink.textContent = 'هدية أول المشتركين — العدد والباقة والأشهر';
+  ownerCategories.append(giftLink);
+}
 function adApprovedDays(ad) {
   if (ad.approved && ad.approved_at && ad.expires_at) {
     const duration = (new Date(ad.expires_at) - new Date(ad.approved_at)) / 86400000;
