@@ -13,6 +13,7 @@ import sqlite3
 import re
 import package_limits
 import ad_policy
+import branch_appointments
 from typing import Any
 
 try:
@@ -417,6 +418,8 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
                      context.get("phone", ""), context.get("original_request", "")[:1000],
                      scheduled_at, "pending", "public_chat", now(), now()),
                 )
+                connection.execute("UPDATE appointment_requests SET branch_id=? WHERE id=?",
+                                   (session["branch_id"], cursor.lastrowid))
                 context["appointment_id"] = cursor.lastrowid
                 state = "waiting_human"
                 reply = "تم إرسال طلب الموعد للموظف البشري ✓ سأبلغك هنا عند القبول أو التعديل أو الرفض."
@@ -691,6 +694,7 @@ def init_db() -> None:
                     "UPDATE organizations SET public_chat_token=? WHERE id=?",
                     (secrets.token_urlsafe(18), organization["id"]),
                 )
+            branch_appointments.migrate(connection, postgres=True)
             seed_package_offers(connection)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1000,6 +1004,7 @@ def init_db() -> None:
             connection.execute(
                 "ALTER TABLE activation_codes ADD COLUMN discount_percent INTEGER NOT NULL DEFAULT 0"
             )
+        branch_appointments.migrate(connection)
         seed_package_offers(connection)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1248,13 +1253,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
         if method == "GET" and path.startswith("/chat/"):
             chat_token = path.split("/", 2)[2]
             with db() as connection:
-                organization = connection.execute(
-                    """SELECT organizations.id,organizations.name,organizations.activity,organizations.phone,
-                              subscriptions.package
-                       FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id
-                       WHERE organizations.public_chat_token=?""",
-                    (chat_token,),
-                ).fetchone()
+                organization = branch_appointments.resolve_chat(connection, chat_token)
             if organization is None:
                 raise ApiError(404, "رابط المحادثة غير صحيح")
             with db() as connection:
@@ -1296,12 +1295,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             except ValueError:
                 raise ApiError(400, "تاريخ الموعد غير صحيح")
             with db() as connection:
-                organization = connection.execute(
-                    """SELECT organizations.id,subscriptions.package FROM organizations
-                       JOIN subscriptions ON subscriptions.organization_id=organizations.id
-                       WHERE organizations.public_chat_token=?""",
-                    (chat_token,),
-                ).fetchone()
+                organization = branch_appointments.resolve_chat(connection, chat_token)
                 if organization is None:
                     raise ApiError(404, "رابط المحادثة غير صحيح")
                 if organization["package"] not in ("basic", "vip"):
@@ -1317,6 +1311,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     (organization["id"], request_type, title, customer_name, phone, notes,
                      scheduled_at, "pending", "public_chat", now(), now()),
                 )
+                connection.execute("UPDATE appointment_requests SET branch_id=? WHERE id=?",
+                                   (organization["branch_id"], cursor.lastrowid))
                 connection.commit()
             self._send(201, {"id": cursor.lastrowid, "status": "pending", "message": "تم إرسال طلب الموعد للمؤسسة"})
             return
@@ -1327,11 +1323,10 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             chat_token, session_token = parts[3], parts[5]
             after = int(urlparse(self.path).query.replace("after=", "") or "0")
             with db() as connection:
-                session = connection.execute(
-                    """SELECT chat_sessions.id FROM chat_sessions JOIN organizations
-                       ON organizations.id=chat_sessions.organization_id
-                       WHERE organizations.public_chat_token=? AND chat_sessions.public_token=?""",
-                    (chat_token, session_token),
+                organization = branch_appointments.resolve_chat(connection, chat_token)
+                session = None if organization is None else connection.execute(
+                    "SELECT id FROM chat_sessions WHERE organization_id=? AND branch_id=? AND public_token=?",
+                    (organization["id"], organization["branch_id"], session_token),
                 ).fetchone()
                 if session is None:
                     self._send(200, [])
@@ -1360,13 +1355,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 role = "موظف الاستقبال" if item.get("role") == "assistant" else "العميل"
                 safe_history.append({"role": role, "text": str(item.get("text", ""))[:1500]})
             with db() as connection:
-                organization = connection.execute(
-                    """SELECT organizations.id,organizations.name,organizations.activity,organizations.phone,
-                              subscriptions.package
-                       FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id
-                       WHERE organizations.public_chat_token=?""",
-                    (chat_token,),
-                ).fetchone()
+                organization = branch_appointments.resolve_chat(connection, chat_token)
                 if organization is None:
                     raise ApiError(404, "رابط المحادثة غير صحيح")
                 maintenance = maintenance_status(connection, organization["id"])
@@ -1378,15 +1367,15 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 session = None
                 if supplied_session_token:
                     session = connection.execute(
-                        "SELECT * FROM chat_sessions WHERE organization_id=? AND public_token=?",
-                        (organization["id"], supplied_session_token),
+                        "SELECT * FROM chat_sessions WHERE organization_id=? AND branch_id=? AND public_token=?",
+                        (organization["id"], organization["branch_id"], supplied_session_token),
                     ).fetchone()
                 if session is None:
                     supplied_session_token = secrets.token_urlsafe(24)
                     cursor = connection.execute(
-                        """INSERT INTO chat_sessions(organization_id,public_token,state,context_json,created_at,updated_at)
-                           VALUES(?,?,?,?,?,?)""",
-                        (organization["id"], supplied_session_token, "idle", "{}", now(), now()),
+                        """INSERT INTO chat_sessions(organization_id,public_token,state,context_json,created_at,updated_at,branch_id)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        (organization["id"], supplied_session_token, "idle", "{}", now(), now(), organization["branch_id"]),
                     )
                     session = connection.execute("SELECT * FROM chat_sessions WHERE id=?", (cursor.lastrowid,)).fetchone()
                 customer_cursor = connection.execute(
@@ -1774,7 +1763,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"deleted": True})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api"})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
@@ -2234,6 +2223,18 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
             user = self._user(connection)
             organization_id = user["organization_id"]
+            if path == "/api/branch-chat" and method == "POST":
+                if user["role"] != "admin":
+                    raise ApiError(403, "رابط الفرع متاح لمسؤول المؤسسة فقط")
+                data = self._body()
+                branch = branch_appointments.authorized_branch(user, data.get("branchId"), ApiError)
+                name = str(data.get("branchName", "")).strip()
+                if not name or len(name) > 80:
+                    raise ApiError(400, "اكتب اسم الفرع من 1 إلى 80 حرفًا")
+                token = branch_appointments.chat_link(connection, organization_id, branch, name)
+                connection.commit()
+                self._send(200, {"path": "/chat/" + token, "branchId": branch})
+                return
             if path == "/api/session-status" and method == "GET":
                 self._send(200, {"valid": True})
                 return
@@ -2693,24 +2694,26 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 return
             if path == "/api/appointments" and method == "GET":
                 require_permission(user, "viewAppointments", "manageAppointments", "appointments")
+                branch = branch_appointments.authorized_branch(user, parse_qs(urlparse(self.path).query).get("branchId", ["main"])[0], ApiError)
                 rows = connection.execute(
-                    """SELECT id,request_type,title,customer_name,phone,notes,scheduled_at,
+                    """SELECT id,branch_id,request_type,title,customer_name,phone,notes,scheduled_at,
                               status,source,created_at,updated_at
-                       FROM appointment_requests WHERE organization_id=? ORDER BY scheduled_at ASC""",
-                    (organization_id,),
+                       FROM appointment_requests WHERE organization_id=? AND branch_id=? ORDER BY scheduled_at ASC""",
+                    (organization_id, branch),
                 ).fetchall()
                 self._send(200, [dict(row) for row in rows])
                 return
             if path.startswith("/api/appointments/") and method == "PUT":
                 require_permission(user, "manageAppointments")
+                branch = branch_appointments.authorized_branch(user, parse_qs(urlparse(self.path).query).get("branchId", ["main"])[0], ApiError)
                 appointment_id = int(path.rsplit("/", 1)[1])
                 data = self._body()
                 status = str(data.get("status", "")).strip()
                 if status not in ("pending", "accepted", "completed", "rejected"):
                     raise ApiError(400, "حالة الطلب غير صحيحة")
                 appointment = connection.execute(
-                    "SELECT * FROM appointment_requests WHERE id=? AND organization_id=?",
-                    (appointment_id, organization_id),
+                    "SELECT * FROM appointment_requests WHERE id=? AND organization_id=? AND branch_id=?",
+                    (appointment_id, organization_id, branch),
                 ).fetchone()
                 if appointment is None:
                     raise ApiError(404, "طلب الموعد غير موجود")
