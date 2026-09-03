@@ -1,8 +1,12 @@
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
+let reviewMovedFirst = false;
+const panel = {prepend: card => { assert.equal(card, reviewCard); reviewMovedFirst = true; }};
+const reviewCard = {parentElement: panel};
 const fields = {
-  ads: {innerHTML:'',textContent:''},
+  ads: {innerHTML:'',textContent:'',closest: () => reviewCard},
+  adsPanel: panel,
   'ad-days-1': {value:'40'},
   'ad-unlimited-1': {checked:false},
   'ad-note-1': {value:'ملاحظة'},
@@ -18,12 +22,16 @@ const context = vm.createContext({
     return {ok:true,json:async () => options.method === 'PUT' ? {saved:true} : [{
       id:1,title:'<script>unsafe</script>',organization_name:'Test',message:'Test',
       status:'expired',requested_days:7,approved:true,expires_at:'2026-01-01',review_note:'</textarea>',
-    }]};
+    }, {id: 3, title: 'NEWEST REQUEST', status:'pending', requested_days:10},
+    {id: 2, title: 'SECOND REQUEST', status:'pending', requested_days:2}]};
   },
 });
 vm.runInContext(fs.readFileSync('owner_ads.js','utf8'), context);
 (async () => {
   await context.loadAds();
+  assert(reviewMovedFirst);
+  assert(fields.ads.innerHTML.indexOf('NEWEST REQUEST') < fields.ads.innerHTML.indexOf('SECOND REQUEST'));
+  assert(fields.ads.innerHTML.indexOf('SECOND REQUEST') < fields.ads.innerHTML.indexOf('&lt;script&gt;unsafe'));
   assert(fields.ads.innerHTML.includes('7 أيام'));
   assert(fields.ads.innerHTML.includes('انتهى الإعلان'));
   assert(!fields.ads.innerHTML.includes('<script>unsafe'));
