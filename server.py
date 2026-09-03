@@ -1819,7 +1819,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"deleted": True})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:

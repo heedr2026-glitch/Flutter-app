@@ -63,9 +63,9 @@ class BranchInboxTest(unittest.TestCase):
                     c.commit()
                 generic=req('/api/public-chat/'+links['main'],'POST',{'message':'اشرح لي كل الخدمات بالتفصيل'})
                 self.assertIn('لحده اليومي',generic['text'])
-                booking=req('/api/public-chat/'+links['main'],'POST',{'message':'أبي موعد مقاس','sessionToken':generic['sessionToken']})
+                booking=req('/api/public-chat/'+links['main'],'POST',{'message':'هلا ابي احد ياخذ مقاس','sessionToken':generic['sessionToken']})
                 self.assertIn('اسمك',booking['text'])
-                human=req('/api/public-chat/main2','POST',{'message':'أبي موظف بشري'})
+                human=req('/api/public-chat/main2','POST',{'message':'اطلب موظف'})
                 self.assertIn('تم تسجيل طلب تواصل',human['text'])
                 denied('/api/branch-chat','POST',{'branchId':'b1','branchName':'test'},uid=3)
                 ids = {}
