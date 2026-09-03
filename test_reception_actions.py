@@ -31,6 +31,7 @@ class ReceptionActionsTest(unittest.TestCase):
         self.assertEqual(self.c.execute('SELECT count(*) FROM appointment_followups').fetchone()[0],2)
 
     def test_price_does_not_turn_into_booking_or_name(self):
+        self.assertIn('سؤال واحد', actions.CONVERSATION_STYLE)
         for state in ('idle','await_name','await_datetime','waiting_human'):
             self.c.execute('UPDATE chat_sessions SET state=?',(state,))
             _,reply=self.send('كم السهر حق تركيب الزجاج')
@@ -55,6 +56,38 @@ class ReceptionActionsTest(unittest.TestCase):
     def test_declining_human_does_not_create_request(self):
         self.assertFalse(actions.wants_human('ما ابي موظف بشري'))
         self.assertFalse(actions.wants_human('كم السعر'))
+
+    def test_thanks_does_not_overwrite_name_or_advance_booking(self):
+        for state in ('idle', 'await_name', 'await_phone', 'await_confirmation'):
+            context=json.dumps({'customer_name':'حيدر'},ensure_ascii=False)
+            self.c.execute('UPDATE chat_sessions SET state=?,context_json=?',(state,context))
+            _,answer=self.send('شكرًا')
+            self.assertEqual(answer,'العفو، حياك الله.')
+            row=self.c.execute('SELECT state,context_json FROM chat_sessions').fetchone()
+            self.assertEqual(row['state'],state)
+            self.assertEqual(row['context_json'],context)
+        self.assertEqual(self.c.execute('SELECT count(*) FROM appointment_requests').fetchone()[0],0)
+
+    def test_pending_handoff_thanks_does_not_notify_again(self):
+        self.send('ابي موظف بشري')
+        _,answer=self.send('شكرا')
+        self.assertEqual(answer,'العفو، حياك الله.')
+        self.assertEqual(self.c.execute('SELECT count(*) FROM appointment_followups').fetchone()[0],1)
+        _,answer=self.send('الزجاج عندي مكسور')
+        self.assertIn('أضفت كلامك',answer)
+        self.assertLess(len(answer),150)
+        self.assertEqual(self.c.execute('SELECT count(*) FROM appointment_requests').fetchone()[0],1)
+        self.assertEqual(self.c.execute('SELECT count(*) FROM appointment_followups').fetchone()[0],2)
+
+    def test_identity_is_honest_without_creating_handoff(self):
+        _,answer=self.send('أنت بشر؟')
+        self.assertIn('مساعد استقبال ذكي',answer)
+        self.assertEqual(self.c.execute('SELECT count(*) FROM appointment_requests').fetchone()[0],0)
+
+    def test_social_prefix_does_not_swallow_request(self):
+        _,answer=self.send('شكرا ابي موظف بشري')
+        self.assertIn('تم تسجيل طلب تواصل',answer)
+        self.assertEqual(self.c.execute('SELECT count(*) FROM appointment_requests').fetchone()[0],1)
 
     def test_exact_saved_qa_and_conflict(self):
         line='سؤال وجواب معتمد: '+json.dumps({'السؤال':'كم سعر الزجاج؟','الإجابة':'150 ريال للمتر'},ensure_ascii=False)

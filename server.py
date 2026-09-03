@@ -291,6 +291,9 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     except json.JSONDecodeError:
         context = {}
     lowered = message.strip().lower()
+    social = reception_actions.social_reply(message)
+    if social is not None:
+        return social
     handoff = reception_actions.handoff(connection, organization_id, session, message, source_message_id, now)
     if handoff is not None:
         return handoff
@@ -346,7 +349,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         }
         return prompts[state]
     if state == "waiting_human":
-        return "طلبك أُرسل للموظف البشري، وسأكتب لك هنا فور قبوله أو تعديله أو رفضه."
+        return "طلبك موجود عند المسؤول وبانتظار رده. الرد بيظهر لك هنا، والموعد ما تأكد إلى الآن."
     if state == "idle":
         if not booking_intent:
             return None
@@ -419,7 +422,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         period = _appointment_period(lowered)
         desired = _appointment_date_from_text(lowered) if period else None
         if desired is None:
-            return "لم أفهم الفترة. اكتب اليوم وحدد صباحًا أو مساءً، مثل: السبت صباحًا."
+            return "أي يوم يناسبك؟ وحدد صباح أو مساء، مثل السبت صباحًا."
         context["scheduled_at"] = desired.isoformat()
         context["time_period"] = period
         state = "await_confirmation"
@@ -448,7 +451,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
                                    (session["branch_id"], cursor.lastrowid))
                 context["appointment_id"] = cursor.lastrowid
                 state = "waiting_human"
-                reply = "تم إرسال طلب الموعد للموظف البشري ✓ سأبلغك هنا عند القبول أو التعديل أو الرفض."
+                reply = "تم إرسال طلب الموعد للمسؤول. الموعد بانتظار موافقته، وردّه بيظهر لك هنا."
         else:
             return "للتأكيد اكتب «نعم»، ولتغيير الموعد اكتب «لا»."
     else:
@@ -1431,6 +1434,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                         "إن كان السعر محفوظًا اذكره وشروطه؛ وإن نقص النوع أو السماكة اسأل عنه فقط ولا تسأل عن الاسم والموعد. "
                         "إن لم يوجد سعر معتمد قل ذلك واقترح طلب موظف بشري. لا تقل إنك أرسلت طلبًا أو حولت للموظف؛ التنفيذ لا يتم من كلامك."
                     )
+                    system_prompt += reception_actions.CONVERSATION_STYLE
                     organization_info = {"اسم المؤسسة": organization["name"], "نشاط المؤسسة": organization["activity"], "رقم المؤسسة للتواصل": organization["phone"]}
                     training = '\n'.join(dict.fromkeys((ai_training_text(connection, organization["id"], "chat") + '\n' + ai_training_text(connection, organization["id"], "reception")).splitlines()))
                     previous_messages = connection.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12', (session['id'],)).fetchall()
@@ -1809,7 +1813,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"deleted": True})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:

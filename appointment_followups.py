@@ -47,7 +47,7 @@ def receive(c, org, session, context, message, message_id):
     appointment_id = matched[0]['id']
     c.execute('''INSERT INTO appointment_followups(message_id,appointment_id) VALUES(?,?)
         ON CONFLICT(message_id) DO NOTHING''', (message_id, appointment_id))
-    return f'تم تسجيل بلاغك وإرساله إلى قائمة متابعة الموعد #{appointment_id} في التطبيق. لم يتغير موعدك؛ سيظهر رد الموظف هنا عندما يرد.'
+    return f'تم تسجيل بلاغك على الموعد #{appointment_id} عند المسؤول. موعدك ما تغيّر، ورد الموظف بيظهر لك هنا لما يرد.'
 
 
 def enrich(c, org, branch, rows):
