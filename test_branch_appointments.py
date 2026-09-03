@@ -53,6 +53,20 @@ class BranchInboxTest(unittest.TestCase):
                     links[branch] = result['path'].split('/')[-1]
                 self.assertEqual(links['main'], 'main1')
                 self.assertEqual(len(set(links.values())), 3)
+                # Reaching the AI limit blocks only generated prose. Booking,
+                # handoff and the honest fallback still work without AI calls.
+                with server.db() as c:
+                    c.execute('INSERT INTO ai_limits(organization_id,daily_limit) VALUES(1,1)')
+                    c.execute('INSERT INTO ai_limits(organization_id,daily_limit) VALUES(2,1)')
+                    c.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(1,1,'test',?)",(server.now(),))
+                    c.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(2,2,'test',?)",(server.now(),))
+                    c.commit()
+                generic=req('/api/public-chat/'+links['main'],'POST',{'message':'اشرح لي كل الخدمات بالتفصيل'})
+                self.assertIn('لحده اليومي',generic['text'])
+                booking=req('/api/public-chat/'+links['main'],'POST',{'message':'أبي موعد مقاس','sessionToken':generic['sessionToken']})
+                self.assertIn('اسمك',booking['text'])
+                human=req('/api/public-chat/main2','POST',{'message':'أبي موظف بشري'})
+                self.assertIn('تم تسجيل طلب تواصل',human['text'])
                 denied('/api/branch-chat','POST',{'branchId':'b1','branchName':'test'},uid=3)
                 ids = {}
                 for branch, token in links.items():

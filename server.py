@@ -194,7 +194,7 @@ def generate_ai_text(
 
 
 def ai_allowance(
-    connection: Any, organization_id: int
+    connection: Any, organization_id: int, *, enforce: bool = True
 ) -> tuple[str, int, int]:
     package_row = connection.execute(
         "SELECT package FROM subscriptions WHERE organization_id=?",
@@ -209,7 +209,7 @@ def ai_allowance(
         "SELECT COUNT(*) AS count FROM ai_usage WHERE organization_id=? AND created_at>=?",
         (organization_id, day_start),
     ).fetchone()["count"]
-    if used >= daily_limit:
+    if enforce and used >= daily_limit:
         raise ApiError(429, "تم بلوغ الحد اليومي لموظفي AI")
     return package, daily_limit, used
 
@@ -1394,7 +1394,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 maintenance = maintenance_status(connection, organization["id"])
                 if maintenance["chat"]:
                     raise ApiError(503, maintenance["message"])
-                package, daily_limit, used = ai_allowance(connection, organization["id"])
+                package, daily_limit, used = ai_allowance(connection, organization["id"], enforce=False)
                 if package not in ("basic", "vip"):
                     raise ApiError(403, "موظف الاستقبال متاح من الباقة الأساسية")
                 session = None
@@ -1440,11 +1440,15 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     previous_messages = connection.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12', (session['id'],)).fetchall()
                     safe_history = [{'role':row['sender'],'text':row['message']} for row in reversed(previous_messages)]
                     user_prompt = "بيانات المؤسسة:\n" + json.dumps(organization_info, ensure_ascii=False) + "\nتدريب المؤسسة المعتمد:\n" + training + "\nالمحادثة السابقة:\n" + json.dumps(safe_history, ensure_ascii=False) + "\nرسالة العميل الحالية:\n" + message
-                    reply = reception_actions.exact_answer(message, training) or generate_ai_text(system_prompt, user_prompt)
-                    connection.execute(
-                        "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
-                        (organization["id"], admin["id"], "public_reception_chat", now()),
-                    )
+                    reply = reception_actions.exact_answer(message, training)
+                    if reply is None and used >= daily_limit:
+                        reply = 'وصل موظف الاستقبال لحده اليومي. أقدر أساعدك بالحجز أو أسجّل طلب تواصل مع موظف بشري.'
+                    elif reply is None:
+                        reply = generate_ai_text(system_prompt, user_prompt)
+                        connection.execute(
+                            "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
+                            (organization["id"], admin["id"], "public_reception_chat", now()),
+                        )
                 bot_cursor = connection.execute(
                     "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
                     (session["id"], "bot", reply, now()),
@@ -1813,7 +1817,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"deleted": True})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
