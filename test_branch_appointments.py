@@ -84,6 +84,24 @@ class BranchInboxTest(unittest.TestCase):
                 self.assertNotEqual(other['sessionToken'],'session-main')
                 req('/api/appointments/'+str(inbox[-1]['id'])+'?branchId=b1','PUT',{'status':'accepted'},uid=3)
                 self.assertEqual(req('/api/appointments')[0]['status'],'pending')
+                report=req('/api/public-chat/'+links['b1'],'POST',{'message':'الموظف تأخر','sessionToken':'session-b1'})
+                self.assertIn('تم تسجيل بلاغك',report['text'])
+                followup_item=next(x for x in req('/api/appointments?branchId=b1') if x['followup_count'])
+                self.assertEqual(req('/api/appointments')[0]['followup_count'],0)
+                reply_path='/api/appointments/'+str(followup_item['id'])+'/followup-reply?branchId=b1'
+                reply_data={'message':'نعتذر، سنتواصل معك الآن','throughMessageId':followup_item['followup_latest_id']}
+                denied(reply_path,'POST',reply_data,uid=2,code=404)
+                self.assertTrue(req(reply_path,'POST',reply_data,uid=3)['sent'])
+                self.assertTrue(req(reply_path,'POST',reply_data,uid=3)['alreadyReplied'])
+                messages=req('/api/public-chat/'+links['b1']+'/sessions/session-b1/messages?after=0')
+                self.assertEqual(len([m for m in messages if m['message']==reply_data['message']]),1)
+                req('/api/public-chat/'+links['b1'],'POST',{'message':'ابي تاجيل موعدي','sessionToken':'session-b1'})
+                followup_item=next(x for x in req('/api/appointments?branchId=b1') if x['followup_count'])
+                new_time=(datetime.now(timezone.utc)+timedelta(days=5)).isoformat()
+                req('/api/appointments/'+str(followup_item['id'])+'?branchId=b1','PUT',{'status':'accepted','scheduledAt':new_time,'followupThrough':followup_item['followup_latest_id']},uid=3)
+                updated=next(x for x in req('/api/appointments?branchId=b1') if x['id']==followup_item['id'])
+                self.assertEqual(updated['followup_count'],0)
+                self.assertEqual(updated['scheduled_at'],new_time)
                 server.init_db()  # migration is repeatable and preserves existing assignments
                 self.assertEqual(len(req('/api/appointments?branchId=b1')),2)
             finally:

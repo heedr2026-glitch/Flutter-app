@@ -15,6 +15,7 @@ import package_limits
 import ad_policy
 import branch_appointments
 import appointment_context
+import appointment_followups
 from typing import Any
 
 try:
@@ -280,13 +281,16 @@ def _format_appointment_slot(value: datetime, period: str) -> str:
     local_value = value.astimezone(timezone(timedelta(hours=3)))
     return f"{local_value:%Y-%m-%d} {period}"
 
-def _appointment_chat_reply(connection: Any, organization_id: int, session: Any, message: str) -> str | None:
+def _appointment_chat_reply(connection: Any, organization_id: int, session: Any, message: str, source_message_id: int | None = None) -> str | None:
     state = session["state"]
     try:
         context = json.loads(session["context_json"] or "{}")
     except json.JSONDecodeError:
         context = {}
     lowered = message.strip().lower()
+    followup_request = appointment_followups.receive(connection, organization_id, session, context, message, source_message_id)
+    if followup_request is not None:
+        return followup_request
     followup = appointment_context.followup_reply(connection, organization_id, session, context, message)
     if followup is not None:
         return followup
@@ -709,6 +713,7 @@ def init_db() -> None:
                     (secrets.token_urlsafe(18), organization["id"]),
                 )
             branch_appointments.migrate(connection, postgres=True)
+            appointment_followups.migrate(connection)
             seed_package_offers(connection)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1019,6 +1024,7 @@ def init_db() -> None:
                 "ALTER TABLE activation_codes ADD COLUMN discount_percent INTEGER NOT NULL DEFAULT 0"
             )
         branch_appointments.migrate(connection)
+        appointment_followups.migrate(connection)
         seed_package_offers(connection)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1396,7 +1402,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
                     (session["id"], "customer", message, now()),
                 )
-                reply = _appointment_chat_reply(connection, organization["id"], session, message)
+                reply = _appointment_chat_reply(connection, organization["id"], session, message, customer_cursor.lastrowid)
                 if reply is None:
                     admin = connection.execute(
                         "SELECT id FROM users WHERE organization_id=? AND role='admin' AND active=1 ORDER BY id LIMIT 1",
@@ -1777,7 +1783,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"deleted": True})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
@@ -2715,7 +2721,17 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                        FROM appointment_requests WHERE organization_id=? AND branch_id=? ORDER BY scheduled_at ASC""",
                     (organization_id, branch),
                 ).fetchall()
-                self._send(200, [dict(row) for row in rows])
+                self._send(200, appointment_followups.enrich(connection, organization_id, branch, rows))
+                return
+            if path.startswith("/api/appointments/") and path.endswith("/followup-reply") and method == "POST":
+                require_permission(user, "manageAppointments")
+                branch = branch_appointments.authorized_branch(user, parse_qs(urlparse(self.path).query).get("branchId", ["main"])[0], ApiError)
+                parts = path.split('/')
+                if len(parts) != 5:
+                    raise ApiError(404, "مسار الرد غير صحيح")
+                result = appointment_followups.reply(connection, organization_id, branch, int(parts[3]), self._body(), now, ApiError)
+                connection.commit()
+                self._send(200, result)
                 return
             if path.startswith("/api/appointments/") and method == "PUT":
                 require_permission(user, "manageAppointments")
@@ -2731,6 +2747,12 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 ).fetchone()
                 if appointment is None:
                     raise ApiError(404, "طلب الموعد غير موجود")
+                followup_through = data.get('followupThrough')
+                if followup_through is not None:
+                    if type(followup_through) is not int or connection.execute(
+                        'SELECT message_id FROM appointment_followups WHERE appointment_id=? AND message_id=?',
+                        (appointment_id, followup_through)).fetchone() is None:
+                        raise ApiError(400, 'المتابعة المحددة لا تتبع هذا الموعد')
                 request_type = str(data.get("type", appointment["request_type"])).strip()
                 if request_type not in ("موعد مقاس", "موعد صيانة", "طلب عميل"):
                     raise ApiError(400, "نوع الطلب غير صحيح")
@@ -2769,6 +2791,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     elif status == "completed":
                         reply_message = "تم إنجاز طلبك، وشكرًا لتواصلك معنا."
                 if appointment["chat_session_id"] and reply_message:
+                    if followup_through is not None:
+                        connection.execute('UPDATE appointment_followups SET resolved=1 WHERE appointment_id=? AND message_id<=?',
+                                           (appointment_id, followup_through))
                     connection.execute(
                         "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
                         (appointment["chat_session_id"], "human", reply_message, now()),
