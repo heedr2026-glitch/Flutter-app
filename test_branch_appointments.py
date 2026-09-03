@@ -104,6 +104,28 @@ class BranchInboxTest(unittest.TestCase):
                 self.assertEqual(updated['scheduled_at'],new_time)
                 server.init_db()  # migration is repeatable and preserves existing assignments
                 self.assertEqual(len(req('/api/appointments?branchId=b1')),2)
+                # New customer inquiry reads reception training without creating a booking.
+                qa='سؤال وجواب معتمد: '+json.dumps({'السؤال':'كم سعر الزجاج؟','الإجابة':'150 ريال للمتر حسب النوع'},ensure_ascii=False)
+                with server.db() as c:
+                    c.execute('INSERT INTO ai_training(organization_id,employee_type,content,updated_at) VALUES(?,?,?,?)',(1,'reception',qa,server.now()))
+                with patch.object(server,'generate_ai_text',return_value='السعر حسب نوع الزجاج، ما النوع المطلوب؟') as generate:
+                    quote=req('/api/public-chat/'+links['b2'],'POST',{'message':'كم سعر الزجاج؟'})
+                    self.assertEqual(quote['text'],'150 ريال للمتر حسب النوع')
+                    generate.assert_not_called()
+                    session_token=quote['sessionToken']
+                    self.assertEqual(len(req('/api/appointments?branchId=b2')),1)
+                    ticket=req('/api/public-chat/'+links['b2'],'POST',{'message':'ابي موظف بشري اتكلم معه','sessionToken':session_token})
+                    self.assertIn('تم تسجيل طلب تواصل',ticket['text'])
+                    handoff=next(x for x in req('/api/appointments?branchId=b2') if x['source']=='human_handoff')
+                    self.assertEqual(handoff['scheduled_at'],'')
+                    self.assertEqual(handoff['followup_count'],1)
+                    self.assertFalse(any(x['source']=='human_handoff' for x in req('/api/appointments?branchId=b1')))
+                    response={'message':'أهلًا، معك موظف المؤسسة، كيف نخدمك؟','throughMessageId':handoff['followup_latest_id']}
+                    endpoint='/api/appointments/'+str(handoff['id'])+'/followup-reply?branchId=b2'
+                    self.assertTrue(req(endpoint,'POST',response)['sent'])
+                    transcript=req('/api/public-chat/'+links['b2']+'/sessions/'+session_token+'/messages?after=0')
+                    self.assertTrue(any(x['sender']=='human' and x['message']==response['message'] for x in transcript))
+                    generate.assert_not_called()
             finally:
                 httpd.shutdown(); httpd.server_close(); thread.join()
 

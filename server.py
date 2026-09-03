@@ -16,6 +16,8 @@ import ad_policy
 import branch_appointments
 import appointment_context
 import appointment_followups
+import training_context
+import reception_actions
 from typing import Any
 
 try:
@@ -288,6 +290,11 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     except json.JSONDecodeError:
         context = {}
     lowered = message.strip().lower()
+    handoff = reception_actions.handoff(connection, organization_id, session, message, source_message_id, now)
+    if handoff is not None:
+        return handoff
+    if reception_actions.price_question(message):
+        return None
     followup_request = appointment_followups.receive(connection, organization_id, session, context, message, source_message_id)
     if followup_request is not None:
         return followup_request
@@ -1416,12 +1423,17 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                         "لا تخترع أسعارًا أو خدمات أو مواعيد. ممنوع أن تقول تم تأكيد أو تسجيل أو حجز موعد. "
                         "تأكيد الموعد لا يتم إلا بواسطة نظام الحجز بعد جمع الاسم ورقم التواصل والنوع واليوم والوقت، "
                         "ثم موافقة الموظف البشري. تحدث بصورة طبيعية ولا تقل للعميل أكمل أسئلة النظام. "
-                        "لا تطلب بيانات بنكية أو رموز تحقق."
+                        "لا تطلب بيانات بنكية أو رموز تحقق. "
+                        "سؤال السعر استفسار وليس حجزًا. افهم الأخطاء مثل السهر بمعنى السعر. "
+                        "إن كان السعر محفوظًا اذكره وشروطه؛ وإن نقص النوع أو السماكة اسأل عنه فقط ولا تسأل عن الاسم والموعد. "
+                        "إن لم يوجد سعر معتمد قل ذلك واقترح طلب موظف بشري. لا تقل إنك أرسلت طلبًا أو حولت للموظف؛ التنفيذ لا يتم من كلامك."
                     )
                     organization_info = {"اسم المؤسسة": organization["name"], "نشاط المؤسسة": organization["activity"], "رقم المؤسسة للتواصل": organization["phone"]}
-                    training = ai_training_text(connection, organization["id"], "chat")
+                    training = '\n'.join(dict.fromkeys((ai_training_text(connection, organization["id"], "chat") + '\n' + ai_training_text(connection, organization["id"], "reception")).splitlines()))
+                    previous_messages = connection.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12', (session['id'],)).fetchall()
+                    safe_history = [{'role':row['sender'],'text':row['message']} for row in reversed(previous_messages)]
                     user_prompt = "بيانات المؤسسة:\n" + json.dumps(organization_info, ensure_ascii=False) + "\nتدريب المؤسسة المعتمد:\n" + training + "\nالمحادثة السابقة:\n" + json.dumps(safe_history, ensure_ascii=False) + "\nرسالة العميل الحالية:\n" + message
-                    reply = generate_ai_text(system_prompt, user_prompt)
+                    reply = reception_actions.exact_answer(message, training) or generate_ai_text(system_prompt, user_prompt)
                     connection.execute(
                         "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
                         (organization["id"], admin["id"], "public_reception_chat", now()),
@@ -1783,7 +1795,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"deleted": True})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
@@ -2406,12 +2418,16 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(200, [dict(row) for row in reversed(rows)])
                 return
             if path == "/api/ai-training/chat" and method == "POST":
+                require_permission(user, "manageSettings")
                 data = self._body()
                 employee_type = str(data.get("employeeType", "")).strip()
                 message = str(data.get("message", "")).strip()[:2000]
                 allowed_types = {"shared", "assistant", "chat", "reception", "whatsapp", "calls", "commercial_research"}
                 if employee_type not in allowed_types or not message:
                     raise ApiError(400, "رسالة التدريب غير صحيحة")
+                previous = training_context.history(connection, organization_id, employee_type)
+                account_context = training_context.context(connection, organization_id, data.get("context"))
+                grounded_reply = training_context.direct_answer(message, account_context)
                 connection.execute(
                     "INSERT INTO ai_training_messages(organization_id,employee_type,sender,message,created_at) VALUES(?,?,?,?,?)",
                     (organization_id, employee_type, "owner", message, now()),
@@ -2434,6 +2450,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 elif any(word in normalized for word in ("انسَ", "انسى", "احذف", "امسح")):
                     text = "حتى لا أحذف معلومة بالخطأ، اختر المعلومة من قائمة المعلومات المحفوظة ثم أكد حذفها."
                     action = "delete_confirmation_required"
+                elif normalized in {"احفظ", "احفظها", "احفظهم", "حفظ", "خزنها"}:
+                    text = "حتى أحفظ المعلومة الصحيحة، اكتب «احفظ:» وبعدها المعلومة أو السؤال وجوابه. لن أحفظ سؤالًا أو كلامًا مبهمًا بالخطأ."
+                    action = "needs_fact"
                 elif should_learn:
                     fact = re.sub(
                         r"^(احفظ|حفظ|خزن|خزّن|تعلم|تعلّم|علمني|اعلمك|سجل المعلومة|سجّل المعلومة)\s*[:：-]?\s*",
@@ -2451,18 +2470,22 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         text = f"هذه المعلومة محفوظة عندي من قبل: {fact} ✓"
                         action = "already_saved"
                     else:
-                        new_content = (training + "\n• " + fact).strip() if training else "• " + fact
-                        connection.execute(
+                        own_row = connection.execute("SELECT content FROM ai_training WHERE organization_id=? AND employee_type=?", (organization_id, employee_type)).fetchone()
+                        new_content, action = training_context.append_fact(own_row["content"] if own_row else "", fact)
+                        if action == "full":
+                            text = "وصلت المعلومات المحفوظة للحد المتاح. اختصرها أو احذف معلومة قديمة ثم أعد المحاولة؛ لم أحفظ هذا النص."
+                        else:
+                            connection.execute(
                             """INSERT INTO ai_training(organization_id,employee_type,content,updated_at) VALUES(?,?,?,?)
                                ON CONFLICT(organization_id,employee_type) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at""",
-                            (organization_id, employee_type, new_content[:12000], now()),
-                        )
-                        text = f"تمام، تعلمت وحفظت: {fact} ✓"
-                        action = "saved"
+                                (organization_id, employee_type, new_content, now()),
+                            )
+                            text = f"تم حفظ المعلومة للموظف المختار: {fact} ✓"
+                elif grounded_reply:
+                    text = grounded_reply
                 else:
                     package, daily_limit, used = ai_allowance(connection, organization_id)
-                    system_prompt = "أنت موظف AI ودود خاص بهذه المؤسسة. تحدث بالعربية بشكل طبيعي ومفيد داخل نشاط المؤسسة. استخدم المعلومات المحفوظة عند توفرها. إذا كانت الرسالة طلب خدمة فاسأل عن التفاصيل اللازمة مثل المقاس والموقع والموعد، ولا تدّعي أنك حفظت الرسالة. إذا سأل عن معلومة غير محفوظة فقل بوضوح إنك لا تعرفها بعد."
-                    user_prompt = f"المعلومات المحفوظة:\n{training or 'لا توجد معلومات'}\n\nرسالة المستخدم:\n{message}"
+                    system_prompt, user_prompt = training_context.prompts(message, training, previous, account_context)
                     text = generate_ai_text(system_prompt, user_prompt)
                     connection.execute(
                         "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
@@ -2474,6 +2497,28 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 )
                 connection.commit()
                 self._send(200, {"text": text, "action": action})
+                return
+            if path == "/api/ai/assistant" and method == "POST":
+                # Local branch data is supplied by the administrator's app; never use it for writes.
+                require_permission(user, "manageSettings")
+                data = self._body()
+                message = str(data.get("message", "")).strip()[:2000]
+                if not message:
+                    raise ApiError(400, "اكتب رسالتك")
+                info = training_context.context(connection, organization_id, data.get("context"))
+                previous = training_context.client_history(data.get("history"))
+                snapshot = data.get("context") if isinstance(data.get("context"), dict) else {}
+                info["deviceSnapshotCounts"] = {key: value for key, value in snapshot.items()
+                    if key in {"vehicles", "employees", "appointments", "documents"}
+                    and type(value) is int and 0 <= value <= 1000000}
+                text = training_context.direct_answer(message, info)
+                if not text:
+                    ai_allowance(connection, organization_id)
+                    system_prompt, user_prompt = training_context.prompts(message, ai_training_text(connection, organization_id, "assistant"), previous, info)
+                    text = generate_ai_text(system_prompt, user_prompt)
+                    connection.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)", (organization_id,user["id"],"assistant",now()))
+                    connection.commit()
+                self._send(200, {"text": text})
                 return
             if path == "/api/ai/commercial-research" and method == "POST":
                 data = self._body()
