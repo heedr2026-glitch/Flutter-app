@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY server.py /app/server.py
 COPY ad_policy.py /app/ad_policy.py
 COPY branch_appointments.py /app/branch_appointments.py
+COPY appointment_context.py /app/appointment_context.py
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/
 

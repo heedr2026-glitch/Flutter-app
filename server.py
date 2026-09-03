@@ -14,6 +14,7 @@ import re
 import package_limits
 import ad_policy
 import branch_appointments
+import appointment_context
 from typing import Any
 
 try:
@@ -286,6 +287,10 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     except json.JSONDecodeError:
         context = {}
     lowered = message.strip().lower()
+    followup = appointment_context.followup_reply(connection, organization_id, session, context, message)
+    if followup is not None:
+        return followup
+    known_name = appointment_context.remembered_name(connection, session, context)
     booking_intent = any(
         phrase in lowered
         for phrase in (
@@ -295,7 +300,9 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     )
     if state == "closed":
         state = "idle"
-        context = {}
+        context = {"customer_name": known_name} if known_name else {}
+    if appointment_context.explicit_new(message) and state == "waiting_human":
+        state = "idle"
     cancel_booking = any(
         phrase in lowered
         for phrase in ("إلغاء الحجز", "الغاء الحجز", "ألغي الحجز", "الغي الحجز", "إلغاء الموعد", "الغاء الموعد")
@@ -334,6 +341,8 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         period = _appointment_period(lowered)
         desired = _appointment_date_from_text(lowered) if period else None
         context = {"original_request": message}
+        if known_name:
+            context['customer_name'] = known_name
         if period:
             context["time_period"] = period
         if "صيانة" in lowered:
@@ -344,7 +353,12 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
             context["scheduled_at"] = desired.isoformat()
         state = "await_name"
         reply = "أكيد. ما اسمك الكامل لتسجيل طلب الموعد؟"
+        if known_name:
+            state = "await_phone"
+            reply = f"تمام يا {known_name}، اكتب رقم التواصل لهذا الطلب."
     elif state == "await_name":
+        if appointment_context.is_followup(message):
+            return 'هذا طلب جديد غير مكتمل، وليس موعدًا معتمدًا. هل تقصد متابعة حجز سابق؟ افتح محادثته الأصلية؛ ولإكمال الطلب الجديد اكتب اسمك.'
         supplied_phone = _chat_phone(message)
         name = re.sub(r"(?:\+?\d[\d\s-]{4,})", "", message).strip(" .،-")
         context["customer_name"] = (name or "عميل")[:120]
@@ -402,7 +416,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         if any(word in lowered for word in ("لا", "غير", "غيّر", "غيره")):
             state = "await_datetime"
             reply = "حسنًا، اكتب يومًا ووقتًا آخر مناسبًا."
-        elif any(word in lowered for word in ("نعم", "اي", "أيوه", "موافق", "تمام")):
+        elif appointment_context.normalize(lowered).strip(' .،!؟') in ("نعم", "اي", "ايوه", "موافق", "تمام", "اكد", "اكد الموعد", "اكد موعدي"):
             scheduled_at = context.get("scheduled_at")
             if not scheduled_at:
                 state = "await_datetime"
@@ -1763,7 +1777,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"deleted": True})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
