@@ -16,6 +16,7 @@ import ad_policy
 import branch_appointments
 import appointment_context
 import appointment_followups
+import customer_push
 import training_context
 import reception_actions
 import signup_offer
@@ -726,6 +727,7 @@ def init_db() -> None:
             branch_appointments.migrate(connection, postgres=True)
             signup_offer.migrate(connection)
             appointment_followups.migrate(connection)
+            customer_push.migrate(connection, postgres=True)
             seed_package_offers(connection)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1038,6 +1040,7 @@ def init_db() -> None:
         branch_appointments.migrate(connection)
         signup_offer.migrate(connection)
         appointment_followups.migrate(connection)
+        customer_push.migrate(connection)
         seed_package_offers(connection)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1208,6 +1211,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_javascript(self, script: str) -> None:
+        body = script.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Service-Worker-Allowed", "/")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _body(self) -> dict:
         try:
             transfer_encoding = self.headers.get("Transfer-Encoding", "").lower()
@@ -1283,6 +1295,9 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 </div></body></html>"""
             )
             return
+        if method == "GET" and path == "/chat-push-sw.js":
+            self._send_javascript(customer_push.service_worker())
+            return
         if method == "GET" and path.startswith("/chat/"):
             chat_token = path.split("/", 2)[2]
             with db() as connection:
@@ -1298,6 +1313,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
             page = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف استقبال __ORG_NAME__</title>
 <style>body{margin:0;background:linear-gradient(160deg,#071126,#142454);color:#fff;font-family:Tahoma,Arial;min-height:100vh}.wrap{max-width:720px;margin:auto;padding:22px}.head,.chat{background:#111f42;border:1px solid #24618d;border-radius:22px;padding:20px;margin-bottom:14px}h1{color:#38d4ff;margin:0 0 8px}.messages{min-height:260px;max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:14px}.msg{padding:12px 15px;border-radius:16px;white-space:pre-wrap;line-height:1.65}.bot{background:#15345f;align-self:flex-start}.customer{background:#087cab;align-self:flex-end}textarea,input,select,button{box-sizing:border-box;width:100%;padding:14px;border-radius:13px;border:1px solid #2f6b99;color:#fff;font:inherit}textarea,input,select{background:#09152e}textarea{min-height:88px;resize:vertical}.appointment{display:none}.appointment.open{display:block}.appointment label{display:block;margin-top:10px;color:#9bdcf5}button{background:#7c3aed;font-weight:bold;margin-top:10px;cursor:pointer}.note{color:#9bdcf5;font-size:13px}.error{color:#fbbf24}</style></head><body><main class="wrap"><section class="head"><h1>__ORG_NAME__</h1><p>مرحبًا بك، أنا موظف الاستقبال الذكي. كيف أقدر أخدمك؟</p><p class="note">لا ترسل بيانات بنكية أو رموز تحقق. قد يتابع معك موظف بشري عند الحاجة.</p></section><section class="chat"><div id="messages" class="messages"><div class="msg bot">مرحبًا بك في __ORG_NAME__. اكتب استفسارك أو تفاصيل طلبك.</div></div><textarea id="message" maxlength="1500" placeholder="اكتب رسالتك هنا"></textarea><button id="send" onclick="sendMessage()">إرسال</button><div id="status" class="note"></div></section></main>
 <script>const history=[];const sessionStorageKey='khdoom_chat___CHAT_TOKEN__';let sessionToken=localStorage.getItem(sessionStorageKey)||'';let lastMessageId=0;function addMessage(text,type){const item=document.createElement('div');item.className='msg '+type;item.textContent=text;const box=document.getElementById('messages');box.appendChild(item);box.scrollTop=box.scrollHeight}async function sendMessage(){const input=document.getElementById('message'),button=document.getElementById('send'),status=document.getElementById('status'),message=input.value.trim();if(!message)return;addMessage(message,'customer');history.push({role:'customer',text:message});input.value='';button.disabled=true;status.textContent='جاري تجهيز الرد...';try{const response=await fetch('/api/public-chat/__CHAT_TOKEN__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history:history.slice(-8),sessionToken})});const data=await response.json();if(!response.ok)throw new Error(data.error||'تعذر الرد الآن');if(data.sessionToken){sessionToken=data.sessionToken;localStorage.setItem(sessionStorageKey,sessionToken)}if(data.lastMessageId)lastMessageId=Math.max(lastMessageId,data.lastMessageId);addMessage(data.text,'bot');history.push({role:'assistant',text:data.text});status.textContent=''}catch(error){status.textContent=error.message;status.className='note error'}finally{button.disabled=false;input.focus()}}async function pollMessages(){if(!sessionToken)return;try{const response=await fetch(`/api/public-chat/__CHAT_TOKEN__/sessions/${sessionToken}/messages?after=${lastMessageId}`);const data=await response.json();if(!response.ok||!Array.isArray(data))return;for(const message of data){lastMessageId=Math.max(lastMessageId,message.id);addMessage(message.message,message.sender==='customer'?'customer':'bot')}}catch(_){}}setInterval(pollMessages,5000);pollMessages();</script></body></html>"""
+            page = page.replace('<textarea id="message"', '<button id="enablePush" onclick="enableReplyNotifications()">🔔 تفعيل إشعارات رد الموظف</button><div id="pushStatus" class="note">على الآيفون: أضف الشات للشاشة الرئيسية ثم افتحه كتطبيق.</div><textarea id="message"')
+            page = page.replace("</body>", customer_push.client_script(chat_token) + "</body>")
             page = page.replace("__ORG_NAME__", html.escape(organization["name"])).replace("__CHAT_TOKEN__", chat_token)
             self._send_html(page)
             return
@@ -1349,6 +1366,36 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 connection.commit()
             self._send(201, {"id": cursor.lastrowid, "status": "pending", "message": "تم إرسال طلب الموعد للمؤسسة"})
             return
+        if method == "GET" and path.startswith("/api/public-chat/") and path.endswith("/push-key"):
+            parts = path.split("/")
+            if len(parts) != 5:
+                raise ApiError(404, "مسار مفتاح الإشعارات غير صحيح")
+            with db() as connection:
+                if branch_appointments.resolve_chat(connection, parts[3]) is None:
+                    raise ApiError(404, "رابط المحادثة غير صحيح")
+            public_key = customer_push.public_key()
+            if not public_key:
+                raise ApiError(503, "إشعارات الردود غير مهيأة بعد")
+            self._send(200, {"publicKey": public_key})
+            return
+        if method == "POST" and path.startswith("/api/public-chat/") and path.endswith("/push-subscription"):
+            parts = path.split("/")
+            if len(parts) != 7 or parts[4] != "sessions":
+                raise ApiError(404, "مسار اشتراك الإشعارات غير صحيح")
+            chat_token, session_token = parts[3], parts[5]
+            with db() as connection:
+                organization = branch_appointments.resolve_chat(connection, chat_token)
+                session = None if organization is None else connection.execute(
+                    "SELECT id FROM chat_sessions WHERE organization_id=? AND branch_id=? AND public_token=?",
+                    (organization["id"], organization["branch_id"], session_token),
+                ).fetchone()
+                if session is None:
+                    raise ApiError(404, "المحادثة غير موجودة")
+                customer_push.save(connection, session["id"], chat_token, self._body(), now(), ApiError)
+                connection.commit()
+            self._send(201, {"saved": True})
+            return
+
         if method == "GET" and path.startswith("/api/public-chat/") and "/sessions/" in path and path.endswith("/messages"):
             parts = path.split("/")
             if len(parts) != 7:
@@ -2803,6 +2850,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     raise ApiError(404, "مسار الرد غير صحيح")
                 result = appointment_followups.reply(connection, organization_id, branch, int(parts[3]), self._body(), now, ApiError)
                 connection.commit()
+                if result.get("sent"):
+                    session = connection.execute(
+                        "SELECT chat_session_id FROM appointment_requests WHERE id=? AND organization_id=? AND branch_id=?",
+                        (int(parts[3]), organization_id, branch),
+                    ).fetchone()
+                    if session is not None and session["chat_session_id"]:
+                        customer_push.notify_employee_reply(connection, session["chat_session_id"])
+                        connection.commit()
                 self._send(200, result)
                 return
             if path.startswith("/api/appointments/") and method == "PUT":
@@ -2876,6 +2931,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     )
                 audit_log(connection, organization_id, user["id"], "appointment_updated", f"تم تحديث {request_type} للعميل {customer_name} إلى حالة {status}", "appointment", appointment_id)
                 connection.commit()
+                if appointment["chat_session_id"] and reply_message:
+                    customer_push.notify_employee_reply(connection, appointment["chat_session_id"])
+                    connection.commit()
                 self._send(200, {"saved": True, "status": status, "replyMessage": reply_message})
                 return
             if path == "/api/vehicles" and method == "GET":

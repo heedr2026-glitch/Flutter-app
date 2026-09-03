@@ -13,6 +13,7 @@ COPY ad_policy.py /app/ad_policy.py
 COPY branch_appointments.py /app/branch_appointments.py
 COPY appointment_context.py /app/appointment_context.py
 COPY appointment_followups.py /app/appointment_followups.py
+COPY customer_push.py /app/customer_push.py
 COPY training_context.py /app/training_context.py
 COPY reception_actions.py /app/reception_actions.py
 COPY owner_ads.js /app/owner_ads.js
