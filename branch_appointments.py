@@ -5,6 +5,11 @@ import secrets
 
 
 def migrate(connection, postgres=False):
+    connection.execute('''CREATE TABLE IF NOT EXISTS archived_appointments (
+        organization_id BIGINT NOT NULL,
+        branch_id TEXT NOT NULL,
+        appointment_id BIGINT NOT NULL,
+        PRIMARY KEY (organization_id, branch_id, appointment_id))''')
     connection.execute('''CREATE TABLE IF NOT EXISTS branch_chat_links (
         organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
         branch_id TEXT NOT NULL, branch_name TEXT NOT NULL,

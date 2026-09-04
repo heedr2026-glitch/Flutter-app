@@ -8,6 +8,8 @@ class AppointmentContextTest(unittest.TestCase):
     def setUp(self):
         self.c=sqlite3.connect(':memory:'); self.c.row_factory=sqlite3.Row
         self.c.executescript('''
+          CREATE TABLE maintenance_modes(organization_id INTEGER,chat_until TEXT,appointments_until TEXT,message TEXT);
+          CREATE TABLE global_maintenance(service TEXT,expires_at TEXT,message TEXT);
           CREATE TABLE chat_sessions(id INTEGER PRIMARY KEY,state TEXT,context_json TEXT,branch_id TEXT,updated_at TEXT);
           CREATE TABLE chat_messages(id INTEGER PRIMARY KEY,session_id INTEGER,sender TEXT,message TEXT);
           CREATE TABLE appointment_requests(id INTEGER PRIMARY KEY,organization_id INTEGER,chat_session_id INTEGER,
@@ -18,6 +20,13 @@ class AppointmentContextTest(unittest.TestCase):
         ''')
 
     def tearDown(self): self.c.close()
+
+    def test_maintenance_blocks_new_booking_and_pending_confirmation(self):
+        self.c.execute("INSERT INTO maintenance_modes(organization_id,appointments_until,message) VALUES(1,'2099-01-01T00:00:00+00:00','صيانة')")
+        self.assertIn('صيانة', self.ask('أبي موعد جديد'))
+        self.c.execute("UPDATE chat_sessions SET state='await_confirmation'")
+        self.assertIn('صيانة', self.ask('نعم'))
+        self.assertEqual(self.c.execute('SELECT count(*) FROM appointment_requests').fetchone()[0], 0)
 
     def ask(self, text):
         session=self.c.execute('SELECT * FROM chat_sessions WHERE id=1').fetchone()

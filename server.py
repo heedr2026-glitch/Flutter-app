@@ -14,9 +14,11 @@ import re
 import package_limits
 import ad_policy
 import branch_appointments
+import branch_sync
 import appointment_context
 import appointment_followups
 import training_context
+import customer_push
 import reception_actions
 import signup_offer
 from typing import Any
@@ -329,6 +331,10 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
             (now(), session["id"]),
         )
         return "تم إلغاء الحجز غير المكتمل. كيف أقدر أخدمك؟"
+    if booking_intent or state in active_booking_states:
+        maintenance = service_maintenance_status(connection, organization_id, 'appointments')
+        if maintenance['active']:
+            return maintenance['message'] + ' — لا يمكن إرسال حجز جديد الآن.'
     greeting = lowered.strip(" .،!؟") in {"السلام", "السلام عليكم", "هلا", "مرحبا", "مرحبًا", "صباح الخير", "مساء الخير"}
     if greeting and state in active_booking_states:
         prompts = {
@@ -725,7 +731,10 @@ def init_db() -> None:
                 )
             branch_appointments.migrate(connection, postgres=True)
             signup_offer.migrate(connection)
+            customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
+            if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") == "1":
+                branch_sync.migrate(connection)
             seed_package_offers(connection)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1038,6 +1047,9 @@ def init_db() -> None:
         branch_appointments.migrate(connection)
         signup_offer.migrate(connection)
         appointment_followups.migrate(connection)
+        customer_push.migrate(connection)
+        if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") == "1":
+            branch_sync.migrate(connection)
         seed_package_offers(connection)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1078,6 +1090,9 @@ def maintenance_status(connection: Any, organization_id: int) -> dict[str, Any]:
 
 
 def service_maintenance_status(connection: Any, organization_id: int, service: str) -> dict[str, Any]:
+    if service in ('appointments', 'chat'):
+        status = maintenance_status(connection, organization_id)
+        return {'active': status[service], 'until': status[service + 'Until'], 'message': status['message']}
     global_status = global_maintenance_status(connection, service)
     if global_status["active"]:
         return global_status
@@ -1198,13 +1213,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_html(self, html: str, *, ad_management: bool = False) -> None:
+    def _send_html(self, html: str, *, ad_management: bool = False, status: int = 200) -> None:
+        if '<title>عروض باقات خدووم</title>' in html:
+            for field, caption in [('package', 'الباقة'), ('paidMonths', 'عدد الأشهر المدفوعة'), ('bonusMonths', 'أشهر إضافية مجانية'), ('price', 'إجمالي سعر العرض بالريال — وليس سعر الشهر'), ('label', 'اسم العرض الذي يظهر للمشترك')]:
+                for tag in ('input', 'select'):
+                    html = html.replace(f'<{tag} id="{field}"', f'<label for="{field}">{caption}</label><{tag} id="{field}"')
         if ad_management:
             html = html.replace('</body>', '<script>' + (ROOT / 'owner_ads.js').read_text(encoding='utf-8') + '</script></body>')
         body = html.encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_javascript(self, script: str) -> None:
+        body = script.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Service-Worker-Allowed", "/")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1283,21 +1311,29 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 </div></body></html>"""
             )
             return
+        if method == "GET" and path == "/chat-push-sw.js":
+            self._send_javascript(customer_push.service_worker())
+            return
         if method == "GET" and path.startswith("/chat/"):
             chat_token = path.split("/", 2)[2]
             with db() as connection:
+
                 organization = branch_appointments.resolve_chat(connection, chat_token)
             if organization is None:
                 raise ApiError(404, "رابط المحادثة غير صحيح")
             with db() as connection:
                 maintenance = maintenance_status(connection, organization["id"])
             if maintenance["chat"]:
-                raise ApiError(503, maintenance["message"])
+                message = html.escape(maintenance['message'])
+                self._send_html('''<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>الشات تحت الصيانة</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;color:white;font-family:Tahoma}main{box-sizing:border-box;width:min(92%,720px);padding:32px;border:1px solid #38bdf8;border-radius:24px;background:#111f42;text-align:center}h1{font-size:clamp(28px,6vw,44px);color:#fbbf24}p{font-size:clamp(22px,4vw,30px);line-height:1.8;overflow-wrap:anywhere}button{font:inherit;font-size:22px;padding:16px 30px;border:0;border-radius:12px;background:#38bdf8}</style></head><body><main role="status"><h1>الشات تحت الصيانة مؤقتًا</h1><p>''' + message + '''</p><p>يرجى المحاولة لاحقًا.</p><button onclick="location.reload()">تحديث الحالة</button></main></body></html>''', status=503)
+                return
             if organization["package"] not in ("basic", "vip"):
                 raise ApiError(403, "موظف الاستقبال غير متاح لهذه المؤسسة حاليًا")
             page = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف استقبال __ORG_NAME__</title>
 <style>body{margin:0;background:linear-gradient(160deg,#071126,#142454);color:#fff;font-family:Tahoma,Arial;min-height:100vh}.wrap{max-width:720px;margin:auto;padding:22px}.head,.chat{background:#111f42;border:1px solid #24618d;border-radius:22px;padding:20px;margin-bottom:14px}h1{color:#38d4ff;margin:0 0 8px}.messages{min-height:260px;max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:14px}.msg{padding:12px 15px;border-radius:16px;white-space:pre-wrap;line-height:1.65}.bot{background:#15345f;align-self:flex-start}.customer{background:#087cab;align-self:flex-end}textarea,input,select,button{box-sizing:border-box;width:100%;padding:14px;border-radius:13px;border:1px solid #2f6b99;color:#fff;font:inherit}textarea,input,select{background:#09152e}textarea{min-height:88px;resize:vertical}.appointment{display:none}.appointment.open{display:block}.appointment label{display:block;margin-top:10px;color:#9bdcf5}button{background:#7c3aed;font-weight:bold;margin-top:10px;cursor:pointer}.note{color:#9bdcf5;font-size:13px}.error{color:#fbbf24}</style></head><body><main class="wrap"><section class="head"><h1>__ORG_NAME__</h1><p>مرحبًا بك، أنا موظف الاستقبال الذكي. كيف أقدر أخدمك؟</p><p class="note">لا ترسل بيانات بنكية أو رموز تحقق. قد يتابع معك موظف بشري عند الحاجة.</p></section><section class="chat"><div id="messages" class="messages"><div class="msg bot">مرحبًا بك في __ORG_NAME__. اكتب استفسارك أو تفاصيل طلبك.</div></div><textarea id="message" maxlength="1500" placeholder="اكتب رسالتك هنا"></textarea><button id="send" onclick="sendMessage()">إرسال</button><div id="status" class="note"></div></section></main>
 <script>const history=[];const sessionStorageKey='khdoom_chat___CHAT_TOKEN__';let sessionToken=localStorage.getItem(sessionStorageKey)||'';let lastMessageId=0;function addMessage(text,type){const item=document.createElement('div');item.className='msg '+type;item.textContent=text;const box=document.getElementById('messages');box.appendChild(item);box.scrollTop=box.scrollHeight}async function sendMessage(){const input=document.getElementById('message'),button=document.getElementById('send'),status=document.getElementById('status'),message=input.value.trim();if(!message)return;addMessage(message,'customer');history.push({role:'customer',text:message});input.value='';button.disabled=true;status.textContent='جاري تجهيز الرد...';try{const response=await fetch('/api/public-chat/__CHAT_TOKEN__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history:history.slice(-8),sessionToken})});const data=await response.json();if(!response.ok)throw new Error(data.error||'تعذر الرد الآن');if(data.sessionToken){sessionToken=data.sessionToken;localStorage.setItem(sessionStorageKey,sessionToken)}if(data.lastMessageId)lastMessageId=Math.max(lastMessageId,data.lastMessageId);addMessage(data.text,'bot');history.push({role:'assistant',text:data.text});status.textContent=''}catch(error){status.textContent=error.message;status.className='note error'}finally{button.disabled=false;input.focus()}}async function pollMessages(){if(!sessionToken)return;try{const response=await fetch(`/api/public-chat/__CHAT_TOKEN__/sessions/${sessionToken}/messages?after=${lastMessageId}`);const data=await response.json();if(!response.ok||!Array.isArray(data))return;for(const message of data){lastMessageId=Math.max(lastMessageId,message.id);addMessage(message.message,message.sender==='customer'?'customer':'bot')}}catch(_){}}setInterval(pollMessages,5000);pollMessages();</script></body></html>"""
+            page = page.replace('<textarea id="message"', '<button id="enablePush" onclick="enableReplyNotifications()">🔔 تفعيل إشعارات رد الموظف</button><div id="pushStatus" class="note">على الآيفون: أضف الشات للشاشة الرئيسية ثم افتحه كتطبيق.</div><textarea id="message"')
+            page = page.replace("</body>", customer_push.client_script(chat_token) + "</body>")
             page = page.replace("__ORG_NAME__", html.escape(organization["name"])).replace("__CHAT_TOKEN__", chat_token)
             self._send_html(page)
             return
@@ -1349,6 +1385,36 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 connection.commit()
             self._send(201, {"id": cursor.lastrowid, "status": "pending", "message": "تم إرسال طلب الموعد للمؤسسة"})
             return
+        if method == "GET" and path.startswith("/api/public-chat/") and path.endswith("/push-key"):
+            parts = path.split("/")
+            if len(parts) != 5:
+                raise ApiError(404, "مسار مفتاح الإشعارات غير صحيح")
+            with db() as connection:
+                if branch_appointments.resolve_chat(connection, parts[3]) is None:
+                    raise ApiError(404, "رابط المحادثة غير صحيح")
+            public_key = customer_push.public_key()
+            if not public_key:
+                raise ApiError(503, "إشعارات الردود غير مهيأة بعد")
+            self._send(200, {"publicKey": public_key})
+            return
+        if method == "POST" and path.startswith("/api/public-chat/") and path.endswith("/push-subscription"):
+            parts = path.split("/")
+            if len(parts) != 7 or parts[4] != "sessions":
+                raise ApiError(404, "مسار اشتراك الإشعارات غير صحيح")
+            chat_token, session_token = parts[3], parts[5]
+            with db() as connection:
+                organization = branch_appointments.resolve_chat(connection, chat_token)
+                session = None if organization is None else connection.execute(
+                    "SELECT id FROM chat_sessions WHERE organization_id=? AND branch_id=? AND public_token=?",
+                    (organization["id"], organization["branch_id"], session_token),
+                ).fetchone()
+                if session is None:
+                    raise ApiError(404, "المحادثة غير موجودة")
+                customer_push.save(connection, session["id"], chat_token, self._body(), now(), ApiError)
+                connection.commit()
+            self._send(201, {"saved": True})
+            return
+
         if method == "GET" and path.startswith("/api/public-chat/") and "/sessions/" in path and path.endswith("/messages"):
             parts = path.split("/")
             if len(parts) != 7:
@@ -1967,7 +2033,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._owner()
             with db() as connection:
                 rows = connection.execute(
-                    """SELECT subscription_requests.id,subscription_requests.requested_package,
+                    """SELECT subscription_requests.id,subscription_requests.organization_id,subscription_requests.requested_package,
                               subscription_requests.discount_code,subscription_requests.discount_percent,
                               subscription_requests.status,subscription_requests.created_at,
                               subscription_requests.processed_at,organizations.name AS organization_name,
@@ -2282,6 +2348,25 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
             user = self._user(connection)
             organization_id = user["organization_id"]
+            if path.startswith("/api/branch-sync/"):
+                if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") != "1":
+                    raise ApiError(503, "المزامنة لم تُفعّل بعد؛ بيانات جهازك لم تتغير")
+                parts = path.split("/")
+                if len(parts) not in (5, 6, 7):
+                    raise ApiError(404, "مسار المزامنة غير صحيح")
+                branch, collection = parts[3], parts[4]
+                if method == "GET" and len(parts) == 5:
+                    after = parse_qs(urlparse(self.path).query).get("after", [""])[0]
+                    result = branch_sync.list_records(connection, user, branch, collection, after, ApiError)
+                elif method == "PUT" and len(parts) == 6:
+                    result = branch_sync.save_record(connection, user, branch, collection, parts[5], self._body(), ApiError)
+                    connection.commit()
+                elif method == "GET" and len(parts) == 7 and parts[6] == "history":
+                    result = branch_sync.history(connection, user, branch, collection, parts[5], ApiError)
+                else:
+                    raise ApiError(404, "مسار المزامنة غير صحيح")
+                self._send(200, result)
+                return
             if path == "/api/branch-chat" and method == "POST":
                 if user["role"] != "admin":
                     raise ApiError(403, "رابط الفرع متاح لمسؤول المؤسسة فقط")
@@ -2325,7 +2410,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(201, {"saved": True, "id": row["id"], "status": "open"})
                 return
             if path == "/api/maintenance-status" and method == "GET":
-                self._send(200, {"assistant": service_maintenance_status(connection, organization_id, "assistant")})
+                self._send(200, {service: service_maintenance_status(connection, organization_id, service) for service in ('assistant', 'appointments', 'chat')})
                 return
             if path == "/api/audit-logs" and method == "GET":
                 require_permission(user, "viewAuditLog")
@@ -2784,13 +2869,29 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
                 self._send(200, {"deleted": True})
                 return
+            if path.startswith('/api/appointments/') and method == 'DELETE':
+                require_permission(user, 'manageAppointments')
+                branch = branch_appointments.authorized_branch(user, parse_qs(urlparse(self.path).query).get('branchId', ['main'])[0], ApiError)
+                appointment_id = int(path.rsplit('/', 1)[1])
+                row = connection.execute('SELECT id FROM appointment_requests WHERE id=? AND organization_id=? AND branch_id=?',
+                    (appointment_id, organization_id, branch)).fetchone()
+                if row is None:
+                    raise ApiError(404, 'الطلب غير موجود في هذا الفرع')
+                connection.execute('INSERT INTO archived_appointments(organization_id,branch_id,appointment_id) VALUES(?,?,?) ON CONFLICT(organization_id,branch_id,appointment_id) DO NOTHING',
+                    (organization_id, branch, appointment_id))
+                audit_log(connection, organization_id, user['id'], 'appointment_archived', 'إزالة الطلب من قائمة المواعيد مع حفظ المحادثة', 'appointment', appointment_id)
+                connection.commit()
+                self._send(200, {'deleted': True, 'archived': True})
+                return
             if path == "/api/appointments" and method == "GET":
                 require_permission(user, "viewAppointments", "manageAppointments", "appointments")
                 branch = branch_appointments.authorized_branch(user, parse_qs(urlparse(self.path).query).get("branchId", ["main"])[0], ApiError)
                 rows = connection.execute(
                     """SELECT id,branch_id,request_type,title,customer_name,phone,notes,scheduled_at,
                               status,source,created_at,updated_at
-                       FROM appointment_requests WHERE organization_id=? AND branch_id=? ORDER BY scheduled_at ASC""",
+                       FROM appointment_requests WHERE organization_id=? AND branch_id=?
+                       AND NOT EXISTS (SELECT 1 FROM archived_appointments a WHERE a.appointment_id=appointment_requests.id AND a.organization_id=appointment_requests.organization_id AND a.branch_id=appointment_requests.branch_id)
+                       ORDER BY scheduled_at ASC""",
                     (organization_id, branch),
                 ).fetchall()
                 self._send(200, appointment_followups.enrich(connection, organization_id, branch, rows))
@@ -2803,10 +2904,21 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     raise ApiError(404, "مسار الرد غير صحيح")
                 result = appointment_followups.reply(connection, organization_id, branch, int(parts[3]), self._body(), now, ApiError)
                 connection.commit()
+                if result.get("sent"):
+                    session = connection.execute(
+                        "SELECT chat_session_id FROM appointment_requests WHERE id=? AND organization_id=? AND branch_id=?",
+                        (int(parts[3]), organization_id, branch),
+                    ).fetchone()
+                    if session is not None and session["chat_session_id"]:
+                        customer_push.notify_employee_reply(connection, session["chat_session_id"])
+                        connection.commit()
                 self._send(200, result)
                 return
             if path.startswith("/api/appointments/") and method == "PUT":
                 require_permission(user, "manageAppointments")
+                maintenance = service_maintenance_status(connection, organization_id, 'appointments')
+                if maintenance['active']:
+                    raise ApiError(503, maintenance['message'])
                 branch = branch_appointments.authorized_branch(user, parse_qs(urlparse(self.path).query).get("branchId", ["main"])[0], ApiError)
                 appointment_id = int(path.rsplit("/", 1)[1])
                 data = self._body()
@@ -2876,6 +2988,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     )
                 audit_log(connection, organization_id, user["id"], "appointment_updated", f"تم تحديث {request_type} للعميل {customer_name} إلى حالة {status}", "appointment", appointment_id)
                 connection.commit()
+                if appointment["chat_session_id"] and reply_message:
+                    customer_push.notify_employee_reply(connection, appointment["chat_session_id"])
+                    connection.commit()
                 self._send(200, {"saved": True, "status": status, "replyMessage": reply_message})
                 return
             if path == "/api/vehicles" and method == "GET":

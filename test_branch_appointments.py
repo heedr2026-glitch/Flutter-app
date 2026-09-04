@@ -140,6 +140,42 @@ class BranchInboxTest(unittest.TestCase):
                     transcript=req('/api/public-chat/'+links['b2']+'/sessions/'+session_token+'/messages?after=0')
                     self.assertTrue(any(x['sender']=='human' and x['message']==response['message'] for x in transcript))
                     generate.assert_not_called()
+                # Exercise repeated owner toggles without touching real services.
+                for service in ('chat', 'appointments', 'assistant'):
+                    for enabled in (True, False, True, False):
+                        with urlopen(Request('http://127.0.0.1:'+str(httpd.server_port)+'/owner/api/organizations/1/maintenance',
+                            method='PUT', data=json.dumps({'service':service,'enabled':enabled,'hours':24,'message':'<b>Test maintenance</b>'}).encode(),
+                            headers={'Content-Type':'application/json','X-Owner-Key':'test-only'}), timeout=5) as response:
+                            self.assertTrue(json.load(response)['saved'])
+                        self.assertEqual(req('/api/maintenance-status')[service]['active'], enabled)
+                        if service == 'chat' and enabled:
+                            with self.assertRaises(HTTPError) as caught:
+                                urlopen('http://127.0.0.1:'+str(httpd.server_port)+'/chat/main1', timeout=5)
+                            self.assertEqual(caught.exception.code, 503)
+                            page = caught.exception.read().decode()
+                            self.assertIn('font-size:clamp(28px', page)
+                            self.assertIn('&lt;b&gt;Test maintenance&lt;/b&gt;', page)
+                            caught.exception.close()
+                # Maintenance is enforced for the app and public booking API,
+                # but read-only review and explicit removal remain available.
+                with server.db() as c:
+                    c.execute('INSERT INTO maintenance_modes(organization_id,appointments_until,message) VALUES(?,?,?) ON CONFLICT(organization_id) DO UPDATE SET appointments_until=excluded.appointments_until,message=excluded.message', (1,expiry,'Test maintenance'))
+                    c.commit()
+                self.assertTrue(req('/api/maintenance-status')['appointments']['active'])
+                denied('/api/appointments/'+str(ids['main'])+'?branchId=main', 'PUT', {'status':'accepted'}, code=503)
+                denied('/api/public-chat/main1/appointments','POST', {'customer':'Test','phone':'000','scheduledAt':expiry}, code=503)
+                denied('/api/appointments/'+str(ids['main'])+'?branchId=b2','DELETE',code=404)
+                denied('/api/appointments/'+str(ids['main'])+'?branchId=main','DELETE',uid=2,code=404)
+                denied('/api/appointments/'+str(ids['main'])+'?branchId=main','DELETE',uid=3,code=403)
+                for rid, branch in [(ids['main'],'main'), (handoff['id'],'b2')]:
+                    path='/api/appointments/'+str(rid)+'?branchId='+branch
+                    self.assertTrue(req(path,'DELETE')['archived'])
+                    self.assertTrue(req(path,'DELETE')['archived'])
+                    self.assertFalse(any(x['id']==rid for x in req('/api/appointments?branchId='+branch)))
+                    with server.db() as c:
+                        self.assertIsNotNone(c.execute('SELECT id FROM appointment_requests WHERE id=?',(rid,)).fetchone())
+                transcript=req('/api/public-chat/'+links['b2']+'/sessions/'+session_token+'/messages?after=0')
+                self.assertTrue(any(x['sender']=='human' for x in transcript))
             finally:
                 httpd.shutdown(); httpd.server_close(); thread.join()
 
