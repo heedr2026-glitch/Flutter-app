@@ -58,6 +58,9 @@ class BankTransferSubscriptionTest(unittest.TestCase):
                 self.assertEqual(rows[0]['quoted_price'], request['quotedPrice'])
                 self.assertTrue(call('/owner/api/subscription-requests/'+str(request['id']),'PUT',{'action':'approve'},True)['saved'])
                 self.assertEqual(call('/api/subscription')['package'], 'vip')
+                with self.assertRaises(HTTPError) as missing_receipt:
+                    call('/api/subscription-requests','POST',{'package':'basic','offerId':offers[0]['id'],'transferName':'حيدر محمد'})
+                self.assertEqual(missing_receipt.exception.code, 400); missing_receipt.exception.close()
                 with self.assertRaises(HTTPError) as invalid:
                     call('/api/subscription-requests','POST',{'package':'basic','offerId':offers[0]['id'],'transferName':''})
                 self.assertEqual(invalid.exception.code, 400); invalid.exception.close()
