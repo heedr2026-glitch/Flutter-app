@@ -471,22 +471,40 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     return reply
 
 def seed_package_offers(connection: Any) -> None:
-    if connection.execute("SELECT COUNT(*) AS count FROM package_offers").fetchone()["count"]:
-        return
     created = now()
     defaults = (
         ("basic", 1, 0, 49, "شهري"),
+        ("basic", 3, 0, 139, "3 أشهر"),
         ("basic", 6, 0, 249, "6 أشهر"),
         ("basic", 12, 0, 449, "سنة"),
         ("vip", 1, 0, 99, "شهري"),
+        ("vip", 3, 0, 279, "3 أشهر"),
         ("vip", 6, 0, 499, "6 أشهر"),
         ("vip", 12, 0, 899, "سنة"),
     )
+    selected_ids = []
     for package, paid_months, bonus_months, price_sar, label in defaults:
-        connection.execute(
-            "INSERT INTO package_offers(package,paid_months,bonus_months,price_sar,label,active,created_at) VALUES(?,?,?,?,?,?,?)",
-            (package, paid_months, bonus_months, price_sar, label, 1, created),
-        )
+        rows = connection.execute(
+            "SELECT id,bonus_months,price_sar,active FROM package_offers WHERE package=? AND paid_months=? ORDER BY active DESC,id",
+            (package, paid_months),
+        ).fetchall()
+        if rows:
+            active_rows = [row for row in rows if row["active"]]
+            selected = active_rows[0] if active_rows else rows[0]
+            normalized_price = price_sar if len(active_rows) != 1 or int(selected["bonus_months"] or 0) != 0 else selected["price_sar"]
+            connection.execute(
+                "UPDATE package_offers SET bonus_months=?,price_sar=?,label=?,active=1 WHERE id=?",
+                (bonus_months, normalized_price, label, selected["id"]),
+            )
+            selected_ids.append(selected["id"])
+        else:
+            cursor = connection.execute(
+                "INSERT INTO package_offers(package,paid_months,bonus_months,price_sar,label,active,created_at) VALUES(?,?,?,?,?,?,?)",
+                (package, paid_months, bonus_months, price_sar, label, 1, created),
+            )
+            selected_ids.append(cursor.lastrowid)
+    placeholders = ",".join("?" for _ in selected_ids)
+    connection.execute(f"UPDATE package_offers SET active=0 WHERE id NOT IN ({placeholders})", selected_ids)
 
 
 def init_db() -> None:
@@ -571,6 +589,7 @@ def init_db() -> None:
           bonus_months INTEGER NOT NULL DEFAULT 0,
           quoted_price REAL NOT NULL DEFAULT 0,
           transfer_name TEXT NOT NULL DEFAULT '',
+          transfer_receipt TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
           created_at TEXT NOT NULL,
           processed_at TEXT
@@ -722,6 +741,7 @@ def init_db() -> None:
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS bonus_months INTEGER NOT NULL DEFAULT 0")
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS quoted_price REAL NOT NULL DEFAULT 0")
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS transfer_name TEXT NOT NULL DEFAULT ''")
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS transfer_receipt TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS expires_at TEXT")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS requested_days INTEGER")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS review_note TEXT NOT NULL DEFAULT ''")
@@ -827,6 +847,7 @@ def init_db() -> None:
               bonus_months INTEGER NOT NULL DEFAULT 0,
               quoted_price REAL NOT NULL DEFAULT 0,
               transfer_name TEXT NOT NULL DEFAULT '',
+              transfer_receipt TEXT NOT NULL DEFAULT '',
               status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
               created_at TEXT NOT NULL,
               processed_at TEXT
@@ -1025,6 +1046,8 @@ def init_db() -> None:
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN quoted_price REAL NOT NULL DEFAULT 0")
         if "transfer_name" not in request_columns:
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN transfer_name TEXT NOT NULL DEFAULT ''")
+        if "transfer_receipt" not in request_columns:
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN transfer_receipt TEXT NOT NULL DEFAULT ''")
         ad_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(advertisements)")
@@ -1575,6 +1598,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <button class="category-button" onclick="showSecurityPanel('devicesPanel')">الأجهزة<span>الجلسات والحظر</span></button>
 <button class="category-button" onclick="showSecurityPanel('alertsPanel')">التنبيهات<span>الدخول المشبوه</span></button>
 <button class="category-button" onclick="showSecurityPanel('auditPanel')">سجل العمليات<span>كل التعديلات</span></button>
+<button class="category-button" onclick="showSecurityPanel('packagePricesPanel');loadPackagePrices()">أسعار الباقات<span>تعديل أسعار 1 و3 و6 و12 شهرًا</span></button>
 <button class="category-button emergency-button" onclick="showSecurityPanel('emergencyPanel');loadSupportTickets()">الدعم الفني 🚨<strong id="supportNavBadge" class="support-badge">0</strong><span>بلاغات المؤسسات والحسابات</span></button><button class="category-button" onclick="showSecurityPanel('maintenancePanel')">الصيانة العامة<span>إيقاف خدمات جميع المؤسسات</span></button>
 </div>
 <section id="overviewPanel" class="security-panel active">
@@ -1587,12 +1611,15 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <section id="devicesPanel" class="security-panel"><div class="card"><h2>الأجهزة والجلسات</h2><p class="muted">اختر المؤسسة لفتح صفحة أجهزتها ومستخدميها.</p><div id="devices"></div></div></section>
 <section id="alertsPanel" class="security-panel"><div class="card"><h2>محاولات الدخول</h2><div id="loginAttempts"></div></div><div class="card"><h2>آخر التنبيهات الأمنية</h2><div id="events"></div></div></section>
 <section id="auditPanel" class="security-panel"><div class="card"><h2>سجل العمليات الكامل</h2><select id="auditOrg"><option value="">جميع المؤسسات</option></select><select id="auditAction"><option value="">جميع العمليات</option><option value="security">العمليات الأمنية</option><option value="employee">الموظفون والصلاحيات</option><option value="appointment">المواعيد والطلبات</option><option value="organization">بيانات المؤسسة</option></select><input id="auditDate" type="date"><button onclick="loadAuditLogs()">تطبيق الفلاتر</button><div id="auditLogs"></div></div></section>
+<section id="packagePricesPanel" class="security-panel"><div class="card"><h2>أسعار باقات خدووم</h2><p class="muted">المدد ثابتة لمنع التكرار. غيّر السعر ثم اضغط حفظ.</p><button onclick="loadPackagePrices()">تحديث الأسعار</button><div id="packagePrices"></div></div></section>
 <section id="supportAppointmentsPanel" class="security-panel"><div class="card"><button onclick="showSecurityPanel('emergencyPanel')">← العودة إلى الدعم</button><h2>مواعيد المؤسسة</h2><p class="muted">عرض تشخيصي فقط. قبول الموعد أو رفضه من صلاحية المؤسسة وموظفيها.</p><div id="supportAppointments"></div></div></section><section id="emergencyPanel" class="security-panel"><div class="card"><h2>طلبات الدعم الفني 🚨</h2><p class="muted">بلاغات تعليق الحساب والحظر والمشكلات الفنية. الطلبات الجديدة تظهر أولًا.</p><div class="grid"><select id="supportStatus" onchange="loadSupportTickets()"><option value="">كل الحالات</option><option value="open">طلبات جديدة</option><option value="in_progress">قيد المعالجة</option><option value="resolved">تم الحل</option></select><select id="supportCategory" onchange="loadSupportTickets()"><option value="">كل الأنواع</option><option>مشكلة في الحساب</option><option>تسجيل الدخول</option><option>حظر الحساب أو الجهاز</option><option>الاشتراك والباقة</option><option>الشات</option><option>المواعيد</option><option>الأجهزة</option><option>أخرى</option></select></div><p id="supportCount" class="muted"></p><button onclick="loadSupportTickets()">تحديث طلبات الدعم</button><div id="supportTickets"></div></div></section><section id="maintenancePanel" class="security-panel"><div class="card"><h2>الصيانة العامة</h2><p class="muted">إيقاف خدمة محددة لجميع المؤسسات.</p><input id="emergencyHours" type="number" min="1" value="2" placeholder="المدة بالساعات"><input id="emergencyMessage" value="الخدمة تحت الصيانة مؤقتًا" placeholder="الرسالة للمستخدمين"><p class="muted">المفتاح الأزرق يعني أن الخدمة تعمل للجميع.</p><div id="emergencyStatus"></div></div></section>
 </div></div>
 
 <script>
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});function showSecurityPanel(id){document.querySelectorAll('.security-panel').forEach(x=>x.classList.remove('active'));document.getElementById(id)?.classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}
+async function loadPackagePrices(){let box=document.getElementById('packagePrices');if(!box)return;let r=await fetch('/owner/api/package-offers',{headers:hdr()}),d=await r.json();if(!r.ok||!Array.isArray(d)){box.innerHTML='<p class="danger">'+esc(d.error||'تعذر تحميل الأسعار')+'</p>';return}box.innerHTML=['basic','vip'].map(pkg=>`<div class="card"><h3>${pkg==='basic'?'الباقة الأساسية':'باقة VIP'}</h3>${d.filter(x=>x.package===pkg).map(x=>`<label for="package-price-${x.id}">${x.paid_months} شهر — السعر بالريال</label><input id="package-price-${x.id}" type="number" min="1" max="1000000" step="0.01" value="${x.price_sar}"><button onclick="savePackagePrice(${x.id})">حفظ سعر ${x.paid_months} شهر</button>`).join('')}</div>`).join('')}
+async function savePackagePrice(id){let priceSar=Number(document.getElementById('package-price-'+id).value);if(!Number.isFinite(priceSar)||priceSar<1||priceSar>1000000){alert('اكتب سعرًا صحيحًا بين 1 و1000000 ريال');return}let r=await fetch('/owner/api/package-offers/'+id,{method:'PUT',headers:hdr(),body:JSON.stringify({priceSar})}),d=await r.json();alert(r.ok?'تم حفظ السعر وظهر للمشتركين ✓':(d.error||'تعذر حفظ السعر'));if(r.ok)loadPackagePrices()}
 async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderIntegrations(d.integrations||[]);renderEmergency(d.emergency||[]);renderBackup(d.backup||{});renderLoginAttempts(d.loginAttempts||[]);renderAccounts(d.accounts||[]);renderDevices(d.devices||[],d.blockedDevices||[],d.accounts||[]);setupAuditOrganizations(d.accounts||[]);loadAuditLogs();loadSupportTickets()}
 function renderIntegrations(items){document.getElementById('integrations').innerHTML=items.map(x=>`<div class="event"><b>${esc(x.name)}</b> — <span class="${x.status==='ready'?'ok':x.status==='maintenance'?'warn':'muted'}">${x.status==='ready'?'جاهز ✓':x.status==='maintenance'?'تحت الصيانة':'غير مربوط'}</span><p>${esc(x.detail||'')}</p></div>`).join('')||'<p class="muted">لا توجد خدمات مسجلة.</p>'}
 function renderBackup(x){document.getElementById('backupStatus').innerHTML=`<p><b>قاعدة البيانات:</b> ${esc(x.provider||'غير معروفة')}</p><p><b>الاتصال:</b> <span class="${x.connected?'ok':'danger'}">${x.connected?'سليم ✓':'متعطل'}</span></p><p><b>آخر فحص:</b> ${esc(x.checkedAt||'غير متاح')}</p><p><b>نافذة الاستعادة:</b> ${x.recoveryHours?esc(x.recoveryHours)+' ساعات':'غير متاحة'}</p><p><b>Snapshot يدوي:</b> ${x.manualSnapshots?'متاح':'غير متاح في الخطة الحالية'}</p><p><b>نسخ مجدولة:</b> ${x.scheduledBackups?'مفعلة':'غير مفعلة'}</p><p class="muted">${esc(x.note||'')}</p>`}function renderEmergency(items){document.getElementById('emergencyStatus').innerHTML=items.map(x=>`<div class="service-row"><div><b>${x.service==='chat'?'شات العملاء':x.service==='appointments'?'المواعيد':'مساعد المؤسسة'}</b><small class="${x.active?'danger':'ok'}">${x.active?'تحت الصيانة حتى '+esc(x.until):'تعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${x.active?'':'checked'} onchange="toggleEmergency(this,'${x.service}')"><span class="slider"></span></label></div>`).join('')}
@@ -1907,6 +1934,25 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 raise ApiError(404, "العرض غير موجود")
             self._send(200, {"deleted": True})
             return
+        if path.startswith("/owner/api/package-offers/") and method == "PUT":
+            self._owner()
+            try:
+                offer_id = int(path.rsplit("/", 1)[1])
+                price_sar = round(float(self._body().get("priceSar", 0)), 2)
+            except (TypeError, ValueError):
+                raise ApiError(400, "السعر غير صحيح")
+            if price_sar < 1 or price_sar > 1000000:
+                raise ApiError(400, "السعر يجب أن يكون بين 1 و1000000 ريال")
+            with db() as connection:
+                cursor = connection.execute(
+                    "UPDATE package_offers SET price_sar=? WHERE id=? AND active=1",
+                    (price_sar, offer_id),
+                )
+                connection.commit()
+            if cursor.rowcount == 0:
+                raise ApiError(404, "عرض الباقة غير موجود")
+            self._send(200, {"saved": True, "priceSar": price_sar})
+            return
         if method == "GET" and path == "/health":
             self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1})
             return
@@ -2083,6 +2129,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     """SELECT subscription_requests.id,subscription_requests.organization_id,subscription_requests.requested_package,
                               subscription_requests.discount_code,subscription_requests.discount_percent,
                               subscription_requests.status,subscription_requests.created_at,subscription_requests.transfer_name,
+                              subscription_requests.transfer_receipt,
                               subscription_requests.paid_months,subscription_requests.bonus_months,subscription_requests.quoted_price,
                               subscription_requests.processed_at,organizations.name AS organization_name,
                               organizations.phone,subscriptions.package AS current_package
@@ -3158,10 +3205,18 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 data = self._body()
                 requested_package = str(data.get("package", "")).strip().lower()
                 transfer_name = str(data.get("transferName", "")).strip()[:160]
+                transfer_receipt = str(data.get("transferReceipt", "")).strip()
                 if requested_package not in ("basic", "vip"):
                     raise ApiError(400, "اختر الباقة الأساسية أو VIP")
                 if len(transfer_name) < 2:
                     raise ApiError(400, "اكتب اسم المحوّل كما يظهر في الحوالة البنكية")
+                if transfer_receipt:
+                    if len(transfer_receipt) > 1200000 or not transfer_receipt.startswith(("data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,")):
+                        raise ApiError(400, "صيغة إيصال التحويل غير مدعومة أو حجمه كبير")
+                    try:
+                        base64.b64decode(transfer_receipt.split(",", 1)[1], validate=True)
+                    except (ValueError, IndexError):
+                        raise ApiError(400, "صورة إيصال التحويل غير صحيحة")
                 payment = connection.execute("SELECT id FROM payment_settings WHERE id=1 AND bank_name<>'' AND account_name<>'' AND iban<>''").fetchone()
                 if payment is None:
                     raise ApiError(503, "بيانات التحويل البنكي غير مهيأة بعد؛ تواصل مع إدارة خدووم")
@@ -3197,16 +3252,16 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     request_id = pending["id"]
                     connection.execute(
                         """UPDATE subscription_requests
-                           SET requested_package=?,discount_code=?,discount_percent=?,offer_id=?,paid_months=?,bonus_months=?,quoted_price=?,transfer_name=?,created_at=?
+                           SET requested_package=?,discount_code=?,discount_percent=?,offer_id=?,paid_months=?,bonus_months=?,quoted_price=?,transfer_name=?,transfer_receipt=?,created_at=?
                            WHERE id=?""",
-                        (requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, transfer_name, now(), request_id),
+                        (requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, transfer_name, transfer_receipt, now(), request_id),
                     )
                 else:
                     cursor = connection.execute(
                         """INSERT INTO subscription_requests(
-                               organization_id,requested_package,discount_code,discount_percent,offer_id,paid_months,bonus_months,quoted_price,transfer_name,status,created_at
-                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                        (organization_id, requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, transfer_name, "pending", now()),
+                               organization_id,requested_package,discount_code,discount_percent,offer_id,paid_months,bonus_months,quoted_price,transfer_name,transfer_receipt,status,created_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (organization_id, requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, transfer_name, transfer_receipt, "pending", now()),
                     )
                     request_id = cursor.lastrowid
                 connection.commit()
