@@ -570,9 +570,19 @@ def init_db() -> None:
           paid_months INTEGER NOT NULL DEFAULT 1,
           bonus_months INTEGER NOT NULL DEFAULT 0,
           quoted_price REAL NOT NULL DEFAULT 0,
+          transfer_name TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
           created_at TEXT NOT NULL,
           processed_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS payment_settings (
+          id INTEGER PRIMARY KEY CHECK(id=1),
+          bank_name TEXT NOT NULL DEFAULT '',
+          account_name TEXT NOT NULL DEFAULT '',
+          iban TEXT NOT NULL DEFAULT '',
+          account_number TEXT NOT NULL DEFAULT '',
+          instructions TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS chat_sessions (
           id BIGSERIAL PRIMARY KEY,
@@ -711,6 +721,7 @@ def init_db() -> None:
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS paid_months INTEGER NOT NULL DEFAULT 1")
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS bonus_months INTEGER NOT NULL DEFAULT 0")
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS quoted_price REAL NOT NULL DEFAULT 0")
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS transfer_name TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS expires_at TEXT")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS requested_days INTEGER")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS review_note TEXT NOT NULL DEFAULT ''")
@@ -815,9 +826,19 @@ def init_db() -> None:
               paid_months INTEGER NOT NULL DEFAULT 1,
               bonus_months INTEGER NOT NULL DEFAULT 0,
               quoted_price REAL NOT NULL DEFAULT 0,
+              transfer_name TEXT NOT NULL DEFAULT '',
               status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
               created_at TEXT NOT NULL,
               processed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS payment_settings (
+              id INTEGER PRIMARY KEY CHECK(id=1),
+              bank_name TEXT NOT NULL DEFAULT '',
+              account_name TEXT NOT NULL DEFAULT '',
+              iban TEXT NOT NULL DEFAULT '',
+              account_number TEXT NOT NULL DEFAULT '',
+              instructions TEXT NOT NULL DEFAULT '',
+              updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS chat_sessions (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1002,6 +1023,8 @@ def init_db() -> None:
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN bonus_months INTEGER NOT NULL DEFAULT 0")
         if "quoted_price" not in request_columns:
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN quoted_price REAL NOT NULL DEFAULT 0")
+        if "transfer_name" not in request_columns:
+            connection.execute("ALTER TABLE subscription_requests ADD COLUMN transfer_name TEXT NOT NULL DEFAULT ''")
         ad_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(advertisements)")
@@ -1981,6 +2004,30 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 raise ApiError(404, "الإعلان غير موجود")
             self._send(200, {"saved": True, "approved": bool(approved), "expiresAt": expires_at})
             return
+        if path == "/owner/api/payment-settings" and method == "GET":
+            self._owner()
+            with db() as connection:
+                row = connection.execute("SELECT bank_name,account_name,iban,account_number,instructions,updated_at FROM payment_settings WHERE id=1").fetchone()
+            self._send(200, dict(row) if row else {"bank_name": "", "account_name": "", "iban": "", "account_number": "", "instructions": ""})
+            return
+        if path == "/owner/api/payment-settings" and method == "PUT":
+            self._owner()
+            data = self._body()
+            bank_name = str(data.get("bankName", "")).strip()[:120]
+            account_name = str(data.get("accountName", "")).strip()[:160]
+            iban = re.sub(r"\s+", "", str(data.get("iban", "")).upper())[:34]
+            account_number = re.sub(r"\s+", "", str(data.get("accountNumber", "")))[:50]
+            instructions = str(data.get("instructions", "")).strip()[:500]
+            if not bank_name or not account_name or not iban:
+                raise ApiError(400, "اسم البنك واسم صاحب الحساب ورقم الآيبان مطلوبة")
+            if not re.fullmatch(r"SA\d{22}", iban):
+                raise ApiError(400, "رقم الآيبان السعودي يجب أن يبدأ بـ SA ويتكون من 24 خانة")
+            with db() as connection:
+                connection.execute("""INSERT INTO payment_settings(id,bank_name,account_name,iban,account_number,instructions,updated_at)
+                    VALUES(1,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET bank_name=excluded.bank_name,account_name=excluded.account_name,iban=excluded.iban,account_number=excluded.account_number,instructions=excluded.instructions,updated_at=excluded.updated_at""", (bank_name, account_name, iban, account_number, instructions, now()))
+                connection.commit()
+            self._send(200, {"saved": True})
+            return
         if path == "/owner/api/codes" and method == "POST":
             self._owner()
             data = self._body()
@@ -2035,7 +2082,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 rows = connection.execute(
                     """SELECT subscription_requests.id,subscription_requests.organization_id,subscription_requests.requested_package,
                               subscription_requests.discount_code,subscription_requests.discount_percent,
-                              subscription_requests.status,subscription_requests.created_at,
+                              subscription_requests.status,subscription_requests.created_at,subscription_requests.transfer_name,
+                              subscription_requests.paid_months,subscription_requests.bonus_months,subscription_requests.quoted_price,
                               subscription_requests.processed_at,organizations.name AS organization_name,
                               organizations.phone,subscriptions.package AS current_package
                        FROM subscription_requests
@@ -2123,12 +2171,35 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     organization_items.append(item)
             self._send(200, organization_items)
             return
+        if path == "/owner/api/organizations/ai-limit" and method == "PUT":
+            self._owner()
+            data = self._body()
+            try:
+                daily_limit = int(data.get("dailyLimit", 0))
+            except (TypeError, ValueError):
+                raise ApiError(400, "اكتب حدًا يوميًا صحيحًا")
+            if daily_limit < 1 or daily_limit > 100000:
+                raise ApiError(400, "الحد اليومي يجب أن يكون بين 1 و100000")
+            with db() as connection:
+                organizations = connection.execute("SELECT id FROM organizations").fetchall()
+                for organization in organizations:
+                    connection.execute("INSERT INTO ai_limits(organization_id,daily_limit) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET daily_limit=excluded.daily_limit", (organization["id"], daily_limit))
+                connection.commit()
+            self._send(200, {"saved": True, "dailyLimit": daily_limit, "updatedOrganizations": len(organizations)})
+            return
         if path.startswith("/owner/api/organizations/") and path.endswith("/ai-limit") and method == "PUT":
             self._owner()
             organization_id = int(path.split("/")[4])
             data = self._body()
-            daily_limit = max(1, min(int(data.get("dailyLimit", 30)), 100000))
+            try:
+                daily_limit = int(data.get("dailyLimit", 0))
+            except (TypeError, ValueError):
+                raise ApiError(400, "اكتب حدًا يوميًا صحيحًا")
+            if daily_limit < 1 or daily_limit > 100000:
+                raise ApiError(400, "الحد اليومي يجب أن يكون بين 1 و100000")
             with db() as connection:
+                if connection.execute("SELECT id FROM organizations WHERE id=?", (organization_id,)).fetchone() is None:
+                    raise ApiError(404, "المؤسسة غير موجودة")
                 connection.execute("INSERT INTO ai_limits(organization_id,daily_limit) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET daily_limit=excluded.daily_limit", (organization_id, daily_limit))
                 connection.commit()
             self._send(200, {"saved": True, "dailyLimit": daily_limit})
@@ -3086,8 +3157,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     raise ApiError(403, "طلب ترقية الباقة متاح لمالك المؤسسة فقط")
                 data = self._body()
                 requested_package = str(data.get("package", "")).strip().lower()
+                transfer_name = str(data.get("transferName", "")).strip()[:160]
                 if requested_package not in ("basic", "vip"):
                     raise ApiError(400, "اختر الباقة الأساسية أو VIP")
+                if len(transfer_name) < 2:
+                    raise ApiError(400, "اكتب اسم المحوّل كما يظهر في الحوالة البنكية")
+                payment = connection.execute("SELECT id FROM payment_settings WHERE id=1 AND bank_name<>'' AND account_name<>'' AND iban<>''").fetchone()
+                if payment is None:
+                    raise ApiError(503, "بيانات التحويل البنكي غير مهيأة بعد؛ تواصل مع إدارة خدووم")
                 offer_id = int(data.get("offerId", 0) or 0)
                 offer = connection.execute(
                     "SELECT * FROM package_offers WHERE id=? AND package=? AND active=1",
@@ -3120,20 +3197,26 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     request_id = pending["id"]
                     connection.execute(
                         """UPDATE subscription_requests
-                           SET requested_package=?,discount_code=?,discount_percent=?,offer_id=?,paid_months=?,bonus_months=?,quoted_price=?,created_at=?
+                           SET requested_package=?,discount_code=?,discount_percent=?,offer_id=?,paid_months=?,bonus_months=?,quoted_price=?,transfer_name=?,created_at=?
                            WHERE id=?""",
-                        (requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, now(), request_id),
+                        (requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, transfer_name, now(), request_id),
                     )
                 else:
                     cursor = connection.execute(
                         """INSERT INTO subscription_requests(
-                               organization_id,requested_package,discount_code,discount_percent,offer_id,paid_months,bonus_months,quoted_price,status,created_at
-                           ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                        (organization_id, requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, "pending", now()),
+                               organization_id,requested_package,discount_code,discount_percent,offer_id,paid_months,bonus_months,quoted_price,transfer_name,status,created_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        (organization_id, requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, transfer_name, "pending", now()),
                     )
                     request_id = cursor.lastrowid
                 connection.commit()
                 self._send(201, {"id": request_id, "status": "pending", "discountPercent": discount_percent, "paidMonths": offer["paid_months"], "bonusMonths": offer["bonus_months"], "quotedPrice": quoted_price})
+                return
+            if path == "/api/payment-settings" and method == "GET":
+                row = connection.execute("SELECT bank_name,account_name,iban,account_number,instructions FROM payment_settings WHERE id=1").fetchone()
+                if row is None or not row["iban"]:
+                    raise ApiError(503, "بيانات التحويل البنكي غير مهيأة بعد")
+                self._send(200, dict(row))
                 return
             if path == "/api/subscription" and method == "GET":
                 row = connection.execute("SELECT package,starts_at,expires_at FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()

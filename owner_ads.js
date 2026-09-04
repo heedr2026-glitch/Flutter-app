@@ -8,25 +8,56 @@ if (typeof loadSubscriptionRequests === 'function') {
       const response = await fetch('/owner/api/subscription-requests', {headers: headers()});
       const data = await response.json();
       if (!response.ok || !Array.isArray(data)) throw new Error(data.error || 'تعذر التحميل');
+      const pendingCount = data.filter(row => row.status === 'pending').length;
+      const badge = document.getElementById('subscriptionRequestBadge');
+      if (badge) { badge.textContent = String(pendingCount); badge.classList.toggle('show', pendingCount > 0); }
       const groups = new Map();
       for (const row of data) {
         const key = row.organization_id ?? ('request-'+row.id);
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(row);
       }
-      box.innerHTML = [...groups.values()].map(rows => `<section class="card"><h3>${esc(rows[0].organization_name)}</h3><p>التواصل: ${esc(rows[0].phone)} — عدد الطلبات: ${rows.length}</p>${rows.map(x => `<details ${x.status === 'pending' ? 'open' : ''}><summary>طلب #${esc(x.id)} — ${x.requested_package === 'basic' ? 'الأساسية' : 'VIP'} — ${x.status === 'pending' ? 'بانتظار المراجعة' : x.status === 'approved' ? 'مقبول' : 'مرفوض'}</summary><p>تاريخ الطلب: ${esc(adDisplayDate(x.created_at, 'غير محدد'))}</p><p>كود الخصم: ${esc(x.discount_code || 'بدون كود')} — الخصم: ${Number(x.discount_percent)||0}%</p>${x.status === 'pending' ? `<label for="request-package-${x.id}">الباقة المراد تفعيلها</label><select id="request-package-${x.id}"><option value="free">المجانية</option><option value="basic" ${x.requested_package === 'basic' ? 'selected' : ''}>الأساسية</option><option value="vip" ${x.requested_package === 'vip' ? 'selected' : ''}>VIP</option></select><label for="request-days-${x.id}">مدة التفعيل بالأيام — لا تُستخدم للمجانية</label><input id="request-days-${x.id}" type="number" min="1" max="3650" value="30"><button onclick="reviewSubscriptionRequest(${x.id},'approve')">تفعيل الباقة المختارة</button><button onclick="reviewSubscriptionRequest(${x.id},'reject')">رفض الطلب</button>` : ''}</details>`).join('')}</section>`).join('') || 'لا توجد طلبات ترقية';
+      box.innerHTML = [...groups.values()].map(rows => `<section class="card"><h3>${esc(rows[0].organization_name)}</h3><p>التواصل: ${esc(rows[0].phone)} — عدد الطلبات: ${rows.length}</p>${rows.map(x => `<details ${x.status === 'pending' ? 'open' : ''}><summary>طلب #${esc(x.id)} — ${x.requested_package === 'basic' ? 'الأساسية' : 'VIP'} — ${x.status === 'pending' ? 'بانتظار المراجعة' : x.status === 'approved' ? 'مقبول' : 'مرفوض'}</summary><p><strong>تنبيه تحويل باسم: ${esc(x.transfer_name || 'غير مسجل')}</strong></p><p>المبلغ المطلوب: ${Number(x.quoted_price||0).toFixed(2)} ر.س — المدة: ${Number(x.paid_months||0)} شهر${Number(x.bonus_months||0)>0?' + '+Number(x.bonus_months)+' مجانًا':''}</p><p>تاريخ الطلب: ${esc(adDisplayDate(x.created_at, 'غير محدد'))}</p><p>كود الخصم: ${esc(x.discount_code || 'بدون كود')} — الخصم: ${Number(x.discount_percent)||0}%</p>${x.status === 'pending' ? `<label for="request-package-${x.id}">الباقة المراد تفعيلها</label><select id="request-package-${x.id}"><option value="free">المجانية</option><option value="basic" ${x.requested_package === 'basic' ? 'selected' : ''}>الأساسية</option><option value="vip" ${x.requested_package === 'vip' ? 'selected' : ''}>VIP</option></select><p>عند التأكد من وصول الحوالة اضغط التفعيل؛ مدة العرض المحفوظة ستُطبق تلقائيًا.</p><button onclick="reviewSubscriptionRequest(${x.id},'approve')">تأكيد وصول التحويل وتفعيل الباقة</button><button onclick="reviewSubscriptionRequest(${x.id},'reject')">رفض الطلب</button>` : ''}</details>`).join('')}</section>`).join('') || 'لا توجد طلبات ترقية';
     } catch (error) { box.textContent = error.message || 'تعذر التحميل'; }
   };
 }
 
 let adLoadVersion = 0;
+if (typeof loadUsageAlerts === 'function') {
+  loadUsageAlerts = async function() {
+    const box = document.getElementById('usageAlerts'), badge = document.getElementById('usageAlertBadge');
+    try {
+      const response = await fetch('/owner/api/organizations', {headers:headers(), cache:'no-store'}), data = await response.json();
+      if (!response.ok || !Array.isArray(data)) throw new Error(data.error || 'تعذر تحميل حدود المؤسسات');
+      const sorted = [...data].sort((a,b)=>(b.ai_usage_percent||0)-(a.ai_usage_percent||0));
+      const important = sorted.filter(o=>o.ai_usage_status!=='normal');
+      badge.textContent = String(important.length); badge.classList.toggle('show', important.length>0);
+      box.innerHTML = `<div class="card"><h3>تعديل حد جميع المؤسسات</h3><p>يستبدل الحد الحالي لكل المؤسسات بالعدد الجديد.</p><input id="all-ai-limit" type="number" min="1" max="100000" value="100" placeholder="الحد اليومي لجميع المؤسسات"><button class="vip" onclick="setAllAiLimits()">تطبيق الحد على جميع المؤسسات</button></div>` + (sorted.length ? sorted.map(o=>`<div class="card" style="border-right:5px solid ${o.ai_usage_status==='danger'?'#ef4444':o.ai_usage_status==='warning'?'#facc15':'#22c55e'}"><b>${esc(o.name)}</b><p>الباقة: ${esc(o.package)} — اليوم: ${o.ai_today||0} من <strong>${o.ai_daily_limit||0}</strong> (${o.ai_usage_percent||0}%)</p><label for="usage-ai-limit-${o.id}">الحد اليومي لهذه المؤسسة</label><input id="usage-ai-limit-${o.id}" type="number" min="1" max="100000" value="${o.ai_daily_limit||1}"><button onclick="setUsageAiLimit(${o.id})">حفظ حد هذه المؤسسة</button><p>الشهر: ${o.ai_month||0} استخدام — التكلفة التقديرية: ${Number(o.ai_estimated_cost_sar||0).toFixed(2)} ر.س</p></div>`).join('') : '<p>لا توجد مؤسسات بعد.</p>');
+    } catch (error) { box.textContent = error.message || 'تعذر تحميل حدود المؤسسات'; }
+  };
+}
+async function saveOwnerAiLimit(url, dailyLimit) { const response=await fetch(url,{method:'PUT',headers:headers(),body:JSON.stringify({dailyLimit})}),result=await response.json();if(!response.ok||!result.saved)throw new Error(result.error||'تعذر حفظ الحد');return result; }
+async function setUsageAiLimit(id) { const dailyLimit=Number(document.getElementById('usage-ai-limit-'+id).value);if(!Number.isSafeInteger(dailyLimit)||dailyLimit<1||dailyLimit>100000){alert('اكتب حدًا صحيحًا بين 1 و100000');return}try{await saveOwnerAiLimit('/owner/api/organizations/'+id+'/ai-limit',dailyLimit);alert('تم حفظ حد المؤسسة ✓');await loadUsageAlerts()}catch(error){alert(error.message||'تعذر حفظ الحد')} }
+async function setAllAiLimits() { const dailyLimit=Number(document.getElementById('all-ai-limit').value);if(!Number.isSafeInteger(dailyLimit)||dailyLimit<1||dailyLimit>100000){alert('اكتب حدًا صحيحًا بين 1 و100000');return}if(!confirm('تطبيق الحد '+dailyLimit+' على جميع المؤسسات؟ سيُستبدل الحد الحالي لكل مؤسسة.'))return;try{const result=await saveOwnerAiLimit('/owner/api/organizations/ai-limit',dailyLimit);alert('تم تحديث '+result.updatedOrganizations+' مؤسسة ✓');await loadUsageAlerts();await loadOrganizations()}catch(error){alert(error.message||'تعذر حفظ الحد العام')} }
 const ownerCategories = document.querySelector('.category-grid');
 if (ownerCategories) {
+  const subscriptionButton = [...ownerCategories.querySelectorAll('button')].find(button => button.textContent.includes('طلبات الترقية'));
+  if (subscriptionButton && !document.getElementById('subscriptionRequestBadge')) subscriptionButton.insertAdjacentHTML('beforeend', '<b id="subscriptionRequestBadge" class="support-badge">0</b>');
+  const paymentButton = document.createElement('button');
+  paymentButton.className = 'category-button'; paymentButton.innerHTML = 'بيانات التحويل البنكي<span>الحساب الظاهر للمشتركين</span>';
+  paymentButton.onclick = () => { showOwnerPanel('paymentSettingsPanel'); loadPaymentSettings(); };
+  ownerCategories.append(paymentButton);
   const giftLink = document.createElement('a');
   giftLink.className = 'category-button'; giftLink.href = '/owner/signup-offer';
   giftLink.textContent = 'هدية أول المشتركين — العدد والباقة والأشهر';
   ownerCategories.append(giftLink);
 }
+const ownerDashboard = document.getElementById('ownerDashboard');
+if (ownerDashboard && !document.getElementById('paymentSettingsPanel')) {
+  ownerDashboard.insertAdjacentHTML('beforeend', '<section id="paymentSettingsPanel" class="owner-panel"><div class="card"><h2>الحساب البنكي لاستقبال الاشتراكات</h2><p>تظهر هذه البيانات للمشترك قبل إرسال طلب التفعيل.</p><label for="paymentBankName">اسم البنك</label><input id="paymentBankName" maxlength="120"><label for="paymentAccountName">اسم صاحب الحساب</label><input id="paymentAccountName" maxlength="160"><label for="paymentIban">الآيبان السعودي</label><input id="paymentIban" maxlength="34" dir="ltr" placeholder="SA0000000000000000000000"><label for="paymentAccountNumber">رقم الحساب (اختياري)</label><input id="paymentAccountNumber" maxlength="50" dir="ltr"><label for="paymentInstructions">تعليمات إضافية (اختياري)</label><textarea id="paymentInstructions" maxlength="500" style="box-sizing:border-box;width:100%;min-height:90px;background:#09152e;color:white;border:1px solid #285682;border-radius:10px;padding:10px"></textarea><button onclick="savePaymentSettings()">حفظ بيانات التحويل</button><div id="paymentSettingsStatus" class="result"></div></div></section>');
+}
+async function loadPaymentSettings(){const status=document.getElementById('paymentSettingsStatus');try{const r=await fetch('/owner/api/payment-settings',{headers:headers(),cache:'no-store'}),d=await r.json();if(!r.ok)throw new Error(d.error||'تعذر التحميل');document.getElementById('paymentBankName').value=d.bank_name||'';document.getElementById('paymentAccountName').value=d.account_name||'';document.getElementById('paymentIban').value=d.iban||'';document.getElementById('paymentAccountNumber').value=d.account_number||'';document.getElementById('paymentInstructions').value=d.instructions||'';status.textContent=d.iban?'البيانات محفوظة وتظهر للمشتركين ✓':'أدخل بيانات الحساب ثم احفظها.'}catch(error){status.textContent=error.message||'تعذر التحميل'}}
+async function savePaymentSettings(){const body={bankName:document.getElementById('paymentBankName').value,accountName:document.getElementById('paymentAccountName').value,iban:document.getElementById('paymentIban').value,accountNumber:document.getElementById('paymentAccountNumber').value,instructions:document.getElementById('paymentInstructions').value};try{const r=await fetch('/owner/api/payment-settings',{method:'PUT',headers:headers(),body:JSON.stringify(body)}),d=await r.json();if(!r.ok)throw new Error(d.error||'تعذر الحفظ');document.getElementById('paymentSettingsStatus').textContent='تم حفظ بيانات التحويل وستظهر للمشتركين ✓'}catch(error){document.getElementById('paymentSettingsStatus').textContent=error.message||'تعذر الحفظ'}}
 const maintenancePending = new Set();
 if (typeof loadOrganizations === 'function') {
   const original = loadOrganizations;
