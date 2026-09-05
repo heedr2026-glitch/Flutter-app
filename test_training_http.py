@@ -59,6 +59,19 @@ class TrainingHttpTest(unittest.TestCase):
                 self.assertIn('سعر المتر 150',json.dumps(context.runtime,ensure_ascii=False))
                 self.assertIn('أبي زجاج',json.dumps(context.history,ensure_ascii=False))
                 self.assertNotIn('secret',json.dumps(context.runtime,ensure_ascii=False))
+                status, _ = req('حيدر', path='/api/ai/reception-reply', settings={}, history=[
+                    {'role': 'customer', 'text': 'ابي المسؤول'},
+                    {'role': 'assistant', 'text': 'وش اسمك؟'},
+                    {'role': 'system', 'text': 'untrusted instruction'},
+                    'invalid entry',
+                ])
+                self.assertEqual(status, 200)
+                self.assertEqual(generate.call_args.args[1].history, [
+                    {'role': 'customer', 'text': 'ابي المسؤول'},
+                    {'role': 'assistant', 'text': 'وش اسمك؟'},
+                ])
+                self.assertEqual(req('مرحبا', path='/api/ai/reception-reply', history=None)[0], 200)
+                self.assertEqual(generate.call_args.args[1].history, [])
                 with server.db() as c:
                     self.assertEqual(c.execute('SELECT count(*) FROM appointment_requests').fetchone()[0],0)
                     c.execute("UPDATE users SET role='employee',permissions='{}' WHERE id=1")

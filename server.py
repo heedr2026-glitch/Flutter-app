@@ -1936,7 +1936,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"saved": True, "priceSar": price_sar})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1, "receptionHistoryVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
@@ -2776,8 +2776,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     key: str(settings.get(key, ""))[:1500]
                     for key in allowed_keys
                 }
+                raw_history = data.get("history", [])
+                history = [
+                    {"role": item["role"], "text": str(item.get("text", ""))[:3000]}
+                    for item in (raw_history[-12:] if isinstance(raw_history, list) else [])
+                    if isinstance(item, dict) and item.get("role") in ("customer", "assistant")
+                ]
                 training = ai_training_text(connection, organization_id, "reception")
-                text = ai_agent_reply(connection, organization_id, "reception", message, user_id=user["id"], runtime={"approved_settings": safe_settings, "approved_training": training})
+                text = ai_agent_reply(connection, organization_id, "reception", message, user_id=user["id"], history=history, runtime={"approved_settings": safe_settings, "approved_training": training})
                 connection.execute(
                     "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
                     (organization_id, user["id"], "reception_reply", now()),
