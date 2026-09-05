@@ -21,6 +21,7 @@ import training_context
 import customer_push
 import reception_actions
 import signup_offer
+import ai_core
 from typing import Any
 
 try:
@@ -32,9 +33,7 @@ except ImportError:
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlparse
-from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("KHDOOM_DB", ROOT / "khdoom.db"))
@@ -48,8 +47,6 @@ try:
     )
 except ValueError:
     BACKUP_RECOVERY_HOURS = 6
-AI_URL = os.environ.get("KHDOOM_AI_URL", "https://api.openai.com/v1/responses")
-AI_MODEL = os.environ.get("KHDOOM_AI_MODEL", "gpt-4.1-mini")
 try:
     AI_ESTIMATED_COST_PER_REQUEST_USD = max(
         0.0, float(os.environ.get("KHDOOM_AI_ESTIMATED_COST_PER_REQUEST_USD", "0.002"))
@@ -89,7 +86,7 @@ class PostgresCursor:
 
 
 class PostgresConnection:
-    _id_tables = {"organizations", "users", "vehicles", "advertisements", "activation_codes", "ai_usage", "subscription_requests", "appointment_requests", "chat_sessions", "chat_messages", "platform_advertisements"}
+    _id_tables = {"organizations", "users", "vehicles", "advertisements", "activation_codes", "ai_usage", "subscription_requests", "appointment_requests", "chat_sessions", "chat_messages", "platform_advertisements", "ai_customers", "ai_leads", "ai_conversation_summaries"}
     _id_tables.add("package_offers")
 
     def __init__(self, connection: Any):
@@ -146,53 +143,37 @@ if psycopg is not None:
     DB_INTEGRITY_ERRORS = DB_INTEGRITY_ERRORS + (psycopg.IntegrityError,)
 
 
-def generate_ai_text(
-    system_prompt: str, user_prompt: str, *, web_search: bool = False
+AI_AGENT_SERVICE = ai_core.AgentService()
+
+
+def ai_agent_reply(
+    connection: Any,
+    organization_id: int,
+    role: str,
+    message: str,
+    *,
+    user_id: int | None = None,
+    session_id: int | None = None,
+    branch_id: str = "main",
+    history: list[dict[str, str]] | None = None,
+    runtime: dict[str, Any] | None = None,
 ) -> str:
-    api_key = os.environ.get("KHDOOM_AI_API_KEY", "").strip()
-    if not api_key:
-        raise ApiError(503, "خدمة AI لم تُفعّل في إعدادات الخادم بعد")
-    request_data = {
-        "model": AI_MODEL,
-        "instructions": system_prompt,
-        "input": user_prompt,
-        "max_output_tokens": 1200,
-        "store": False,
-    }
-    if web_search:
-        request_data["tools"] = [{"type": "web_search_preview"}]
-    payload = json.dumps(request_data, ensure_ascii=False).encode("utf-8")
-    request = Request(
-        AI_URL,
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
-    )
     try:
-        with urlopen(request, timeout=60) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
-        print(f"AI HTTP ERROR: {error.code}")
-        raise ApiError(502, "تعذر إنشاء الرد بالذكاء الاصطناعي الآن")
-    except (URLError, TimeoutError, json.JSONDecodeError) as error:
-        print(f"AI CONNECTION ERROR: {error}")
-        raise ApiError(502, "تعذر الاتصال بخدمة الذكاء الاصطناعي")
-    text = str(result.get("output_text", "")).strip()
-    if not text:
-        parts = []
-        for item in result.get("output", []):
-            if not isinstance(item, dict) or item.get("type") != "message":
-                continue
-            for content in item.get("content", []):
-                if isinstance(content, dict) and content.get("type") == "output_text":
-                    parts.append(str(content.get("text", "")))
-        text = "\n".join(parts).strip()
-    if not text:
-        raise ApiError(502, "وصل رد فارغ من خدمة الذكاء الاصطناعي")
-    return text
+        return AI_AGENT_SERVICE.respond(
+            connection,
+            ai_core.AgentContext(
+                company_id=organization_id,
+                role=role,
+                user_id=user_id,
+                session_id=session_id,
+                branch_id=branch_id,
+                history=history or [],
+                runtime=runtime or {},
+            ),
+            message,
+        )
+    except ai_core.AIServiceError as error:
+        raise ApiError(error.status, error.message)
 
 
 def ai_allowance(
@@ -764,6 +745,7 @@ def init_db() -> None:
             signup_offer.migrate(connection)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
+            ai_core.migrate(connection, postgres=True)
             if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") == "1":
                 branch_sync.migrate(connection)
             seed_package_offers(connection)
@@ -1094,6 +1076,7 @@ def init_db() -> None:
         signup_offer.migrate(connection)
         appointment_followups.migrate(connection)
         customer_push.migrate(connection)
+        ai_core.migrate(connection)
         if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") == "1":
             branch_sync.migrate(connection)
         seed_package_offers(connection)
@@ -1535,28 +1518,23 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                     ).fetchone()
                     if admin is None:
                         raise ApiError(503, "لا يوجد مسؤول نشط للمؤسسة")
-                    system_prompt = (
-                        "أنت موظف استقبال تابع للمؤسسة المذكورة. أجب بالعربية بوضوح وفق بيانات المؤسسة فقط. "
-                        "لا تبدأ بالتحية إلا إذا بدأ العميل بتحية، ولا تكرر التحية داخل المحادثة. "
-                        "لا تخترع أسعارًا أو خدمات أو مواعيد. ممنوع أن تقول تم تأكيد أو تسجيل أو حجز موعد. "
-                        "تأكيد الموعد لا يتم إلا بواسطة نظام الحجز بعد جمع الاسم ورقم التواصل والنوع واليوم والوقت، "
-                        "ثم موافقة الموظف البشري. تحدث بصورة طبيعية ولا تقل للعميل أكمل أسئلة النظام. "
-                        "لا تطلب بيانات بنكية أو رموز تحقق. "
-                        "سؤال السعر استفسار وليس حجزًا. افهم الأخطاء مثل السهر بمعنى السعر. "
-                        "إن كان السعر محفوظًا اذكره وشروطه؛ وإن نقص النوع أو السماكة اسأل عنه فقط ولا تسأل عن الاسم والموعد. "
-                        "إن لم يوجد سعر معتمد قل ذلك واقترح طلب موظف بشري. لا تقل إنك أرسلت طلبًا أو حولت للموظف؛ التنفيذ لا يتم من كلامك."
-                    )
-                    system_prompt += reception_actions.CONVERSATION_STYLE
-                    organization_info = {"اسم المؤسسة": organization["name"], "نشاط المؤسسة": organization["activity"], "رقم المؤسسة للتواصل": organization["phone"]}
                     training = '\n'.join(dict.fromkeys((ai_training_text(connection, organization["id"], "chat") + '\n' + ai_training_text(connection, organization["id"], "reception")).splitlines()))
                     previous_messages = connection.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12', (session['id'],)).fetchall()
-                    safe_history = [{'role':row['sender'],'text':row['message']} for row in reversed(previous_messages)]
-                    user_prompt = "بيانات المؤسسة:\n" + json.dumps(organization_info, ensure_ascii=False) + "\nتدريب المؤسسة المعتمد:\n" + training + "\nالمحادثة السابقة:\n" + json.dumps(safe_history, ensure_ascii=False) + "\nرسالة العميل الحالية:\n" + message
                     reply = reception_actions.exact_answer(message, training)
                     if reply is None and used >= daily_limit:
                         reply = 'وصل موظف الاستقبال لحده اليومي. أقدر أساعدك بالحجز أو أسجّل طلب تواصل مع موظف بشري.'
                     elif reply is None:
-                        reply = generate_ai_text(system_prompt, user_prompt)
+                        reply = ai_agent_reply(
+                            connection,
+                            organization["id"],
+                            "reception",
+                            message,
+                            user_id=admin["id"],
+                            session_id=session["id"],
+                            branch_id=organization["branch_id"],
+                            history=[{"role": str(row["sender"]), "text": str(row["message"])} for row in reversed(previous_messages)],
+                            runtime={"approved_training": training},
+                        )
                         connection.execute(
                             "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
                             (organization["id"], admin["id"], "public_reception_chat", now()),
@@ -1692,7 +1670,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             whatsapp_configured = any(os.environ.get(name, "").strip() for name in ("KHDOOM_WHATSAPP_TOKEN", "WHATSAPP_ACCESS_TOKEN", "META_WHATSAPP_TOKEN"))
             calls_configured = any(os.environ.get(name, "").strip() for name in ("KHDOOM_CALLS_API_KEY", "TWILIO_AUTH_TOKEN", "TWILIO_ACCOUNT_SID"))
             integrations = [
-                {"name": "OpenAI", "status": "maintenance" if ai_maintenance else ("ready" if os.environ.get("KHDOOM_AI_API_KEY", "").strip() else "not_connected"), "detail": ("النموذج: " + AI_MODEL) if os.environ.get("KHDOOM_AI_API_KEY", "").strip() else "لم يُضف مفتاح الربط بعد."},
+                {"name": "OpenAI", "status": "maintenance" if ai_maintenance else ("ready" if os.environ.get("OPENAI_API_KEY", "").strip() else "not_connected"), "detail": ("النموذج: " + ai_core.PRIMARY_MODEL) if os.environ.get("OPENAI_API_KEY", "").strip() else "لم يُضف مفتاح الربط بعد."},
                 {"name": "شات العملاء", "status": "maintenance" if chat_maintenance else "ready", "detail": "قناة الشات العامة متاحة للمؤسسات." if not chat_maintenance else emergency_by_service["chat"].get("message", "الخدمة تحت الصيانة مؤقتًا")},
                 {"name": "واتساب", "status": "ready" if whatsapp_configured else "not_connected", "detail": "تم العثور على إعدادات الربط." if whatsapp_configured else "مرحلة لاحقة — لم يتم ربط واتساب حتى الآن."},
                 {"name": "الاتصال", "status": "ready" if calls_configured else "not_connected", "detail": "تم العثور على إعدادات الربط." if calls_configured else "مرحلة لاحقة — لم يتم ربط خدمة الاتصال حتى الآن."},
@@ -2719,8 +2697,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     text = grounded_reply
                 else:
                     package, daily_limit, used = ai_allowance(connection, organization_id)
-                    system_prompt, user_prompt = training_context.prompts(message, training, previous, account_context)
-                    text = generate_ai_text(system_prompt, user_prompt)
+                    text = ai_agent_reply(connection, organization_id, "training", message, user_id=user["id"], history=previous, runtime={"saved_training": training, "account": account_context})
                     connection.execute(
                         "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
                         (organization_id, user["id"], "training_chat", now()),
@@ -2748,8 +2725,18 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 text = training_context.direct_answer(message, info)
                 if not text:
                     ai_allowance(connection, organization_id)
-                    system_prompt, user_prompt = training_context.prompts(message, ai_training_text(connection, organization_id, "assistant"), previous, info)
-                    text = generate_ai_text(system_prompt, user_prompt)
+                    text = ai_agent_reply(
+                        connection,
+                        organization_id,
+                        "assistant",
+                        message,
+                        user_id=user["id"],
+                        history=previous,
+                        runtime={
+                            "account": info,
+                            "approved_training": ai_training_text(connection, organization_id, "assistant"),
+                        },
+                    )
                     connection.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)", (organization_id,user["id"],"assistant",now()))
                     connection.commit()
                 self._send(200, {"text": text})
@@ -2765,16 +2752,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 if package != "vip":
                     raise ApiError(403, "موظف البحث التجاري متاح في باقة VIP")
                 training = ai_training_text(connection, organization_id, "commercial_research")
-                system_prompt = (
-                    "أنت موظف بحث تجاري سعودي. ابحث في الإنترنت عن معلومات حديثة وعلنية فقط. "
-                    "أجب بالعربية بوضوح، ولا تخترع أسماء أو أرقامًا. اذكر مصادر أو روابط مفيدة عند توفرها، "
-                    "ونبّه أن بيانات الاتصال والأسعار تحتاج تحققًا قبل الاعتماد."
-                )
-                user_prompt = (
-                    f"نوع البحث: {research_type}\nالمجال أو الكلمات: {keywords}\n"
-                    f"المدينة: {city}\nتدريب المؤسسة المعتمد:\n{training}\nقدم نتيجة عملية مختصرة من 5 إلى 10 نقاط."
-                )
-                text = generate_ai_text(system_prompt, user_prompt, web_search=True)
+                text = ai_agent_reply(connection, organization_id, "commercial_research", f"ابحث عن {keywords} في {city}. نوع البحث: {research_type}", user_id=user["id"], runtime={"approved_training": training})
                 connection.execute(
                     "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
                     (organization_id, user["id"], "commercial_research", now()),
@@ -2799,17 +2777,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     for key in allowed_keys
                 }
                 training = ai_training_text(connection, organization_id, "reception")
-                system_prompt = (
-                    "أنت موظف استقبال لمؤسسة سعودية. أجب بالعربية وفق بيانات المؤسسة فقط. "
-                    "لا تخترع سعرًا أو موعدًا أو خدمة غير مذكورة. إذا نقصت معلومة فقل إن الموظف البشري سيتابع، "
-                    "واجمع عند الحاجة اسم العميل ورقم التواصل ونوع الطلب. اجعل الرد مهذبًا ومختصرًا."
-                )
-                user_prompt = (
-                    "إعدادات المؤسسة:\n"
-                    + json.dumps(safe_settings, ensure_ascii=False, indent=2)
-                    + "\nتدريب المؤسسة المعتمد:\n" + training + f"\nرسالة العميل الحالية:\n{message}"
-                )
-                text = generate_ai_text(system_prompt, user_prompt)
+                text = ai_agent_reply(connection, organization_id, "reception", message, user_id=user["id"], runtime={"approved_settings": safe_settings, "approved_training": training})
                 connection.execute(
                     "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
                     (organization_id, user["id"], "reception_reply", now()),
@@ -2841,15 +2809,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     str(key)[:60]: str(value)[:2000]
                     for key, value in report_data.items()
                 }
-                system_prompt = (
-                    "أنت موظف متابعة تجارية سعودي محترف. اكتب تقرير متابعة اتصال "
-                    "بالعربية الواضحة دون اختلاق معلومات. حافظ على الأرقام والحقائق، "
-                    "واجعل التقرير عمليًا ومختصرًا ويتضمن الحالة والخطوة التالية."
-                )
-                user_prompt = "حوّل البيانات التالية إلى تقرير مهني:\n" + json.dumps(
-                    safe_report, ensure_ascii=False, indent=2
-                )
-                text = generate_ai_text(system_prompt, user_prompt)
+                text = ai_agent_reply(connection, organization_id, "commercial_report", "أنشئ تقرير المتابعة من البيانات المرفقة", user_id=user["id"], runtime={"report": safe_report})
                 connection.execute(
                     "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
                     (organization_id, user["id"], "commercial_report", now()),

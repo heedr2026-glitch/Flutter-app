@@ -17,6 +17,7 @@ COPY appointment_followups.py /app/appointment_followups.py
 COPY customer_push.py /app/customer_push.py
 COPY training_context.py /app/training_context.py
 COPY reception_actions.py /app/reception_actions.py
+COPY ai_core.py /app/ai_core.py
 COPY signup_offer.py owner_signup_offer.html /app/
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/

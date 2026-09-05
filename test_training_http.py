@@ -19,7 +19,7 @@ class TrainingHttpTest(unittest.TestCase):
              patch.object(server,'DB_PATH',Path(directory)/'test.db'), \
              patch.object(server,'DATABASE_URL',''), patch.object(server,'db',test_db), \
              patch.dict(os.environ,{'KHDOOM_OWNER_KEY':'test-only','KHDOOM_BRANCH_SYNC_ENABLED':'0'}), \
-             patch.object(server,'generate_ai_text',return_value='رد اختباري') as generate:
+             patch.object(server.AI_AGENT_SERVICE,'respond',return_value='رد اختباري') as generate:
             server.init_db()
             with server.db() as c:
                 for uid in (1,2):
@@ -48,17 +48,17 @@ class TrainingHttpTest(unittest.TestCase):
                 self.assertFalse(generate.called)
                 req('اسمي حيدر')
                 req('وش اسمي؟')
-                self.assertIn('اسمي حيدر',generate.call_args.args[1])
+                self.assertTrue(any(x['message']=='اسمي حيدر' for x in generate.call_args.args[1].history))
                 req('وش اسمي؟',uid=2)
-                self.assertNotIn('حيدر',generate.call_args.args[1])
+                self.assertFalse(any('حيدر' in x['message'] for x in generate.call_args.args[1].history))
                 self.assertEqual(req('احفظها')[1]['action'],'needs_fact')
                 self.assertEqual(req('احفظ: سعر المتر 150')[1]['action'],'saved')
                 self.assertEqual(req('احفظ: سعر المتر 150')[1]['action'],'already_saved')
                 req('اشرح شغلي',path='/api/ai/assistant',history=[{'sender':'owner','message':'أبي زجاج'}],context={'branchName':'الرياض','vehicles':2,'password':'secret'})
-                prompt=generate.call_args.args[1]
-                self.assertIn('سعر المتر 150',prompt)
-                self.assertIn('أبي زجاج',prompt)
-                self.assertNotIn('secret',prompt)
+                context=generate.call_args.args[1]
+                self.assertIn('سعر المتر 150',json.dumps(context.runtime,ensure_ascii=False))
+                self.assertIn('أبي زجاج',json.dumps(context.history,ensure_ascii=False))
+                self.assertNotIn('secret',json.dumps(context.runtime,ensure_ascii=False))
                 with server.db() as c:
                     self.assertEqual(c.execute('SELECT count(*) FROM appointment_requests').fetchone()[0],0)
                     c.execute("UPDATE users SET role='employee',permissions='{}' WHERE id=1")

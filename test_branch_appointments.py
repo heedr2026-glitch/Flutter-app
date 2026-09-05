@@ -122,7 +122,7 @@ class BranchInboxTest(unittest.TestCase):
                 qa='سؤال وجواب معتمد: '+json.dumps({'السؤال':'كم سعر الزجاج؟','الإجابة':'150 ريال للمتر حسب النوع'},ensure_ascii=False)
                 with server.db() as c:
                     c.execute('INSERT INTO ai_training(organization_id,employee_type,content,updated_at) VALUES(?,?,?,?)',(1,'reception',qa,server.now()))
-                with patch.object(server,'generate_ai_text',return_value='السعر حسب نوع الزجاج، ما النوع المطلوب؟') as generate:
+                with patch.object(server.AI_AGENT_SERVICE,'respond',return_value='السعر حسب نوع الزجاج، ما النوع المطلوب؟') as generate:
                     quote=req('/api/public-chat/'+links['b2'],'POST',{'message':'كم سعر الزجاج؟'})
                     self.assertEqual(quote['text'],'150 ريال للمتر حسب النوع')
                     generate.assert_not_called()
