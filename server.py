@@ -19,6 +19,7 @@ import appointment_context
 import appointment_followups
 import training_context
 import customer_push
+import reception_conversations
 import reception_actions
 import signup_offer
 import ai_core
@@ -745,6 +746,7 @@ def init_db() -> None:
             signup_offer.migrate(connection)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
+            reception_conversations.migrate(connection)
             ai_core.migrate(connection, postgres=True)
             if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") == "1":
                 branch_sync.migrate(connection)
@@ -1075,6 +1077,7 @@ def init_db() -> None:
         branch_appointments.migrate(connection)
         signup_offer.migrate(connection)
         appointment_followups.migrate(connection)
+        reception_conversations.migrate(connection)
         customer_push.migrate(connection)
         ai_core.migrate(connection)
         if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") == "1":
@@ -1936,7 +1939,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"saved": True, "priceSar": price_sar})
             return
         if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1, "receptionHistoryVersion": 1})
+            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1, "receptionHistoryVersion": 1, "receptionPersistenceVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
@@ -2759,6 +2762,41 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 )
                 connection.commit()
                 self._send(200, {"text": text, "remaining": daily_limit - used - 1})
+                return
+            if path == "/api/reception/conversation" and method in ("GET", "POST"):
+                require_permission(user, 'manageSettings')
+                data = self._body() if method == "POST" else {}
+                requested = data.get('branchId') if method == "POST" else parse_qs(urlparse(self.path).query).get('branchId', ['main'])[0]
+                branch = branch_appointments.authorized_branch(user, requested, ApiError)
+                if method == "GET":
+                    self._send(200, reception_conversations.snapshot(connection, organization_id, user['id'], branch))
+                    return
+                package, daily_limit, used = ai_allowance(connection, organization_id, enforce=False)
+                if package not in ('basic', 'vip'):
+                    raise ApiError(403, 'موظف الاستقبال متاح من الباقة الأساسية')
+                message = str(data.get('message', '')).strip()
+                settings = data.get('settings')
+                settings = settings if isinstance(settings, dict) else {}
+                safe_settings = {key: str(settings.get(key, ''))[:1500]
+                    for key in ('businessName','businessInfo','workingHours','replyStyle')}
+                def generate_reception(session, history, request_state):
+                    if used >= daily_limit:
+                        return 'وصل الرد الذكي لحده اليومي. يمكنك طلب التواصل مع المسؤول هنا.'
+                    training = ai_training_text(connection, organization_id, 'reception')
+                    try:
+                        reply = ai_agent_reply(connection, organization_id, 'reception', message,
+                            user_id=user['id'], session_id=session['id'], branch_id=branch,
+                            history=history, runtime={'approved_training': training, 'approved_settings': safe_settings, 'request_state': request_state})
+                    except ApiError:
+                        return 'خدمة الرد الذكي غير متاحة الآن. رسالتك محفوظة، ويمكنك طلب التواصل مع المسؤول هنا.'
+                    connection.execute('INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)',
+                        (organization_id,user['id'],'reception_reply',now()))
+                    return reply
+                result = reception_conversations.send(connection, organization_id, user['id'], branch,
+                    message, str(data.get('clientMessageId','')), now, generate_reception, ApiError,
+                    postgres=isinstance(connection, PostgresConnection))
+                connection.commit()
+                self._send(200, result)
                 return
             if path == "/api/ai/reception-reply" and method == "POST":
                 data = self._body()
