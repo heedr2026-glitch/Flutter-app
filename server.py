@@ -767,7 +767,7 @@ def init_db() -> None:
             owner_admin.migrate(connection, postgres=True)
             community_admin.migrate(connection, postgres=True)
             organization_addons.migrate(connection, postgres=True)
-            twitter_integration.migrate(connection)
+            twitter_integration.migrate(connection, postgres=True)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
         return
