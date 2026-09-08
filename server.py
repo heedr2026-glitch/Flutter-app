@@ -11,6 +11,12 @@ import os
 import secrets
 import sqlite3
 import re
+import community_admin
+from contextvars import ContextVar
+REQUEST_SCOPE = ContextVar("request_branch_scope", default=None)
+import organization_addons
+import twitter_integration
+import owner_admin
 import package_limits
 import ad_policy
 import branch_appointments
@@ -19,9 +25,12 @@ import appointment_context
 import appointment_followups
 import training_context
 import customer_push
+import reception_conversations
 import reception_actions
 import signup_offer
 import ai_core
+import service_monitor
+import whatsapp_bridge
 from typing import Any
 
 try:
@@ -36,6 +45,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parent
+# WhatsApp must use an explicitly selected database; never silently create a second inbox.
+if os.environ.get("KHDOOM_WHATSAPP_CONFIG", "").strip() and not os.environ.get("KHDOOM_DB", "").strip():
+    raise RuntimeError("Set KHDOOM_DB explicitly when enabling WhatsApp")
 DB_PATH = Path(os.environ.get("KHDOOM_DB", ROOT / "khdoom.db"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "" ).strip()
 HOST = os.environ.get("KHDOOM_HOST", "0.0.0.0")
@@ -62,7 +74,7 @@ def now() -> str:
 def format_arabic_datetime(value: datetime) -> str:
     local_value = value.astimezone(timezone(timedelta(hours=3)))
     hour = local_value.hour % 12 or 12
-    period = "ص" if local_value.hour < 12 else "م"
+    period = "ص" if local_value.hour < 12 else "ظ…"
     return f"{local_value:%Y-%m-%d} الساعة {hour}:{local_value:%M} {period}"
 
 
@@ -186,7 +198,7 @@ def ai_allowance(
     package = package_row["package"] if package_row else "free"
     default_limit = {"free": 5, "basic": 30, "vip": 100}.get(package, 5)
     custom_limit = connection.execute("SELECT daily_limit FROM ai_limits WHERE organization_id=?", (organization_id,)).fetchone()
-    daily_limit = custom_limit["daily_limit"] if custom_limit else default_limit
+    daily_limit = owner_admin.daily_limit(connection, organization_id, package)
     day_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
     used = connection.execute(
         "SELECT COUNT(*) AS count FROM ai_usage WHERE organization_id=? AND created_at>=?",
@@ -206,7 +218,7 @@ def ai_training_text(connection: Any, organization_id: int, employee_type: str) 
     for row in rows:
         for line in str(row["content"]).splitlines():
             cleaned = line.strip()
-            key = re.sub(r"^[•\-]\s*", "", cleaned).strip().lower()
+            key = re.sub(r"^[أ¢â‚¬آ¢\-]\s*", "", cleaned).strip().lower()
             if not key or key in seen:
                 continue
             seen.add(key)
@@ -369,7 +381,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
             if context.get("request_type") and context.get("scheduled_at"):
                 state = "await_confirmation"
                 scheduled = datetime.fromisoformat(context["scheduled_at"])
-                reply = f"شكرًا. سأسجل {context['request_type']} يوم {_format_appointment_slot(scheduled, context.get('time_period') or ('صباحًا' if scheduled.hour < 12 else 'مساءً'))}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
+                reply = f"شكرًا. سأسجل {context['request_type']} ظٹظˆظ… {_format_appointment_slot(scheduled, context.get('time_period') or ('صباحًا' if scheduled.hour < 12 else 'مساءً'))}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
             elif context.get("request_type"):
                 state = "await_datetime"
                 reply = "شكرًا. أي يوم يناسبك، وهل تفضله صباحًا أم مساءً؟"
@@ -388,7 +400,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
             if context.get("scheduled_at"):
                 state = "await_confirmation"
                 scheduled = datetime.fromisoformat(context["scheduled_at"])
-                reply = f"سأسجل {context['request_type']} يوم {_format_appointment_slot(scheduled, context.get("time_period") or ("صباحًا" if scheduled.hour < 12 else "مساءً"))}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
+                reply = f"سأسجل {context['request_type']} ظٹظˆظ… {_format_appointment_slot(scheduled, context.get("time_period") or ("صباحًا" if scheduled.hour < 12 else "مساءً"))}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
             else:
                 state = "await_datetime"
                 reply = "اكتب اليوم والفترة المناسبة، مثل: السبت صباحًا أو السبت مساءً."
@@ -401,7 +413,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         if context.get("scheduled_at"):
             state = "await_confirmation"
             scheduled = datetime.fromisoformat(context["scheduled_at"])
-            reply = f"سأسجل {request_type} يوم {_format_appointment_slot(scheduled, context.get("time_period") or ("صباحًا" if scheduled.hour < 12 else "مساءً"))}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
+            reply = f"سأسجل {request_type} ظٹظˆظ… {_format_appointment_slot(scheduled, context.get("time_period") or ("صباحًا" if scheduled.hour < 12 else "مساءً"))}. هل أرسل الطلب للموظف؟ اكتب نعم أو لا."
         else:
             state = "await_datetime"
             reply = "اكتب اليوم والفترة المناسبة، مثل: السبت صباحًا أو السبت مساءً."
@@ -452,6 +464,8 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     return reply
 
 def seed_package_offers(connection: Any) -> None:
+    if connection.execute("SELECT id FROM package_offers LIMIT 1").fetchone():
+        return
     created = now()
     defaults = (
         ("basic", 1, 0, 49, "شهري"),
@@ -745,10 +759,15 @@ def init_db() -> None:
             signup_offer.migrate(connection)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
+            reception_conversations.migrate(connection)
             ai_core.migrate(connection, postgres=True)
             if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") == "1":
                 branch_sync.migrate(connection)
             seed_package_offers(connection)
+            owner_admin.migrate(connection, postgres=True)
+            community_admin.migrate(connection, postgres=True)
+            organization_addons.migrate(connection, postgres=True)
+            twitter_integration.migrate(connection)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
         return
@@ -1075,11 +1094,16 @@ def init_db() -> None:
         branch_appointments.migrate(connection)
         signup_offer.migrate(connection)
         appointment_followups.migrate(connection)
+        reception_conversations.migrate(connection)
         customer_push.migrate(connection)
         ai_core.migrate(connection)
         if os.environ.get("KHDOOM_BRANCH_SYNC_ENABLED") == "1":
             branch_sync.migrate(connection)
         seed_package_offers(connection)
+        owner_admin.migrate(connection)
+        community_admin.migrate(connection)
+        organization_addons.migrate(connection)
+        twitter_integration.migrate(connection)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
 
@@ -1203,9 +1227,9 @@ def audit_log(
 ) -> None:
     connection.execute(
         """INSERT INTO audit_logs(
-               organization_id,actor_user_id,action,target_type,target_id,summary,created_at
-           ) VALUES(?,?,?,?,?,?,?)""",
-        (organization_id, actor_user_id, action, target_type, str(target_id), summary[:500], now()),
+               organization_id,actor_user_id,action,target_type,target_id,summary,created_at,branch_id
+           ) VALUES(?,?,?,?,?,?,?,?)""",
+        (organization_id, actor_user_id, action, target_type, str(target_id), summary[:500], now(), (REQUEST_SCOPE.get() or (None,None))[1] if (REQUEST_SCOPE.get() or (None,None))[0]==organization_id else None),
     )
 
 def require_permission(user: Any, *permission_names: str) -> None:
@@ -1229,12 +1253,20 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "KhdoomAPI/1.0"
 
     def log_message(self, fmt: str, *args: object) -> None:
+        if urlparse(self.path).path == "/webhooks/whatsapp":
+            print(f"[{now()}] WhatsApp webhook method={self.command} status={args[1] if len(args) > 1 and str(args[1]).isdigit() else 'unknown'}", flush=True)
+            return
         print(f"[{now()}] {self.address_string()} {fmt % args}")
 
     def _send(self, status: int, payload: object) -> None:
+        if 200 <= status < 300 and getattr(self, 'platform_actor', None) and self.command in ('POST', 'PUT', 'DELETE') and '/v2/' not in self.path:
+            with db() as audit_connection:
+                owner_admin.audit(audit_connection, self.platform_actor['name'], self.command, urlparse(self.path).path)
+                audit_connection.commit()
         body = json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
@@ -1309,17 +1341,32 @@ class Handler(BaseHTTPRequestHandler):
             "UPDATE sessions SET last_seen_at=? WHERE token_hash=?",
             (now(), token_hash),
         )
+        try:
+            row = organization_addons.customer_context(connection, row, self)
+        except ValueError as error:
+            raise ApiError(403, str(error))
+        if owner_admin.suspended(connection, row["organization_id"]):
+            raise ApiError(403, "المؤسسة موقوفة؛ تواصل مع الدعم")
+        REQUEST_SCOPE.set((row["organization_id"],row.get("current_branch")))
         return row
 
     def _owner(self) -> None:
-        expected = os.environ.get("KHDOOM_OWNER_KEY", "").strip()
-        if not expected:
-            expected = OWNER_KEY_PATH.read_text(encoding="utf-8").strip()
-        supplied = self.headers.get("X-Owner-Key", "")
-        if not supplied or not hmac.compare_digest(supplied, expected):
-            raise ApiError(401, "مفتاح المالك غير صحيح")
+        owner_admin.authorize(self, __import__('sys').modules[__name__])
 
     def _dispatch(self, method: str) -> None:
+        REQUEST_SCOPE.set(None)
+        self.platform_actor = None
+        if urlparse(self.path).path.startswith('/owner/api/v2/'):
+            with db() as admin_connection:
+                downgrade_expired_subscriptions(admin_connection)
+        if owner_admin.handle(self, method, __import__('sys').modules[__name__]):
+            return
+        if organization_addons.client(self, method, __import__('sys').modules[__name__]):
+            return
+        if community_admin.client(self, method, __import__('sys').modules[__name__]):
+            return
+        if whatsapp_bridge.handle(self, method, db):
+            return
         path = urlparse(self.path).path.rstrip("/") or "/"
         with db() as subscription_connection:
             downgrade_expired_subscriptions(subscription_connection)
@@ -1536,8 +1583,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                             runtime={"approved_training": training},
                         )
                         connection.execute(
-                            "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
-                            (organization["id"], admin["id"], "public_reception_chat", now()),
+                            "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
+                            (organization["id"], admin["id"], "public_reception_chat", now(), organization["branch_id"]),
                         )
                 bot_cursor = connection.execute(
                     "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
@@ -1546,12 +1593,18 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 connection.commit()
             self._send(200, {"text": reply, "remaining": daily_limit - used - 1, "sessionToken": supplied_session_token, "lastMessageId": bot_cursor.lastrowid})
             return
-        if method == "GET" and path == "/owner":
+        if method == "GET" and path == "/owner/legacy":
+            self.send_response(302)
+            self.send_header("Location", "/owner")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        if method == "GET" and path == "/owner/legacy-disabled-backup":
             self._send_html(
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة مالك خدووم</title>
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}.top-nav{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 18px}.top-nav a{flex:1;min-width:130px;text-align:center;padding:12px;background:#172554;border:1px solid #285682;border-radius:12px;text-decoration:none;font-weight:bold;color:#7dd3fc}.category-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:16px}.category-button{min-height:76px;margin:0;background:#132b61;border:1px solid #2563eb;font-size:15px}.category-button span{display:block;font-size:12px;color:#bae6fd;margin-top:5px}.support-badge{display:none;position:absolute;top:6px;left:8px;background:#ef4444;color:white;border-radius:999px;min-width:24px;height:24px;line-height:24px;font-size:12px}.category-button{position:relative}.support-badge.show{display:block}.owner-dashboard{display:none}.owner-panel{display:none}.owner-panel.active{display:block}.service-row{direction:rtl;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:48px;padding:11px 13px;margin:8px 0;background:#12295f;border:1px solid #285682;border-radius:12px}.service-row b{font-size:15px}.service-row small{display:block;color:#bfdbfe;margin-top:4px;font-size:12px}.switch{position:relative;display:inline-block;width:52px;height:28px;flex:0 0 52px}.switch input{opacity:0;width:0;height:0;margin:0;padding:0}.slider{position:absolute;inset:0;cursor:pointer;background:#475569;border-radius:28px;transition:.2s}.slider:before{content:"";position:absolute;width:22px;height:22px;right:3px;top:3px;background:#e2e8f0;border-radius:50%;transition:.2s;box-shadow:0 1px 4px #02061788}.switch input:checked+.slider{background:#0ea5e9;box-shadow:0 0 9px #0ea5e977}.switch input:checked+.slider:before{transform:translateX(-24px);background:white}</style></head><body><div class="wrap"><h1>لوحة مالك خدووم</h1>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="ownerLogin()">دخول لوحة المالك</button><div id="loginStatus" class="result">أدخل المفتاح ثم اضغط دخول</div></div>
-<nav class="top-nav"><a href="/owner">لوحة الإدارة</a><a href="/owner/package-limits">حدود الباقات</a><a href="/owner/security">لوحة الأمن</a><a href="/owner/codes">أكواد الخصم</a></nav>
+<nav class="top-nav"><a href="/owner">لوحة الإدارة</a><a href="/owner/package-limits">حدود الباقات</a><a href="/owner/services">حالة الخدمات</a><a href="/owner/security">لوحة الأمن</a><a href="/owner/codes">أكواد الخصم</a></nav>
 <div id="ownerDashboard" class="owner-dashboard">
 <div class="category-grid"><button class="category-button" onclick="showOwnerPanel('organizationsPanel')">المؤسسات<span>الباقة والخدمات والإعدادات</span></button><button class="category-button" onclick="showOwnerPanel('usageAlertsPanel')">تنبيهات الاستهلاك<b id="usageAlertBadge" class="support-badge">0</b><span>استهلاك جميع المؤسسات</span></button><button class="category-button" onclick="showOwnerPanel('subscriptionsPanel')">طلبات الترقية<span>قبول أو رفض الطلبات</span></button><button class="category-button" onclick="location.href='/owner/offers'">عروض الباقات<span>السعر والمدة والأشهر المجانية</span></button><button class="category-button" onclick="showOwnerPanel('adsPanel')">الإعلانات<span>إعلانات المنصة ومراجعة المؤسسات</span></button><button class="category-button" onclick="location.href='/owner/codes'">أكواد الخصم<span>إنشاء وإدارة الأكواد</span></button><button class="category-button" onclick="location.href='/owner/security'">لوحة الأمن<span>الحسابات والأجهزة والتنبيهات</span></button></div>
 <section id="organizationsPanel" class="owner-panel active"><div class="card"><h2>المؤسسات</h2><p>اختر المؤسسة ثم افتح إدارتها لتعديل الباقة أو الخدمات.</p><button onclick="loadOrganizations()">تحديث المؤسسات</button><div id="organizations" class="result"></div></div></section>
@@ -1559,8 +1612,8 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <section id="subscriptionsPanel" class="owner-panel"><div class="card"><h2>طلبات ترقية الباقات</h2><button onclick="loadSubscriptionRequests()">تحديث الطلبات</button><div id="subscriptionRequests" class="result"></div></div></section>
 <section id="adsPanel" class="owner-panel"><div class="card"><h2>إنشاء إعلان للمنصة</h2><input id="platformAdTitle" maxlength="120" placeholder="عنوان الإعلان"><input id="platformAdMessage" maxlength="1000" placeholder="نص العرض"><input id="platformAdCode" maxlength="40" placeholder="كود الخصم أو العرض (اختياري)"><label style="display:block;color:#bae6fd;font-weight:bold;margin-top:10px">صورة الإعلان (اختيارية، حتى 600 كيلوبايت)</label><input id="platformAdImage" type="file" accept="image/jpeg,image/png,image/webp" onchange="readPlatformAdImage(this)"><img id="platformAdPreview" alt="معاينة الإعلان" style="display:none;width:100%;max-height:220px;object-fit:contain;border-radius:12px;margin:8px 0"><input id="platformAdDays" type="number" min="1" max="3650" value="30" placeholder="مدة العرض بالأيام"><button class="vip" onclick="createPlatformAd()">نشر الإعلان الآن</button><div id="platformAds" class="result"></div></div><div class="card"><h2>مراجعة إعلانات المؤسسات</h2><button class="vip" onclick="loadAds()">تحديث الإعلانات</button><div id="ads" class="result"></div></div></section>
 </div></div>
-<script>async function loadUsageAlerts(){let r=await fetch('/owner/api/organizations',{headers:headers(),cache:'no-store'}),data=await r.json(),box=document.getElementById('usageAlerts'),badge=document.getElementById('usageAlertBadge');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الاستهلاك';return}let sorted=[...data].sort((a,b)=>(b.ai_usage_percent||0)-(a.ai_usage_percent||0)),important=sorted.filter(o=>o.ai_usage_status!=='normal');badge.textContent=String(important.length);badge.classList.toggle('show',important.length>0);box.innerHTML=sorted.length?sorted.map(o=>`<div class="card" style="border-right:5px solid ${o.ai_usage_status==='danger'?'#ef4444':o.ai_usage_status==='warning'?'#facc15':'#22c55e'}"><b>${esc(o.name)}</b><p>اليوم: ${o.ai_today||0} من ${o.ai_daily_limit||0} — ${o.ai_usage_percent||0}%</p><p>الشهر: ${o.ai_month||0} استخدام — التكلفة التقديرية: ${Number(o.ai_estimated_cost_sar||0).toFixed(2)} ر.س</p><p>${o.ai_usage_status==='danger'?'🚨 تم بلوغ الحد اليومي':o.ai_usage_status==='warning'?'⚠️ اقتربت من الحد اليومي':'✓ الاستهلاك طبيعي'}</p><a href="/owner?organization=${o.id}" style="display:block;color:#7dd3fc">فتح إدارة المؤسسة</a></div>`).join(''):'لا توجد مؤسسات بعد'}setInterval(()=>{if(document.getElementById('ownerDashboard')?.style.display==='block')loadUsageAlerts()},15000);</script>
-<script>function showOwnerPanel(id){document.querySelectorAll('.owner-panel').forEach(x=>x.classList.remove('active'));document.getElementById(id)?.classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}function maintenanceActive(value){if(!value)return false;let date=new Date(value);return !isNaN(date)&&date>new Date()}const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';document.getElementById('ownerDashboard').style.display='block';showOwnerPanel('organizationsPanel');loadOrganizations();loadSubscriptionRequests();loadAds();loadPlatformAds()}else{document.getElementById('ownerDashboard').style.display='none';s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' يوم':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=pkg==='free'?1:+document.getElementById('days-'+id).value;if(pkg!=='free'&&(!days||days<1)){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:days})});let d=await r.json();if(r.ok&&d.saved){alert(pkg==='free'?'تم قفل الباقات وإعادة المؤسسة للمجانية':'تم فتح الباقة لمدة '+days+' يوم');await loadOrganizations()}else{alert(d.error||'تعذر تغيير الباقة')}}async function loadSubscriptionRequests(){let r=await fetch('/owner/api/subscription-requests',{headers:headers()});let data=await r.json();let box=document.getElementById('subscriptionRequests');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل طلبات الترقية';return}box.innerHTML=data.length?data.map(x=>`<div class="card"><b>${esc(x.organization_name)}</b><p>التواصل: ${esc(x.phone)}</p><p>الباقة الحالية: ${x.current_package}</p><p>الباقة المطلوبة: ${x.requested_package==='basic'?'الأساسية':'VIP'}</p><p>كود الخصم: ${x.discount_code?esc(x.discount_code)+' — خصم '+x.discount_percent+'%':'بدون كود'}</p><p>الحالة: ${x.status==='pending'?'بانتظار المراجعة':x.status==='approved'?'مقبول':'مرفوض'}</p>${x.status==='pending'?`<label for="request-package-${x.id}" style="display:block;color:#bae6fd;font-weight:bold;margin-top:12px">الباقة التي تريد تفعيلها</label><select id="request-package-${x.id}"><option value="free">المجانية — بدون مدة</option><option value="basic" ${x.requested_package==='basic'?'selected':''}>الأساسية</option><option value="vip" ${x.requested_package==='vip'?'selected':''}>VIP</option></select><label for="request-days-${x.id}" style="display:block;color:#bae6fd;font-weight:bold;margin-top:8px">مدة التفعيل بالأيام</label><input id="request-days-${x.id}" type="number" min="1" max="3650" value="30" placeholder="مثال: 30 يومًا"><small style="display:block;color:#94a3b8;margin-bottom:8px">المدة تُستخدم للأساسية وVIP فقط، أما المجانية فبدون مدة.</small><button onclick="reviewSubscriptionRequest(${x.id},'approve')">تفعيل الباقة المختارة</button><button class="vip" onclick="reviewSubscriptionRequest(${x.id},'reject')">رفض الطلب</button>`:''}</div>`).join(''):'لا توجد طلبات ترقية بعد'}async function reviewSubscriptionRequest(id,action){let selectedPackage=document.getElementById('request-package-'+id)?.value||'free',days=+document.getElementById('request-days-'+id)?.value||30;if(action==='approve'&&selectedPackage!=='free'&&days<1){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/subscription-requests/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action:action,selectedPackage:selectedPackage,durationDays:days})});let d=await r.json();alert(r.ok?(action==='approve'?'تم تفعيل الباقة المختارة للمؤسسة':'تم رفض الطلب'):(d.error||'تعذر معالجة الطلب'));if(r.ok){loadSubscriptionRequests();loadOrganizations()}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations'),focusId=new URLSearchParams(location.search).get('organization');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}if(focusId)data=data.filter(o=>String(o.id)===String(focusId));box.innerHTML=data.map(o=>`<div class="card"><b>${esc(o.name)}</b><p>الباقة الحالية: ${o.package} | ${esc(o.phone)}</p><p>تنتهي: ${o.expires_at||'لا يوجد'}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><details ${focusId?'open':''}><summary style="cursor:pointer;background:#0284c7;padding:13px;border-radius:10px;font-weight:bold;margin:10px 0">⚙️ فتح إدارة المؤسسة</summary><div style="padding:12px;border:1px solid #285682;border-radius:12px"><h3>استهلاك AI</h3><p>اليوم: ${o.ai_today||0} من ${o.ai_daily_limit||0} (${o.ai_usage_percent||0}%) — الشهر: ${o.ai_month||0} استخدام</p><p>التكلفة التقديرية للشهر: ${Number(o.ai_estimated_cost_sar||0).toFixed(2)} ر.س (${Number(o.ai_estimated_cost_usd||0).toFixed(4)} دولار)</p><p style="color:${o.ai_usage_status==='danger'?'#fb7185':o.ai_usage_status==='warning'?'#facc15':'#4ade80'}">${o.ai_usage_status==='danger'?'🚨 تم بلوغ الحد اليومي':o.ai_usage_status==='warning'?'⚠️ اقتربت المؤسسة من الحد اليومي':'✓ الاستهلاك طبيعي'}</p><small style="color:#94a3b8">التكلفة تقديرية وتختلف حسب طول الرسائل والردود.</small><input id="ai-limit-${o.id}" type="number" min="1" value="${o.custom_ai_limit||({free:5,basic:30,vip:100}[o.package]||5)}" placeholder="الحد اليومي"><button onclick="setAiLimit(${o.id})">حفظ الحد اليومي</button><h3>تشغيل الخدمات والصيانة</h3><p style="color:#94a3b8">المفتاح الأزرق يعني أن الخدمة تعمل.</p><input id="maintenance-hours-${o.id}" type="number" min="1" value="24" placeholder="مدة الصيانة بالساعات"><input id="maintenance-message-${o.id}" value="${esc(o.maintenance_message||'الخدمة تحت الصيانة مؤقتًا')}" placeholder="رسالة الصيانة"><div class="service-row"><div><b>موظفو AI والمساعد الذكي</b><small>${maintenanceActive(o.assistant_until)?'تحت الصيانة حتى '+esc(o.assistant_until):'تعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${maintenanceActive(o.assistant_until)?'':'checked'} onchange="toggleMaintenance(this,${o.id},'assistant')"><span class="slider"></span></label></div><div class="service-row"><div><b>شات العملاء</b><small>${maintenanceActive(o.chat_until)?'تحت الصيانة حتى '+esc(o.chat_until):'يعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${maintenanceActive(o.chat_until)?'':'checked'} onchange="toggleMaintenance(this,${o.id},'chat')"><span class="slider"></span></label></div><div class="service-row"><div><b>المواعيد</b><small>${maintenanceActive(o.appointments_until)?'تحت الصيانة حتى '+esc(o.appointments_until):'تعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${maintenanceActive(o.appointments_until)?'':'checked'} onchange="toggleMaintenance(this,${o.id},'appointments')"><span class="slider"></span></label></div><h3>إدارة الباقة</h3><p style="color:#94a3b8">حدد المدة ثم اختر الباقة المطلوبة.</p><input id="days-${o.id}" type="number" min="1" value="30" placeholder="المدة بالأيام"><button onclick="setPackage(${o.id},'free')">إرجاع الباقة إلى المجانية</button><button onclick="setPackage(${o.id},'basic')">تفعيل الباقة الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">تفعيل باقة VIP</button></div></details></div>`).join('')}async function setAiLimit(id){let dailyLimit=+document.getElementById('ai-limit-'+id).value;if(!dailyLimit||dailyLimit<1){alert('اكتب حدًا يوميًا صحيحًا');return}let r=await fetch('/owner/api/organizations/'+id+'/ai-limit',{method:'PUT',headers:headers(),body:JSON.stringify({dailyLimit})});let d=await r.json();alert(r.ok?'تم حفظ الحد اليومي':(d.error||'تعذر حفظ الحد'));if(r.ok)loadOrganizations()}async function toggleMaintenance(input,id,service){let ok=await setMaintenance(id,service,!input.checked);if(!ok)input.checked=!input.checked}async function setMaintenance(id,service,enabled){let hours=+document.getElementById('maintenance-hours-'+id).value||24;let message=document.getElementById('maintenance-message-'+id).value;let serviceName=service==='chat'?'شات العملاء':service==='appointments'?'المواعيد':'موظفو AI والمساعد الذكي';if(enabled&&!confirm('تأكيد إيقاف '+serviceName+' لهذه المؤسسة لمدة '+hours+' ساعة؟'))return false;let r=await fetch('/owner/api/organizations/'+id+'/maintenance',{method:'PUT',headers:headers(),body:JSON.stringify({service,enabled,hours,message})});let d=await r.json();alert(r.ok?(enabled?'تم وضع الخدمة تحت الصيانة':'تم تشغيل الخدمة'):(d.error||'تعذر تغيير وضع الصيانة'));if(r.ok){await loadOrganizations();return true}return false}let platformAdImageData='';function readPlatformAdImage(input){let file=input.files&&input.files[0],preview=document.getElementById('platformAdPreview');if(!file){platformAdImageData='';preview.style.display='none';return}if(file.size>614400){alert('حجم الصورة يجب ألا يتجاوز 600 كيلوبايت');input.value='';platformAdImageData='';preview.style.display='none';return}let reader=new FileReader();reader.onload=()=>{platformAdImageData=String(reader.result||'');preview.src=platformAdImageData;preview.style.display='block'};reader.readAsDataURL(file)}async function createPlatformAd(){let title=document.getElementById('platformAdTitle').value.trim(),message=document.getElementById('platformAdMessage').value.trim(),promoCode=document.getElementById('platformAdCode').value.trim().toUpperCase(),durationDays=+document.getElementById('platformAdDays').value||30;if(!title){alert('اكتب عنوان الإعلان');return}let r=await fetch('/owner/api/platform-ads',{method:'POST',headers:headers(),body:JSON.stringify({title,message,promoCode,imageData:platformAdImageData,durationDays})});let d=await r.json();alert(r.ok?'تم نشر إعلان المنصة':(d.error||'تعذر نشر الإعلان'));if(r.ok){document.getElementById('platformAdTitle').value='';document.getElementById('platformAdMessage').value='';document.getElementById('platformAdCode').value='';document.getElementById('platformAdImage').value='';document.getElementById('platformAdPreview').style.display='none';platformAdImageData='';loadPlatformAds()}}async function loadPlatformAds(){let r=await fetch('/owner/api/platform-ads',{headers:headers()});let data=await r.json(),box=document.getElementById('platformAds');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل إعلانات المنصة';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>${esc(a.message||'')}</p>${a.image_data?`<img src="${a.image_data}" alt="صورة الإعلان" style="width:100%;max-height:220px;object-fit:contain;border-radius:12px">`:''}<p>كود العرض: ${esc(a.promo_code||'بدون كود')}</p><p>ينتهي: ${esc(a.expires_at||'')}</p><button class="vip" onclick="deletePlatformAd(${a.id})">إيقاف وحذف</button></div>`).join(''):'لا توجد إعلانات منصة حاليًا'}async function deletePlatformAd(id){if(!confirm('إيقاف وحذف الإعلان؟'))return;let r=await fetch('/owner/api/platform-ads/'+id,{method:'DELETE',headers:headers()});let d=await r.json();alert(r.ok?'تم حذف الإعلان':(d.error||'تعذر حذف الإعلان'));if(r.ok)loadPlatformAds()}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><p>ينتهي: ${a.expires_at||'لم تحدد المدة بعد'}</p><label for="ad-days-${a.id}" style="display:block;color:#bae6fd;font-weight:bold;margin-top:12px">مدة عرض الإعلان (بالأيام)</label><input id="ad-days-${a.id}" type="number" min="1" value="30" placeholder="مثال: 30 يومًا"><small style="display:block;color:#94a3b8;margin-bottom:8px">مثال: 30 تعني عرض الإعلان لمدة شهر من وقت القبول.</small><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action,durationDays:+document.getElementById('ad-days-'+id).value||30})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
+<script>async function loadUsageAlerts(){let r=await fetch('/owner/api/organizations',{headers:headers(),cache:'no-store'}),data=await r.json(),box=document.getElementById('usageAlerts'),badge=document.getElementById('usageAlertBadge');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الاستهلاك';return}let sorted=[...data].sort((a,b)=>(b.ai_usage_percent||0)-(a.ai_usage_percent||0)),important=sorted.filter(o=>o.ai_usage_status!=='normal');badge.textContent=String(important.length);badge.classList.toggle('show',important.length>0);box.innerHTML=sorted.length?sorted.map(o=>`<div class="card" style="border-right:5px solid ${o.ai_usage_status==='danger'?'#ef4444':o.ai_usage_status==='warning'?'#facc15':'#22c55e'}"><b>${esc(o.name)}</b><p>اليوم: ${o.ai_today||0} من ${o.ai_daily_limit||0} أ¢â‚¬â€‌ ${o.ai_usage_percent||0}%</p><p>الشهر: ${o.ai_month||0} استخدام — التكلفة التقديرية: ${Number(o.ai_estimated_cost_sar||0).toFixed(2)} ر.س</p><p>${o.ai_usage_status==='danger'?'🚨 تم بلوغ الحد اليومي':o.ai_usage_status==='warning'?'⚠️ اقتربت من الحد اليومي':'✓ الاستهلاك طبيعي'}</p><a href="/owner?organization=${o.id}" style="display:block;color:#7dd3fc">فتح إدارة المؤسسة</a></div>`).join(''):'لا توجد مؤسسات بعد'}setInterval(()=>{if(document.getElementById('ownerDashboard')?.style.display==='block')loadUsageAlerts()},15000);</script>
+<script>function showOwnerPanel(id){document.querySelectorAll('.owner-panel').forEach(x=>x.classList.remove('active'));document.getElementById(id)?.classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}function maintenanceActive(value){if(!value)return false;let date=new Date(value);return !isNaN(date)&&date>new Date()}const headers=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});async function ownerLogin(){let r=await fetch('/owner/api/organizations',{headers:headers()});let d=await r.json();let s=document.getElementById('loginStatus');if(r.ok){s.textContent='تم الدخول بنجاح ✓';document.getElementById('ownerDashboard').style.display='block';showOwnerPanel('organizationsPanel');loadOrganizations();loadSubscriptionRequests();loadAds();loadPlatformAds()}else{document.getElementById('ownerDashboard').style.display='none';s.textContent=d.error||'تعذر الدخول'}}async function createCode(){let r=await fetch('/owner/api/codes',{method:'POST',headers:headers(),body:JSON.stringify({recipientName:document.getElementById('recipient').value,assignedUsername:document.getElementById('assignedUsername').value,customCode:document.getElementById('customCode').value,package:document.getElementById('package').value,durationDays:+document.getElementById('days').value,maxUses:+document.getElementById('uses').value})});let d=await r.json();document.getElementById('result').textContent=r.ok?'الكود: '+d.code+'\\nمخصص إلى: '+(d.recipientName||'غير محدد')+'\\nالباقة: '+d.package+'\\nالمدة: '+d.durationDays+' ظٹظˆظ…':(d.error||'تعذر إنشاء الكود')}async function setPackage(id,pkg){let days=pkg==='free'?1:+document.getElementById('days-'+id).value;if(pkg!=='free'&&(!days||days<1)){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/organizations/'+id+'/package',{method:'PUT',headers:headers(),body:JSON.stringify({package:pkg,durationDays:days})});let d=await r.json();if(r.ok&&d.saved){alert(pkg==='free'?'تم قفل الباقات وإعادة المؤسسة للمجانية':'تم فتح الباقة لمدة '+days+' يوم');await loadOrganizations()}else{alert(d.error||'تعذر تغيير الباقة')}}async function loadSubscriptionRequests(){let r=await fetch('/owner/api/subscription-requests',{headers:headers()});let data=await r.json();let box=document.getElementById('subscriptionRequests');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل طلبات الترقية';return}box.innerHTML=data.length?data.map(x=>`<div class="card"><b>${esc(x.organization_name)}</b><p>التواصل: ${esc(x.phone)}</p><p>الباقة الحالية: ${x.current_package}</p><p>الباقة المطلوبة: ${x.requested_package==='basic'?'الأساسية':'VIP'}</p><p>كود الخصم: ${x.discount_code?esc(x.discount_code)+' — خصم '+x.discount_percent+'%':'بدون كود'}</p><p>الحالة: ${x.status==='pending'?'بانتظار المراجعة':x.status==='approved'?'مقبول':'مرفوض'}</p>${x.status==='pending'?`<label for="request-package-${x.id}" style="display:block;color:#bae6fd;font-weight:bold;margin-top:12px">الباقة التي تريد تفعيلها</label><select id="request-package-${x.id}"><option value="free">المجانية — بدون مدة</option><option value="basic" ${x.requested_package==='basic'?'selected':''}>الأساسية</option><option value="vip" ${x.requested_package==='vip'?'selected':''}>VIP</option></select><label for="request-days-${x.id}" style="display:block;color:#bae6fd;font-weight:bold;margin-top:8px">مدة التفعيل بالأيام</label><input id="request-days-${x.id}" type="number" min="1" max="3650" value="30" placeholder="مثال: 30 يومًا"><small style="display:block;color:#94a3b8;margin-bottom:8px">المدة تُستخدم للأساسية وVIP فقط، أما المجانية فبدون مدة.</small><button onclick="reviewSubscriptionRequest(${x.id},'approve')">تفعيل الباقة المختارة</button><button class="vip" onclick="reviewSubscriptionRequest(${x.id},'reject')">رفض الطلب</button>`:''}</div>`).join(''):'لا توجد طلبات ترقية بعد'}async function reviewSubscriptionRequest(id,action){let selectedPackage=document.getElementById('request-package-'+id)?.value||'free',days=+document.getElementById('request-days-'+id)?.value||30;if(action==='approve'&&selectedPackage!=='free'&&days<1){alert('اكتب مدة صحيحة بالأيام');return}let r=await fetch('/owner/api/subscription-requests/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action:action,selectedPackage:selectedPackage,durationDays:days})});let d=await r.json();alert(r.ok?(action==='approve'?'تم تفعيل الباقة المختارة للمؤسسة':'تم رفض الطلب'):(d.error||'تعذر معالجة الطلب'));if(r.ok){loadSubscriptionRequests();loadOrganizations()}}async function loadOrganizations(){let r=await fetch('/owner/api/organizations',{headers:headers()});let data=await r.json();let box=document.getElementById('organizations'),focusId=new URLSearchParams(location.search).get('organization');if(!Array.isArray(data)){box.textContent=data.error||'تعذر عرض المؤسسات';return}if(data.length===0){box.textContent='لا توجد مؤسسات في قاعدة البيانات الجديدة بعد. يلزم ربط تسجيل حساب التطبيق بالخادم ثم ستظهر المؤسسات هنا.';return}if(focusId)data=data.filter(o=>String(o.id)===String(focusId));box.innerHTML=data.map(o=>`<div class="card"><b>${esc(o.name)}</b><p>الباقة الحالية: ${o.package} | ${esc(o.phone)}</p><p>تنتهي: ${o.expires_at||'لا يوجد'}</p><a href="/chat/${o.public_chat_token}" target="_blank" style="display:block;color:#7dd3fc;margin:10px 0">فتح رابط محادثة الزبائن</a><details ${focusId?'open':''}><summary style="cursor:pointer;background:#0284c7;padding:13px;border-radius:10px;font-weight:bold;margin:10px 0">⚙️ فتح إدارة المؤسسة</summary><div style="padding:12px;border:1px solid #285682;border-radius:12px"><h3>استهلاك AI</h3><p>اليوم: ${o.ai_today||0} من ${o.ai_daily_limit||0} (${o.ai_usage_percent||0}%) — الشهر: ${o.ai_month||0} استخدام</p><p>التكلفة التقديرية للشهر: ${Number(o.ai_estimated_cost_sar||0).toFixed(2)} ر.س (${Number(o.ai_estimated_cost_usd||0).toFixed(4)} دولار)</p><p style="color:${o.ai_usage_status==='danger'?'#fb7185':o.ai_usage_status==='warning'?'#facc15':'#4ade80'}">${o.ai_usage_status==='danger'?'🚨 تم بلوغ الحد اليومي':o.ai_usage_status==='warning'?'⚠️ اقتربت المؤسسة من الحد اليومي':'✓ الاستهلاك طبيعي'}</p><small style="color:#94a3b8">التكلفة تقديرية وتختلف حسب طول الرسائل والردود.</small><input id="ai-limit-${o.id}" type="number" min="1" value="${o.custom_ai_limit||({free:5,basic:30,vip:100}[o.package]||5)}" placeholder="الحد اليومي"><button onclick="setAiLimit(${o.id})">حفظ الحد اليومي</button><h3>تشغيل الخدمات والصيانة</h3><p style="color:#94a3b8">المفتاح الأزرق يعني أن الخدمة تعمل.</p><input id="maintenance-hours-${o.id}" type="number" min="1" value="24" placeholder="مدة الصيانة بالساعات"><input id="maintenance-message-${o.id}" value="${esc(o.maintenance_message||'الخدمة تحت الصيانة مؤقتًا')}" placeholder="رسالة الصيانة"><div class="service-row"><div><b>موظفو AI والمساعد الذكي</b><small>${maintenanceActive(o.assistant_until)?'تحت الصيانة حتى '+esc(o.assistant_until):'تعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${maintenanceActive(o.assistant_until)?'':'checked'} onchange="toggleMaintenance(this,${o.id},'assistant')"><span class="slider"></span></label></div><div class="service-row"><div><b>شات العملاء</b><small>${maintenanceActive(o.chat_until)?'تحت الصيانة حتى '+esc(o.chat_until):'يعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${maintenanceActive(o.chat_until)?'':'checked'} onchange="toggleMaintenance(this,${o.id},'chat')"><span class="slider"></span></label></div><div class="service-row"><div><b>المواعيد</b><small>${maintenanceActive(o.appointments_until)?'تحت الصيانة حتى '+esc(o.appointments_until):'تعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${maintenanceActive(o.appointments_until)?'':'checked'} onchange="toggleMaintenance(this,${o.id},'appointments')"><span class="slider"></span></label></div><h3>إدارة الباقة</h3><p style="color:#94a3b8">حدد المدة ثم اختر الباقة المطلوبة.</p><input id="days-${o.id}" type="number" min="1" value="30" placeholder="المدة بالأيام"><button onclick="setPackage(${o.id},'free')">إرجاع الباقة إلى المجانية</button><button onclick="setPackage(${o.id},'basic')">تفعيل الباقة الأساسية</button><button class="vip" onclick="setPackage(${o.id},'vip')">تفعيل باقة VIP</button></div></details></div>`).join('')}async function setAiLimit(id){let dailyLimit=+document.getElementById('ai-limit-'+id).value;if(!dailyLimit||dailyLimit<1){alert('اكتب حدًا يوميًا صحيحًا');return}let r=await fetch('/owner/api/organizations/'+id+'/ai-limit',{method:'PUT',headers:headers(),body:JSON.stringify({dailyLimit})});let d=await r.json();alert(r.ok?'تم حفظ الحد اليومي':(d.error||'تعذر حفظ الحد'));if(r.ok)loadOrganizations()}async function toggleMaintenance(input,id,service){let ok=await setMaintenance(id,service,!input.checked);if(!ok)input.checked=!input.checked}async function setMaintenance(id,service,enabled){let hours=+document.getElementById('maintenance-hours-'+id).value||24;let message=document.getElementById('maintenance-message-'+id).value;let serviceName=service==='chat'?'شات العملاء':service==='appointments'?'المواعيد':'موظفو AI والمساعد الذكي';if(enabled&&!confirm('تأكيد إيقاف '+serviceName+' لهذه المؤسسة لمدة '+hours+' ساعة؟'))return false;let r=await fetch('/owner/api/organizations/'+id+'/maintenance',{method:'PUT',headers:headers(),body:JSON.stringify({service,enabled,hours,message})});let d=await r.json();alert(r.ok?(enabled?'تم وضع الخدمة تحت الصيانة':'تم تشغيل الخدمة'):(d.error||'تعذر تغيير وضع الصيانة'));if(r.ok){await loadOrganizations();return true}return false}let platformAdImageData='';function readPlatformAdImage(input){let file=input.files&&input.files[0],preview=document.getElementById('platformAdPreview');if(!file){platformAdImageData='';preview.style.display='none';return}if(file.size>614400){alert('حجم الصورة يجب ألا يتجاوز 600 كيلوبايت');input.value='';platformAdImageData='';preview.style.display='none';return}let reader=new FileReader();reader.onload=()=>{platformAdImageData=String(reader.result||'');preview.src=platformAdImageData;preview.style.display='block'};reader.readAsDataURL(file)}async function createPlatformAd(){let title=document.getElementById('platformAdTitle').value.trim(),message=document.getElementById('platformAdMessage').value.trim(),promoCode=document.getElementById('platformAdCode').value.trim().toUpperCase(),durationDays=+document.getElementById('platformAdDays').value||30;if(!title){alert('اكتب عنوان الإعلان');return}let r=await fetch('/owner/api/platform-ads',{method:'POST',headers:headers(),body:JSON.stringify({title,message,promoCode,imageData:platformAdImageData,durationDays})});let d=await r.json();alert(r.ok?'تم نشر إعلان المنصة':(d.error||'تعذر نشر الإعلان'));if(r.ok){document.getElementById('platformAdTitle').value='';document.getElementById('platformAdMessage').value='';document.getElementById('platformAdCode').value='';document.getElementById('platformAdImage').value='';document.getElementById('platformAdPreview').style.display='none';platformAdImageData='';loadPlatformAds()}}async function loadPlatformAds(){let r=await fetch('/owner/api/platform-ads',{headers:headers()});let data=await r.json(),box=document.getElementById('platformAds');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل إعلانات المنصة';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>${esc(a.message||'')}</p>${a.image_data?`<img src="${a.image_data}" alt="صورة الإعلان" style="width:100%;max-height:220px;object-fit:contain;border-radius:12px">`:''}<p>كود العرض: ${esc(a.promo_code||'بدون كود')}</p><p>ينتهي: ${esc(a.expires_at||'')}</p><button class="vip" onclick="deletePlatformAd(${a.id})">إيقاف وحذف</button></div>`).join(''):'لا توجد إعلانات منصة حاليًا'}async function deletePlatformAd(id){if(!confirm('إيقاف وحذف الإعلان؟'))return;let r=await fetch('/owner/api/platform-ads/'+id,{method:'DELETE',headers:headers()});let d=await r.json();alert(r.ok?'تم حذف الإعلان':(d.error||'تعذر حذف الإعلان'));if(r.ok)loadPlatformAds()}async function loadAds(){let r=await fetch('/owner/api/ads',{headers:headers()});let data=await r.json();let box=document.getElementById('ads');if(!Array.isArray(data)){box.textContent=data.error||'تعذر تحميل الإعلانات';return}box.innerHTML=data.length?data.map(a=>`<div class="card"><b>${esc(a.title)}</b><p>المؤسسة: ${esc(a.organization_name)}</p><p>${esc(a.message||'')}</p><p>التواصل: ${esc(a.contact||'')}</p><p>الحالة: ${a.approved?'مقبول':a.active?'بانتظار المراجعة':'مرفوض'}</p><p>ينتهي: ${a.expires_at||'لم تحدد المدة بعد'}</p><label for="ad-days-${a.id}" style="display:block;color:#bae6fd;font-weight:bold;margin-top:12px">مدة عرض الإعلان (بالأيام)</label><input id="ad-days-${a.id}" type="number" min="1" value="30" placeholder="مثال: 30 يومًا"><small style="display:block;color:#94a3b8;margin-bottom:8px">مثال: 30 تعني عرض الإعلان لمدة شهر من وقت القبول.</small><button onclick="reviewAd(${a.id},'approve')">قبول ونشر</button><button class="vip" onclick="reviewAd(${a.id},'reject')">رفض</button></div>`).join(''):'لا توجد إعلانات للمراجعة'}async function reviewAd(id,action){let r=await fetch('/owner/api/ads/'+id,{method:'PUT',headers:headers(),body:JSON.stringify({action,durationDays:+document.getElementById('ad-days-'+id).value||30})});let d=await r.json();alert(r.ok?(action==='approve'?'تم قبول الإعلان ونشره':'تم رفض الإعلان'):(d.error||'تعذر تحديث الإعلان'));if(r.ok)loadAds()}function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</script></body></html>"""
                 , ad_management=True
             )
             return
@@ -1576,7 +1629,7 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 <button class="category-button" onclick="showSecurityPanel('devicesPanel')">الأجهزة<span>الجلسات والحظر</span></button>
 <button class="category-button" onclick="showSecurityPanel('alertsPanel')">التنبيهات<span>الدخول المشبوه</span></button>
 <button class="category-button" onclick="showSecurityPanel('auditPanel')">سجل العمليات<span>كل التعديلات</span></button>
-<button class="category-button" onclick="showSecurityPanel('packagePricesPanel');loadPackagePrices()">أسعار الباقات<span>تعديل أسعار 1 و3 و6 و12 شهرًا</span></button>
+<button class="category-button" onclick="showSecurityPanel('packagePricesPanel');loadPackagePrices()">أسعار الباقات<span>تعديل أسعار 1 ظˆ3 ظˆ6 ظˆ12 شهرًا</span></button>
 <button class="category-button" onclick="showSecurityPanel('subscriptionSecurityPanel');loadSecuritySubscriptionRequests()">طلبات الاشتراك<span>الوصولات والموافقة على الباقات</span></button>
 <button class="category-button emergency-button" onclick="showSecurityPanel('emergencyPanel');loadSupportTickets()">الدعم الفني 🚨<strong id="supportNavBadge" class="support-badge">0</strong><span>بلاغات المؤسسات والحسابات</span></button><button class="category-button" onclick="showSecurityPanel('maintenancePanel')">الصيانة العامة<span>إيقاف خدمات جميع المؤسسات</span></button>
 </div>
@@ -1599,20 +1652,22 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value.trim()});function showSecurityPanel(id){document.querySelectorAll('.security-panel').forEach(x=>x.classList.remove('active'));document.getElementById(id)?.classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}
 async function loadPackagePrices(){let box=document.getElementById('packagePrices');if(!box)return;let r=await fetch('/owner/api/package-offers',{headers:hdr()}),d=await r.json();if(!r.ok||!Array.isArray(d)){box.innerHTML='<p class="danger">'+esc(d.error||'تعذر تحميل الأسعار')+'</p>';return}box.innerHTML=['basic','vip'].map(pkg=>`<div class="card"><h3>${pkg==='basic'?'الباقة الأساسية':'باقة VIP'}</h3>${d.filter(x=>x.package===pkg).map(x=>`<label for="package-price-${x.id}">${x.paid_months} شهر — السعر بالريال</label><input id="package-price-${x.id}" type="number" min="1" max="1000000" step="0.01" value="${x.price_sar}"><button onclick="savePackagePrice(${x.id})">حفظ سعر ${x.paid_months} شهر</button>`).join('')}</div>`).join('')}
-async function savePackagePrice(id){let priceSar=Number(document.getElementById('package-price-'+id).value);if(!Number.isFinite(priceSar)||priceSar<1||priceSar>1000000){alert('اكتب سعرًا صحيحًا بين 1 و1000000 ريال');return}let r=await fetch('/owner/api/package-offers/'+id,{method:'PUT',headers:hdr(),body:JSON.stringify({priceSar})}),d=await r.json();alert(r.ok?'تم حفظ السعر وظهر للمشتركين ✓':(d.error||'تعذر حفظ السعر'));if(r.ok)loadPackagePrices()}
-async function loadSecuritySubscriptionRequests(){let box=document.getElementById('securitySubscriptionRequests');if(!box)return;let r=await fetch('/owner/api/subscription-requests',{headers:hdr()}),d=await r.json();if(!r.ok||!Array.isArray(d)){box.innerHTML='<p class="danger">'+esc(d.error||'تعذر تحميل الطلبات')+'</p>';return}box.innerHTML=d.map(x=>`<div class="event"><h3>${esc(x.organization_name)} — ${x.requested_package==='basic'?'الأساسية':'VIP'}</h3><p><b>اسم المحوّل:</b> ${esc(x.transfer_name||'غير مسجل')}</p><p><b>المدة:</b> ${Number(x.paid_months||0)+Number(x.bonus_months||0)} شهر — <b>المبلغ:</b> ${Number(x.quoted_price||0).toFixed(2)} ريال</p>${x.transfer_receipt?`<p><b>صورة وصل التحويل:</b></p><a href="${x.transfer_receipt}" target="_blank"><img src="${x.transfer_receipt}" alt="وصل التحويل" style="width:100%;max-height:360px;object-fit:contain;border-radius:12px;border:1px solid #38bdf8"></a>`:'<p class="danger">لا توجد صورة وصل.</p>'}<p>الحالة: ${x.status==='pending'?'بانتظار الموافقة':x.status==='approved'?'مقبول':'مرفوض'}</p>${x.status==='pending'?`<div class="device-actions"><button onclick="reviewSecuritySubscription(${x.id},'approve')">تأكيد التحويل وتفعيل الباقة</button><button class="danger" onclick="reviewSecuritySubscription(${x.id},'reject')">رفض الطلب</button></div>`:''}</div>`).join('')||'<p class="ok">لا توجد طلبات اشتراك.</p>'}
+async function savePackagePrice(id){let priceSar=Number(document.getElementById('package-price-'+id).value);if(!Number.isFinite(priceSar)||priceSar<1||priceSar>1000000){alert('اكتب سعرًا صحيحًا بين 1 ظˆ1000000 ريال');return}let r=await fetch('/owner/api/package-offers/'+id,{method:'PUT',headers:hdr(),body:JSON.stringify({priceSar})}),d=await r.json();alert(r.ok?'تم حفظ السعر وظهر للمشتركين ✓':(d.error||'تعذر حفظ السعر'));if(r.ok)loadPackagePrices()}
+async function loadSecuritySubscriptionRequests(){let box=document.getElementById('securitySubscriptionRequests');if(!box)return;let r=await fetch('/owner/api/subscription-requests',{headers:hdr()}),d=await r.json();if(!r.ok||!Array.isArray(d)){box.innerHTML='<p class="danger">'+esc(d.error||'تعذر تحميل الطلبات')+'</p>';return}box.innerHTML=d.map(x=>`<div class="event"><h3>${esc(x.organization_name)} أ¢â‚¬â€‌ ${x.requested_package==='basic'?'الأساسية':'VIP'}</h3><p><b>اسم المحوّل:</b> ${esc(x.transfer_name||'غير مسجل')}</p><p><b>المدة:</b> ${Number(x.paid_months||0)+Number(x.bonus_months||0)} شهر — <b>المبلغ:</b> ${Number(x.quoted_price||0).toFixed(2)} ريال</p>${x.transfer_receipt?`<p><b>صورة وصل التحويل — اضغط للتكبير:</b></p><img src="${x.transfer_receipt}" alt="وصل التحويل" onclick="openSecurityReceipt(this.src)" style="width:100%;max-height:360px;object-fit:contain;border-radius:12px;border:1px solid #38bdf8;cursor:zoom-in">`:'<p class="danger">لا توجد صورة وصل.</p>'}<p>الحالة: ${x.status==='pending'?'بانتظار الموافقة':x.status==='approved'?'مقبول':'مرفوض'}</p>${x.status==='pending'?`<div class="device-actions"><button onclick="reviewSecuritySubscription(${x.id},'approve')">تأكيد التحويل وتفعيل الباقة</button><button class="danger" onclick="reviewSecuritySubscription(${x.id},'reject')">رفض الطلب</button></div>`:''}</div>`).join('')||'<p class="ok">لا توجد طلبات اشتراك.</p>'}
+function openSecurityReceipt(source){let viewer=document.getElementById('securityReceiptViewer');if(!viewer){document.body.insertAdjacentHTML('beforeend','<div id="securityReceiptViewer" onclick="if(event.target===this)closeSecurityReceipt()" style="display:none;position:fixed;inset:0;z-index:99999;background:#000e;align-items:center;justify-content:center;padding:18px"><button onclick="closeSecurityReceipt()" style="position:absolute;top:14px;left:14px;width:auto;background:#dc2626;padding:10px 18px">إغلاق ✕</button><img id="securityReceiptFull" alt="صورة وصل التحويل مكبرة" style="max-width:96vw;max-height:90vh;object-fit:contain;border-radius:12px"></div>');viewer=document.getElementById('securityReceiptViewer')}document.getElementById('securityReceiptFull').src=source;viewer.style.display='flex'}
+function closeSecurityReceipt(){let viewer=document.getElementById('securityReceiptViewer');if(viewer){viewer.style.display='none';document.getElementById('securityReceiptFull').src=''}}
 async function reviewSecuritySubscription(id,action){if(!confirm(action==='approve'?'هل تأكدت من وصول التحويل وتريد تفعيل الباقة؟':'رفض طلب الاشتراك؟'))return;let r=await fetch('/owner/api/subscription-requests/'+id,{method:'PUT',headers:hdr(),body:JSON.stringify({action})}),d=await r.json();alert(r.ok?(action==='approve'?'تم تفعيل الباقة ✓':'تم رفض الطلب'):(d.error||'تعذر معالجة الطلب'));if(r.ok)loadSecuritySubscriptionRequests()}
-async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> — <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' — '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderIntegrations(d.integrations||[]);renderEmergency(d.emergency||[]);renderBackup(d.backup||{});renderLoginAttempts(d.loginAttempts||[]);renderAccounts(d.accounts||[]);renderDevices(d.devices||[],d.blockedDevices||[],d.accounts||[]);setupAuditOrganizations(d.accounts||[]);loadAuditLogs();loadSupportTickets()}
-function renderIntegrations(items){document.getElementById('integrations').innerHTML=items.map(x=>`<div class="event"><b>${esc(x.name)}</b> — <span class="${x.status==='ready'?'ok':x.status==='maintenance'?'warn':'muted'}">${x.status==='ready'?'جاهز ✓':x.status==='maintenance'?'تحت الصيانة':'غير مربوط'}</span><p>${esc(x.detail||'')}</p></div>`).join('')||'<p class="muted">لا توجد خدمات مسجلة.</p>'}
+async function loadSecurity(){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json(),s=document.getElementById('status');if(!r.ok){s.textContent=d.error||'تعذر تحميل لوحة الأمن';document.getElementById('dashboard').style.display='none';return}s.textContent='تم تحديث البيانات الأمنية ✓';document.getElementById('dashboard').style.display='block';for(let k of ['activeUsers','failedLogins','untrustedDevices','securityAlerts','stoppedServices'])document.getElementById(k).textContent=d[k]||0;document.getElementById('services').innerHTML=d.services.map(x=>`<p><b>${esc(x.name)}</b> أ¢â‚¬â€‌ <span class="${x.running?'ok':'danger'}">${x.running?'تعمل':'متوقفة مؤقتًا'}</span>${x.organization?' أ¢â‚¬â€‌ '+esc(x.organization):''}</p>`).join('')||'<p class="ok">جميع الخدمات تعمل ✓</p>';document.getElementById('events').innerHTML=d.events.map(x=>`<div class="event"><b>${esc(x.organization_name||'مؤسسة')}</b><p>${esc(x.summary)}</p><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد تنبيهات حديثة ✓</p>';renderIntegrations(d.integrations||[]);renderEmergency(d.emergency||[]);renderBackup(d.backup||{});renderLoginAttempts(d.loginAttempts||[]);renderAccounts(d.accounts||[]);renderDevices(d.devices||[],d.blockedDevices||[],d.accounts||[]);setupAuditOrganizations(d.accounts||[]);loadAuditLogs();loadSupportTickets()}
+function renderIntegrations(items){document.getElementById('integrations').innerHTML=items.map(x=>`<div class="event"><b>${esc(x.name)}</b> أ¢â‚¬â€‌ <span class="${x.status==='ready'?'ok':x.status==='maintenance'?'warn':'muted'}">${x.status==='ready'?'جاهز ✓':x.status==='maintenance'?'تحت الصيانة':'غير مربوط'}</span><p>${esc(x.detail||'')}</p></div>`).join('')||'<p class="muted">لا توجد خدمات مسجلة.</p>'}
 function renderBackup(x){document.getElementById('backupStatus').innerHTML=`<p><b>قاعدة البيانات:</b> ${esc(x.provider||'غير معروفة')}</p><p><b>الاتصال:</b> <span class="${x.connected?'ok':'danger'}">${x.connected?'سليم ✓':'متعطل'}</span></p><p><b>آخر فحص:</b> ${esc(x.checkedAt||'غير متاح')}</p><p><b>نافذة الاستعادة:</b> ${x.recoveryHours?esc(x.recoveryHours)+' ساعات':'غير متاحة'}</p><p><b>Snapshot يدوي:</b> ${x.manualSnapshots?'متاح':'غير متاح في الخطة الحالية'}</p><p><b>نسخ مجدولة:</b> ${x.scheduledBackups?'مفعلة':'غير مفعلة'}</p><p class="muted">${esc(x.note||'')}</p>`}function renderEmergency(items){document.getElementById('emergencyStatus').innerHTML=items.map(x=>`<div class="service-row"><div><b>${x.service==='chat'?'شات العملاء':x.service==='appointments'?'المواعيد':'مساعد المؤسسة'}</b><small class="${x.active?'danger':'ok'}">${x.active?'تحت الصيانة حتى '+esc(x.until):'تعمل الآن'}</small></div><label class="switch"><input type="checkbox" ${x.active?'':'checked'} onchange="toggleEmergency(this,'${x.service}')"><span class="slider"></span></label></div>`).join('')}
 let supportRefreshTimer=setInterval(()=>{if(document.getElementById('dashboard').style.display!=='none')loadSupportTickets()},15000);
-async function loadSupportTickets(){let r=await fetch('/owner/api/support-tickets',{headers:hdr()}),d=await r.json(),box=document.getElementById('supportTickets');if(!r.ok){box.innerHTML=`<p class="danger">${esc(d.error||'تعذر تحميل طلبات الدعم')}</p>`;return}let all=d,status=document.getElementById('supportStatus')?.value||'',category=document.getElementById('supportCategory')?.value||'';d=all.filter(x=>(!status||x.status===status)&&(!category||x.category===category));let openCount=all.filter(x=>x.status==='open').length;document.getElementById('supportCount').textContent='الطلبات الجديدة: '+openCount+' — المعروض: '+d.length;let badge=document.getElementById('supportNavBadge');badge.textContent=openCount;badge.classList.toggle('show',openCount>0);box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.category)}</b><p>المستخدم: ${esc(x.user_name||x.username||'غير محدد')}</p><p>${esc(x.message)}</p><p>الحالة: <span class="status-chip ${x.status==='resolved'?'ok':x.status==='in_progress'?'warn':'danger'}">${x.status==='resolved'?'تم الحل':x.status==='in_progress'?'قيد المعالجة':'طلب جديد'}</span></p>${x.owner_reply?`<p>رد الدعم: ${esc(x.owner_reply)}</p>`:''}<textarea id="support-reply-${x.id}" style="box-sizing:border-box;width:100%;min-height:80px;background:#09152e;color:white;border:1px solid #285682;border-radius:10px;padding:10px" placeholder="اكتب الرد أو توضيح الحل">${esc(x.owner_reply||'')}</textarea><div class="device-actions"><button onclick="openSupportDestination('${esc(x.category)}',${x.organization_id},${x.user_id??'null'})">${supportActionLabel(x.category)}</button><button onclick="updateSupportTicket(${x.id},'in_progress')">قيد المعالجة</button><button onclick="updateSupportTicket(${x.id},'resolved')">تم الحل</button>${x.status==='resolved'?`<button class="danger" onclick="deleteSupportTicket(${x.id})">حذف الطلب</button>`:''}</div><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد طلبات دعم جديدة ✓</p>'}
+async function loadSupportTickets(){let r=await fetch('/owner/api/support-tickets',{headers:hdr()}),d=await r.json(),box=document.getElementById('supportTickets');if(!r.ok){box.innerHTML=`<p class="danger">${esc(d.error||'تعذر تحميل طلبات الدعم')}</p>`;return}let all=d,status=document.getElementById('supportStatus')?.value||'',category=document.getElementById('supportCategory')?.value||'';d=all.filter(x=>(!status||x.status===status)&&(!category||x.category===category));let openCount=all.filter(x=>x.status==='open').length;document.getElementById('supportCount').textContent='الطلبات الجديدة: '+openCount+' — المعروض: '+d.length;let badge=document.getElementById('supportNavBadge');badge.textContent=openCount;badge.classList.toggle('show',openCount>0);box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.organization_name)} أ¢â‚¬â€‌ ${esc(x.category)}</b><p>المستخدم: ${esc(x.user_name||x.username||'غير محدد')}</p><p>${esc(x.message)}</p><p>الحالة: <span class="status-chip ${x.status==='resolved'?'ok':x.status==='in_progress'?'warn':'danger'}">${x.status==='resolved'?'تم الحل':x.status==='in_progress'?'قيد المعالجة':'طلب جديد'}</span></p>${x.owner_reply?`<p>رد الدعم: ${esc(x.owner_reply)}</p>`:''}<textarea id="support-reply-${x.id}" style="box-sizing:border-box;width:100%;min-height:80px;background:#09152e;color:white;border:1px solid #285682;border-radius:10px;padding:10px" placeholder="اكتب الرد أو توضيح الحل">${esc(x.owner_reply||'')}</textarea><div class="device-actions"><button onclick="openSupportDestination('${esc(x.category)}',${x.organization_id},${x.user_id??'null'})">${supportActionLabel(x.category)}</button><button onclick="updateSupportTicket(${x.id},'in_progress')">قيد المعالجة</button><button onclick="updateSupportTicket(${x.id},'resolved')">تم الحل</button>${x.status==='resolved'?`<button class="danger" onclick="deleteSupportTicket(${x.id})">حذف الطلب</button>`:''}</div><small class="muted">${esc(x.created_at)}</small></div>`).join('')||'<p class="ok">لا توجد طلبات دعم جديدة ✓</p>'}
 function supportActionLabel(category){if(category.includes('أجهزة'))return 'فتح أجهزة المؤسسة';if(category.includes('اشتراك'))return 'فتح الباقة والخدمات';if(category.includes('شات'))return 'فتح إعدادات الشات';if(category.includes('مواعيد'))return 'عرض مواعيد المؤسسة';return 'فتح حساب المستخدم'}
 async function openSupportDestination(category,organizationId,userId){if(category.includes('أجهزة')){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json();if(!r.ok){alert(d.error||'تعذر فتح الأجهزة');return}let accounts=(d.accounts||[]).filter(x=>String(x.organization_id)===String(organizationId)),devices=(d.devices||[]).filter(x=>String(x.organization_id)===String(organizationId)),blocked=(d.blockedDevices||[]).filter(x=>String(x.organization_id)===String(organizationId));renderDevices(devices,blocked,accounts);showSecurityPanel('devicesPanel');if(deviceGroups.length)openOrganizationDevices(0);return}if(category.includes('مواعيد')){loadSupportAppointments(organizationId);return}if(category.includes('اشتراك')||category.includes('شات')){window.open('/owner?organization='+encodeURIComponent(organizationId),'_blank');return}openSupportAccount(organizationId,userId)}
-async function loadSupportAppointments(organizationId){let r=await fetch('/owner/api/organizations/'+organizationId+'/appointments',{headers:hdr()}),d=await r.json();if(!r.ok){alert(d.error||'تعذر تحميل المواعيد');return}showSecurityPanel('supportAppointmentsPanel');let box=document.getElementById('supportAppointments');let statusName=x=>x==='accepted'?'مقبول':x==='rejected'?'مرفوض':x==='completed'?'مكتمل':'معلق';box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.request_type)} — ${esc(x.title)}</b><p>العميل: ${esc(x.customer_name)} | ${esc(x.phone)}</p><p>الموعد: ${esc(x.scheduled_at)}</p><p>الحالة: <span class="status-chip">${statusName(x.status)}</span></p><p>${esc(x.notes||'لا توجد ملاحظات')}</p></div>`).join('')||'<p class="muted">لا توجد مواعيد لهذه المؤسسة.</p>'}
+async function loadSupportAppointments(organizationId){let r=await fetch('/owner/api/organizations/'+organizationId+'/appointments',{headers:hdr()}),d=await r.json();if(!r.ok){alert(d.error||'تعذر تحميل المواعيد');return}showSecurityPanel('supportAppointmentsPanel');let box=document.getElementById('supportAppointments');let statusName=x=>x==='accepted'?'مقبول':x==='rejected'?'مرفوض':x==='completed'?'مكتمل':'معلق';box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.request_type)} أ¢â‚¬â€‌ ${esc(x.title)}</b><p>العميل: ${esc(x.customer_name)} | ${esc(x.phone)}</p><p>الموعد: ${esc(x.scheduled_at)}</p><p>الحالة: <span class="status-chip">${statusName(x.status)}</span></p><p>${esc(x.notes||'لا توجد ملاحظات')}</p></div>`).join('')||'<p class="muted">لا توجد مواعيد لهذه المؤسسة.</p>'}
 async function openSupportAccount(organizationId,userId){let r=await fetch('/owner/api/security/overview',{headers:hdr()}),d=await r.json();if(!r.ok){alert(d.error||'تعذر فتح الحساب');return}let accounts=(d.accounts||[]).filter(x=>String(x.organization_id)===String(organizationId)&&(userId==null||String(x.id)===String(userId)));renderAccounts(accounts);showSecurityPanel('accountsPanel');if(!accounts.length)document.getElementById('accounts').innerHTML='<p class="warn">لم يتم العثور على حساب المستخدم، وقد يكون محذوفًا.</p>'}
 async function updateSupportTicket(id,status){let reply=document.getElementById('support-reply-'+id).value;let r=await fetch('/owner/api/support-tickets/'+id,{method:'PUT',headers:hdr(),body:JSON.stringify({status,reply})}),d=await r.json();alert(r.ok?'تم تحديث الطلب وإرسال الرد للمشترك ✓':(d.error||'تعذر تحديث الطلب'));if(r.ok)loadSupportTickets()}async function deleteSupportTicket(id){if(!confirm('حذف طلب الدعم المحلول نهائيًا؟'))return;let r=await fetch('/owner/api/support-tickets/'+id,{method:'DELETE',headers:hdr()}),d=await r.json();alert(r.ok?'تم حذف الطلب ✓':(d.error||'تعذر حذف الطلب'));if(r.ok)loadSupportTickets()}async function toggleEmergency(input,service){let ok=await setEmergency(service,!input.checked);if(!ok)input.checked=!input.checked}async function setEmergency(service,enabled){let hours=+document.getElementById('emergencyHours').value||2,message=document.getElementById('emergencyMessage').value;if(enabled&&!confirm('تأكيد إيقاف الخدمة لجميع المؤسسات؟'))return false;let r=await fetch('/owner/api/security/emergency',{method:'PUT',headers:hdr(),body:JSON.stringify({service,enabled,hours,message})}),d=await r.json();alert(r.ok?(enabled?'تم وضع الخدمة تحت الصيانة للجميع':'تم تشغيل الخدمة للجميع'):(d.error||'تعذر تنفيذ العملية'));if(r.ok){await loadSecurity();return true}return false}function setupAuditOrganizations(accounts){let select=document.getElementById('auditOrg'),current=select.value,seen=new Map();for(let x of accounts)seen.set(x.organization_id||x.organization_name,x.organization_name);select.innerHTML='<option value="">جميع المؤسسات</option>'+[...seen].map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('');select.value=current}
-async function loadAuditLogs(){let q=new URLSearchParams(),org=document.getElementById('auditOrg').value,action=document.getElementById('auditAction').value,date=document.getElementById('auditDate').value;if(org)q.set('organization',org);if(action)q.set('type',action);if(date)q.set('date',date);let r=await fetch('/owner/api/security/audit-logs?'+q,{headers:hdr()}),d=await r.json(),box=document.getElementById('auditLogs');if(!r.ok){box.innerHTML=`<p class="danger">${esc(d.error||'تعذر تحميل السجل')}</p>`;return}box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.action)}</b><p>${esc(x.summary)}</p><small class="muted">بواسطة: ${esc(x.actor_name||x.actor_username||'النظام')} — ${esc(x.created_at)}</small></div>`).join('')||'<p>لا توجد عمليات مطابقة.</p>'}function renderLoginAttempts(a){document.getElementById('loginAttempts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.user_name||x.username)}</b><p>${esc(x.summary)}</p><p>التكرار لنفس الحساب والجهاز: ${x.attempt_count} | الوقت: ${esc(x.created_at)}</p></div>`).join('')||'<p class="ok">لا توجد محاولات دخول فاشلة ✓</p>'}function renderAccounts(a){document.getElementById('accounts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} — ${esc(x.name)}</b><p>المستخدم: ${esc(x.username)} | ${x.role==='admin'?'مالك':'موظف'} | ${x.active?'نشط':'مجمّد'}</p><button onclick="accountAction(${x.id},${!x.active})">${x.active?'تجميد الحساب':'إعادة تفعيل الحساب'}</button></div>`).join('')||'<p>لا توجد حسابات.</p>'}
+async function loadAuditLogs(){let q=new URLSearchParams(),org=document.getElementById('auditOrg').value,action=document.getElementById('auditAction').value,date=document.getElementById('auditDate').value;if(org)q.set('organization',org);if(action)q.set('type',action);if(date)q.set('date',date);let r=await fetch('/owner/api/security/audit-logs?'+q,{headers:hdr()}),d=await r.json(),box=document.getElementById('auditLogs');if(!r.ok){box.innerHTML=`<p class="danger">${esc(d.error||'تعذر تحميل السجل')}</p>`;return}box.innerHTML=d.map(x=>`<div class="event"><b>${esc(x.organization_name)} أ¢â‚¬â€‌ ${esc(x.action)}</b><p>${esc(x.summary)}</p><small class="muted">بواسطة: ${esc(x.actor_name||x.actor_username||'النظام')} — ${esc(x.created_at)}</small></div>`).join('')||'<p>لا توجد عمليات مطابقة.</p>'}function renderLoginAttempts(a){document.getElementById('loginAttempts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} أ¢â‚¬â€‌ ${esc(x.user_name||x.username)}</b><p>${esc(x.summary)}</p><p>التكرار لنفس الحساب والجهاز: ${x.attempt_count} | الوقت: ${esc(x.created_at)}</p></div>`).join('')||'<p class="ok">لا توجد محاولات دخول فاشلة ✓</p>'}function renderAccounts(a){document.getElementById('accounts').innerHTML=a.map(x=>`<div class="event"><b>${esc(x.organization_name)} أ¢â‚¬â€‌ ${esc(x.name)}</b><p>المستخدم: ${esc(x.username)} | ${x.role==='admin'?'مالك':'موظف'} | ${x.active?'نشط':'مجمّد'}</p><button onclick="accountAction(${x.id},${!x.active})">${x.active?'تجميد الحساب':'إعادة تفعيل الحساب'}</button></div>`).join('')||'<p>لا توجد حسابات.</p>'}
 let deviceGroups=[];
 function recentlySeen(value){let t=new Date(value).getTime();return Number.isFinite(t)&&Date.now()-t<5*60*1000}
 function userDevicesCard(user,title){let ids=user.devices.map(x=>x.id),actions=ids.length?`<div class="device-actions"><button onclick='organizationDevicesAction(${JSON.stringify(ids)},"trust")'>توثيق</button><button onclick='organizationDevicesAction(${JSON.stringify(ids)},"disconnect")'>فصل</button><button onclick='organizationDevicesAction(${JSON.stringify(ids)},"block")'>حظر</button></div>`:'<p class="muted">لا يوجد جهاز مسجل لهذا المستخدم.</p>';return `<div class="device-user"><b>${title||esc(user.name)}</b><p>اسم المستخدم: ${esc(user.username)} <span class="status-chip ${user.active?'ok':'danger'}">${user.active?'الحساب نشط':'الحساب مجمّد'}</span></p>${actions}${user.devices.map(x=>`<div class="device-user"><b>${esc(x.device_name||'جهاز غير معروف')}</b><p><span class="status-chip ${recentlySeen(x.last_seen_at)?'ok':'warn'}">${recentlySeen(x.last_seen_at)?'متصل الآن':'غير متصل حاليًا'}</span> <span class="status-chip ${x.trusted?'ok':'warn'}">${x.trusted?'موثق':'غير موثق'}</span></p><p>آخر استخدام: ${esc(x.last_seen_at||x.created_at)}</p></div>`).join('')}</div>`}
@@ -1626,6 +1681,14 @@ async function disconnectDevice(id){if(!confirm('تأكيد فصل هذا الج
 async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),body:body?JSON.stringify(body):null}),d=await r.json();alert(r.ok?'تم تنفيذ العملية ✓':(d.error||'تعذر تنفيذ العملية'));if(r.ok)loadSecurity()}
 </script></body></html>"""
             )
+            return
+        if path == "/owner/services" and method == "GET":
+            self._send_html((ROOT / "owner_service_health.html").read_text(encoding="utf-8-sig"))
+            return
+        if path == "/owner/api/service-health" and method == "GET":
+            self._owner()
+            service_monitor.start(db, DB_PATH, bool(DATABASE_URL), PORT)
+            self._send(200, service_monitor.snapshot())
             return
         if path == "/owner/api/security/overview" and method == "GET":
             self._owner()
@@ -1667,12 +1730,12 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             emergency_by_service = {item["service"]: item for item in emergency}
             ai_maintenance = emergency_by_service["assistant"]["active"]
             chat_maintenance = emergency_by_service["chat"]["active"]
-            whatsapp_configured = any(os.environ.get(name, "").strip() for name in ("KHDOOM_WHATSAPP_TOKEN", "WHATSAPP_ACCESS_TOKEN", "META_WHATSAPP_TOKEN"))
+            whatsapp_configured = any(os.environ.get(name, "").strip() for name in ("KHDOOM_WHATSAPP_CONFIG",))
             calls_configured = any(os.environ.get(name, "").strip() for name in ("KHDOOM_CALLS_API_KEY", "TWILIO_AUTH_TOKEN", "TWILIO_ACCOUNT_SID"))
             integrations = [
                 {"name": "OpenAI", "status": "maintenance" if ai_maintenance else ("ready" if os.environ.get("OPENAI_API_KEY", "").strip() else "not_connected"), "detail": ("النموذج: " + ai_core.PRIMARY_MODEL) if os.environ.get("OPENAI_API_KEY", "").strip() else "لم يُضف مفتاح الربط بعد."},
                 {"name": "شات العملاء", "status": "maintenance" if chat_maintenance else "ready", "detail": "قناة الشات العامة متاحة للمؤسسات." if not chat_maintenance else emergency_by_service["chat"].get("message", "الخدمة تحت الصيانة مؤقتًا")},
-                {"name": "واتساب", "status": "ready" if whatsapp_configured else "not_connected", "detail": "تم العثور على إعدادات الربط." if whatsapp_configured else "مرحلة لاحقة — لم يتم ربط واتساب حتى الآن."},
+                {"name": "واتساب", "status": "unverified" if whatsapp_configured else "not_connected", "detail": "إعدادات موجودة؛ تحقق من الاتصال من صفحة واتساب." if whatsapp_configured else "مرحلة لاحقة — لم يتم ربط واتساب حتى الآن."},
                 {"name": "الاتصال", "status": "ready" if calls_configured else "not_connected", "detail": "تم العثور على إعدادات الربط." if calls_configured else "مرحلة لاحقة — لم يتم ربط خدمة الاتصال حتى الآن."},
             ]
             self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped) + sum(1 for item in emergency if item["active"]),"services": services,"integrations": integrations,"backup": backup,"events": [dict(row) for row in events],"loginAttempts": [dict(row) for row in login_attempts],"accounts": account_items,"devices": device_items,"blockedDevices": [dict(row) for row in blocked_devices]})
@@ -1697,7 +1760,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     raise ApiError(404, "طلب الدعم غير موجود")
                 connection.execute("UPDATE support_tickets SET status=?,owner_reply=?,updated_at=? WHERE id=?", (status,reply,now(),ticket_id))
                 status_name = "تم الحل" if status == "resolved" else "قيد المعالجة" if status == "in_progress" else "طلب جديد"
-                summary = f"تحديث طلب الدعم ({ticket['category']}): {status_name}" + ((" — " + reply) if reply else "")
+                summary = f"تحديث طلب الدعم ({ticket['category']}): {status_name}" + ((" أ¢â‚¬â€‌ " + reply) if reply else "")
                 audit_log(connection, ticket["organization_id"], ticket["user_id"], "support_ticket_updated", summary, "security", str(ticket_id))
                 connection.commit()
             self._send(200, {"saved": True})
@@ -1924,7 +1987,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             except (TypeError, ValueError):
                 raise ApiError(400, "السعر غير صحيح")
             if price_sar < 1 or price_sar > 1000000:
-                raise ApiError(400, "السعر يجب أن يكون بين 1 و1000000 ريال")
+                raise ApiError(400, "السعر يجب أن يكون بين 1 ظˆ1000000 ريال")
             with db() as connection:
                 cursor = connection.execute(
                     "UPDATE package_offers SET price_sar=? WHERE id=? AND active=1",
@@ -1940,8 +2003,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
-                rows = connection.execute("SELECT id,package,paid_months,bonus_months,price_sar,label FROM package_offers WHERE active=1 ORDER BY package,paid_months,bonus_months,id").fetchall()
-            self._send(200, [dict(row) for row in rows])
+                rows = connection.execute("SELECT id,package,paid_months,bonus_months,price_sar,label,starts_at,ends_at FROM package_offers WHERE active=1 ORDER BY package,paid_months,bonus_months,id").fetchall()
+            self._send(200, [dict(row) for row in rows if owner_admin.active_offer(row)])
             return
         if path == "/owner/api/platform-ads" and method == "GET":
             self._owner()
@@ -2081,7 +2144,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     renewed = True
                     connection.execute(
                         """UPDATE activation_codes
-                           SET code_prefix=?,package='basic',duration_days=0,max_uses=?,used_count=0,
+                           SET code_prefix=?,package='basic',duration_days=0,max_uses=?,
                                expires_at=?,active=1,recipient_name=?,assigned_username='',
                                code_kind='discount',discount_percent=?,created_at=?
                            WHERE id=?""",
@@ -2208,7 +2271,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             except (TypeError, ValueError):
                 raise ApiError(400, "اكتب حدًا يوميًا صحيحًا")
             if daily_limit < 1 or daily_limit > 100000:
-                raise ApiError(400, "الحد اليومي يجب أن يكون بين 1 و100000")
+                raise ApiError(400, "الحد اليومي يجب أن يكون بين 1 ظˆ100000")
             with db() as connection:
                 organizations = connection.execute("SELECT id FROM organizations").fetchall()
                 for organization in organizations:
@@ -2225,7 +2288,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             except (TypeError, ValueError):
                 raise ApiError(400, "اكتب حدًا يوميًا صحيحًا")
             if daily_limit < 1 or daily_limit > 100000:
-                raise ApiError(400, "الحد اليومي يجب أن يكون بين 1 و100000")
+                raise ApiError(400, "الحد اليومي يجب أن يكون بين 1 ظˆ100000")
             with db() as connection:
                 if connection.execute("SELECT id FROM organizations WHERE id=?", (organization_id,)).fetchone() is None:
                     raise ApiError(404, "المؤسسة غير موجودة")
@@ -2297,9 +2360,13 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 ).fetchone()
             if code is None:
                 raise ApiError(400, "كود الخصم غير صحيح أو منتهي")
-            original_price = 49 if package == "basic" else 99
+            with db() as connection:
+                original_price = connection.execute("SELECT monthly FROM platform_packages WHERE package=?", (package,)).fetchone()["monthly"]
             discount_percent = int(code["discount_percent"])
-            discounted_price = round(original_price * (100 - discount_percent) / 100, 2)
+            try:
+                discounted_price = owner_admin.discount(code, package, original_price)
+            except ValueError as error:
+                raise ApiError(400, str(error))
             self._send(200, {"valid": True, "package": package, "discountPercent": discount_percent, "originalPrice": original_price, "discountedPrice": discounted_price})
             return
         if method == "POST" and path == "/api/register":
@@ -2327,10 +2394,30 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         if code["assigned_username"] and code["assigned_username"].lower() != str(data["username"]).strip().lower():
                             raise ApiError(403, "هذا الكود مخصص لمستخدم آخر")
                     cursor = connection.execute(
-                        "INSERT INTO organizations(name,activity,phone,public_chat_token,created_at) VALUES(?,?,?,?,?)",
-                        (str(data["organizationName"]).strip(), str(data.get("activity", "")).strip(), str(data["phone"]).strip(), secrets.token_urlsafe(18), now()),
+                        "INSERT INTO organizations(name,activity,phone,public_chat_token,created_at,entity_type,commercial_registration,unified_number,city,address,organization_email,verification_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (str(data["organizationName"]).strip(), str(data.get("activity", "")).strip(), str(data["phone"]).strip(), secrets.token_urlsafe(18), now(), str(data.get("entityType", "institution")).strip().lower(), str(data.get("commercialRegistration", "")).strip(), str(data.get("unifiedNumber", "")).strip(), str(data.get("city", "")).strip(), str(data.get("address", "")).strip(), str(data.get("organizationEmail", "")).strip().lower(), "pending"),
                     )
                     organization_id = cursor.lastrowid
+                    # Registration may include lightweight branch details. The
+                    # main branch is always created; extras await verification.
+                    try:
+                        requested_branches = data.get("branches") or []
+                        if isinstance(requested_branches, list):
+                            for index, branch in enumerate(requested_branches[:50], 1):
+                                if not isinstance(branch, dict):
+                                    continue
+                                branch_name = str(branch.get("name", "")).strip()
+                                if not branch_name or branch_name == "الفرع الرئيسي":
+                                    continue
+                                branch_id = "b" + secrets.token_urlsafe(9).replace("-", "_")
+                                connection.execute(
+                                    "INSERT INTO organization_branches(organization_id,id,name,phone,address,status,created_at) VALUES(?,?,?,?,?,?,?)",
+                                    (organization_id, branch_id, branch_name, str(branch.get("phone", "")).strip(), str(branch.get("address", "")).strip(), "pending_verification", now()),
+                                )
+                    except Exception:
+                        # Legacy clients may send malformed optional branch data;
+                        # account creation itself remains compatible.
+                        pass
                     cursor = connection.execute(
                         """INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,permissions,created_at)
                            VALUES(?,?,?,?,?,?,?,?,?,?)""",
@@ -2366,7 +2453,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     (str(data.get("username", "")).strip().lower(),),
                 ).fetchone()
                 if user is None:
+                    connection.execute('INSERT INTO platform_unknown_logins(account,created_at) VALUES(?,?)',(str(data.get('username',''))[:100],now()))
+                    connection.commit()
                     raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
+                if owner_admin.suspended(connection, user["organization_id"]):
+                    raise ApiError(403, "المؤسسة موقوفة؛ تواصل مع الدعم")
                 if not verify_password(str(data.get("password", "")), user["password_hash"], user["password_salt"]):
                     client_ip = self.headers.get("X-Forwarded-For", self.client_address[0]).split(",")[0].strip()
                     audit_log(connection, user["organization_id"], user["id"], "failed_login", f"محاولة دخول فاشلة من {str(data.get('deviceName', 'جهاز غير معروف')).strip()} — الاتصال: {client_ip}", "security")
@@ -2475,6 +2566,10 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 name = str(data.get("branchName", "")).strip()
                 if not name or len(name) > 80:
                     raise ApiError(400, "اكتب اسم الفرع من 1 إلى 80 حرفًا")
+                try:
+                    organization_addons.check_scope(connection,user,branch)
+                except ValueError as error:
+                    raise ApiError(403,str(error))
                 token = branch_appointments.chat_link(connection, organization_id, branch, name)
                 connection.commit()
                 self._send(200, {"path": "/chat/" + token, "branchId": branch})
@@ -2505,6 +2600,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     raise ApiError(400, "اكتب تفاصيل المشكلة")
                 created = now()
                 row = connection.execute("INSERT INTO support_tickets(organization_id,user_id,category,message,status,owner_reply,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id", (organization_id,user["id"],category,message,"open","",created,created)).fetchone()
+                connection.execute("UPDATE support_tickets SET device_name=?,app_version=?,branch_id=? WHERE id=?", (str(data.get('deviceName',''))[:120],str(data.get('appVersion',''))[:40],user.get('current_branch'),row['id']))
                 audit_log(connection, organization_id, user["id"], "support_request", "تم إرسال طلب دعم فني: " + category, "security", str(row["id"]))
                 connection.commit()
                 self._send(201, {"saved": True, "id": row["id"], "status": "open"})
@@ -2667,11 +2763,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     action = "needs_fact"
                 elif should_learn:
                     fact = re.sub(
-                        r"^(احفظ|حفظ|خزن|خزّن|تعلم|تعلّم|علمني|اعلمك|سجل المعلومة|سجّل المعلومة)\s*[:：-]?\s*",
+                        r"^(احفظ|حفظ|خزن|خزّن|تعلم|تعلّم|علمني|اعلمك|سجل المعلومة|سجّل المعلومة)\s*[:ï¼ڑ-]?\s*",
                         "", message,
                     ).strip()
                     saved_facts = {
-                        re.sub(r"^[•\-]\s*", "", line).strip().lower()
+                        re.sub(r"^[أ¢â‚¬آ¢\-]\s*", "", line).strip().lower()
                         for line in training.splitlines()
                         if line.strip()
                     }
@@ -2679,7 +2775,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         text = "اكتب المعلومة بعد كلمة «احفظ»، مثل: احفظ: سعر متر الزجاج 150 ريال."
                         action = "needs_fact"
                     elif fact.lower() in saved_facts:
-                        text = f"هذه المعلومة محفوظة عندي من قبل: {fact} ✓"
+                        text = f"هذه المعلومة محفوظة عندي من قبل: {fact} أ¢إ“â€œ"
                         action = "already_saved"
                     else:
                         own_row = connection.execute("SELECT content FROM ai_training WHERE organization_id=? AND employee_type=?", (organization_id, employee_type)).fetchone()
@@ -2692,15 +2788,15 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                                ON CONFLICT(organization_id,employee_type) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at""",
                                 (organization_id, employee_type, new_content, now()),
                             )
-                            text = f"تم حفظ المعلومة للموظف المختار: {fact} ✓"
+                            text = f"تم حفظ المعلومة للموظف المختار: {fact} أ¢إ“â€œ"
                 elif grounded_reply:
                     text = grounded_reply
                 else:
                     package, daily_limit, used = ai_allowance(connection, organization_id)
                     text = ai_agent_reply(connection, organization_id, "training", message, user_id=user["id"], history=previous, runtime={"saved_training": training, "account": account_context})
                     connection.execute(
-                        "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
-                        (organization_id, user["id"], "training_chat", now()),
+                        "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
+                        (organization_id, user["id"], "training_chat", now(), user.get("current_branch")),
                     )
                 connection.execute(
                     "INSERT INTO ai_training_messages(organization_id,employee_type,sender,message,created_at) VALUES(?,?,?,?,?)",
@@ -2737,7 +2833,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                             "approved_training": ai_training_text(connection, organization_id, "assistant"),
                         },
                     )
-                    connection.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)", (organization_id,user["id"],"assistant",now()))
+                    connection.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)", (organization_id,user["id"],"assistant",now(),user.get("current_branch")))
                     connection.commit()
                 self._send(200, {"text": text})
                 return
@@ -2754,11 +2850,46 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 training = ai_training_text(connection, organization_id, "commercial_research")
                 text = ai_agent_reply(connection, organization_id, "commercial_research", f"ابحث عن {keywords} في {city}. نوع البحث: {research_type}", user_id=user["id"], runtime={"approved_training": training})
                 connection.execute(
-                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
-                    (organization_id, user["id"], "commercial_research", now()),
+                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
+                    (organization_id, user["id"], "commercial_research", now(), user.get("current_branch")),
                 )
                 connection.commit()
                 self._send(200, {"text": text, "remaining": daily_limit - used - 1})
+                return
+            if path == "/api/reception/conversation" and method in ("GET", "POST"):
+                require_permission(user, 'manageSettings')
+                data = self._body() if method == "POST" else {}
+                requested = data.get('branchId') if method == "POST" else parse_qs(urlparse(self.path).query).get('branchId', ['main'])[0]
+                branch = branch_appointments.authorized_branch(user, requested, ApiError)
+                if method == "GET":
+                    self._send(200, reception_conversations.snapshot(connection, organization_id, user['id'], branch))
+                    return
+                package, daily_limit, used = ai_allowance(connection, organization_id, enforce=False)
+                if package not in ('basic', 'vip'):
+                    raise ApiError(403, 'موظف الاستقبال متاح من الباقة الأساسية')
+                message = str(data.get('message', '')).strip()
+                settings = data.get('settings')
+                settings = settings if isinstance(settings, dict) else {}
+                safe_settings = {key: str(settings.get(key, ''))[:1500]
+                    for key in ('businessName','businessInfo','workingHours','replyStyle')}
+                def generate_reception(session, history, request_state):
+                    if used >= daily_limit:
+                        return 'وصل الرد الذكي لحده اليومي. يمكنك طلب التواصل مع المسؤول هنا.'
+                    training = ai_training_text(connection, organization_id, 'reception')
+                    try:
+                        reply = ai_agent_reply(connection, organization_id, 'reception', message,
+                            user_id=user['id'], session_id=session['id'], branch_id=branch,
+                            history=history, runtime={'approved_training': training, 'approved_settings': safe_settings, 'request_state': request_state})
+                    except ApiError:
+                        return 'خدمة الرد الذكي غير متاحة الآن. رسالتك محفوظة، ويمكنك طلب التواصل مع المسؤول هنا.'
+                    connection.execute('INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)',
+                        (organization_id,user['id'],'reception_reply',now(),branch))
+                    return reply
+                result = reception_conversations.send(connection, organization_id, user['id'], branch,
+                    message, str(data.get('clientMessageId','')), now, generate_reception, ApiError,
+                    postgres=isinstance(connection, PostgresConnection))
+                connection.commit()
+                self._send(200, result)
                 return
             if path == "/api/ai/reception-reply" and method == "POST":
                 data = self._body()
@@ -2776,11 +2907,17 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     key: str(settings.get(key, ""))[:1500]
                     for key in allowed_keys
                 }
+                raw_history = data.get("history", [])
+                history = [
+                    {"role": item["role"], "text": str(item.get("text", ""))[:3000]}
+                    for item in (raw_history[-12:] if isinstance(raw_history, list) else [])
+                    if isinstance(item, dict) and item.get("role") in ("customer", "assistant")
+                ]
                 training = ai_training_text(connection, organization_id, "reception")
-                text = ai_agent_reply(connection, organization_id, "reception", message, user_id=user["id"], runtime={"approved_settings": safe_settings, "approved_training": training})
+                text = ai_agent_reply(connection, organization_id, "reception", message, user_id=user["id"], history=history, runtime={"approved_settings": safe_settings, "approved_training": training})
                 connection.execute(
-                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
-                    (organization_id, user["id"], "reception_reply", now()),
+                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
+                    (organization_id, user["id"], "reception_reply", now(), user.get("current_branch")),
                 )
                 connection.commit()
                 self._send(200, {"text": text, "remaining": daily_limit - used - 1})
@@ -2797,7 +2934,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 package = package_row["package"] if package_row else "free"
                 default_limit = {"free": 5, "basic": 30, "vip": 100}.get(package, 5)
                 custom_limit = connection.execute("SELECT daily_limit FROM ai_limits WHERE organization_id=?", (organization_id,)).fetchone()
-                daily_limit = custom_limit["daily_limit"] if custom_limit else default_limit
+                daily_limit = owner_admin.daily_limit(connection, organization_id, package)
                 day_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
                 used = connection.execute(
                     "SELECT COUNT(*) AS count FROM ai_usage WHERE organization_id=? AND created_at>=?",
@@ -2811,8 +2948,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 }
                 text = ai_agent_reply(connection, organization_id, "commercial_report", "أنشئ تقرير المتابعة من البيانات المرفقة", user_id=user["id"], runtime={"report": safe_report})
                 connection.execute(
-                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(?,?,?,?)",
-                    (organization_id, user["id"], "commercial_report", now()),
+                    "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
+                    (organization_id, user["id"], "commercial_report", now(), user.get("current_branch")),
                 )
                 connection.commit()
                 self._send(200, {"text": text, "remaining": daily_limit - used - 1})
@@ -2933,6 +3070,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                             "DELETE FROM sessions WHERE user_id=?",
                             (employee_id,),
                         )
+                    if password and cursor.rowcount:
+                        audit_log(connection,organization_id,user['id'],'password_reset','إعادة تعيين كلمة مرور الموظف '+name,'security',employee_id)
                     audit_log(connection, organization_id, user["id"], "employee_updated", f"تم تعديل الموظف {name}", "employee", employee_id)
                     connection.commit()
                 except DB_INTEGRITY_ERRORS:
@@ -3097,9 +3236,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     message = f"وصلت إلى حد الباقة: {vehicle_limit} مركبات"
                     raise ApiError(403, message)
                 cursor = connection.execute(
-                    """INSERT INTO vehicles(organization_id,name,plate,registration_expiry,inspection_expiry,insurance_expiry,created_at)
-                       VALUES(?,?,?,?,?,?,?)""",
-                    (organization_id, str(data.get("name", "")).strip(), str(data.get("plate", "")).strip(), data.get("registrationExpiry"), data.get("inspectionExpiry"), data.get("insuranceExpiry"), now()),
+                    """INSERT INTO vehicles(organization_id,name,plate,registration_expiry,inspection_expiry,insurance_expiry,created_at,branch_id)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (organization_id, str(data.get("name", "")).strip(), str(data.get("plate", "")).strip(), data.get("registrationExpiry"), data.get("inspectionExpiry"), data.get("insuranceExpiry"), now(), user.get("current_branch")),
                 )
                 connection.commit()
                 self._send(201, {"id": cursor.lastrowid})
@@ -3116,9 +3255,10 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 rows = connection.execute(
                     """SELECT advertisements.id,advertisements.title,advertisements.message,advertisements.contact,
                               advertisements.approved_at,advertisements.expires_at,organizations.name AS advertiser,
-                              '' AS promo_code,'organization' AS ad_source,'' AS image_data
+                              '' AS promo_code,'organization' AS ad_source,advertisements.image_data
                        FROM advertisements JOIN organizations ON organizations.id=advertisements.organization_id
                        WHERE advertisements.active=1 AND advertisements.approved=1
+                         AND (advertisements.scheduled_at IS NULL OR advertisements.scheduled_at<=?)
                          AND (advertisements.expires_at IS NULL OR advertisements.expires_at>?)
                        UNION ALL
                        SELECT id,title,message,'' AS contact,starts_at AS approved_at,expires_at,
@@ -3127,7 +3267,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                        WHERE active=1 AND (starts_at IS NULL OR starts_at<=?)
                          AND (expires_at IS NULL OR expires_at>?)
                        ORDER BY approved_at DESC""",
-                    (now(), now(), now()),
+                    (now(), now(), now(), now()),
                 ).fetchall()
                 self._send(200, [dict(row) for row in rows])
                 return
@@ -3156,9 +3296,12 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 if len(message) > 1000 or len(contact) > 80:
                     raise ApiError(400, "محتوى الإعلان أو وسيلة التواصل طويلة جدًا")
 
+                image_data = str(data.get('imageData',''))
+                if image_data and (len(image_data)>700000 or not re.fullmatch(r'data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+',image_data)):
+                    raise ApiError(400,'صورة الإعلان غير صحيحة أو كبيرة جدًا')
                 cursor = connection.execute(
-                    "INSERT INTO advertisements(organization_id,title,message,contact,active,approved,created_at,requested_days) VALUES(?,?,?,?,?,?,?,?)",
-                    (organization_id, title, message, contact, 1, 0, now(), requested_days),
+                    "INSERT INTO advertisements(organization_id,title,message,contact,active,approved,created_at,requested_days,image_data,branch_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (organization_id, title, message, contact, 1, 0, now(), requested_days, image_data, user.get("current_branch")),
                 )
                 connection.commit()
                 self._send(201, {"id": cursor.lastrowid, "approved": False})
@@ -3193,14 +3336,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     "SELECT * FROM package_offers WHERE package=? AND active=1 ORDER BY paid_months,id LIMIT 1",
                     (requested_package,),
                 ).fetchone()
-                if offer is None:
+                if offer is None or not owner_admin.active_offer(offer):
                     raise ApiError(400, "عرض الاشتراك غير موجود أو متوقف")
                 discount_code = str(data.get("discountCode", "")).strip().upper()
                 discount_percent = 0
                 if discount_code:
                     code_hash = hashlib.sha256(discount_code.encode()).hexdigest()
                     code = connection.execute(
-                        """SELECT discount_percent FROM activation_codes WHERE code_hash=? AND active=1
+                        """SELECT * FROM activation_codes WHERE code_hash=? AND active=1
                            AND code_kind='discount' AND used_count<max_uses
                            AND (expires_at IS NULL OR expires_at>?)""",
                         (code_hash, now()),
@@ -3208,7 +3351,10 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     if code is None:
                         raise ApiError(400, "كود الخصم غير صحيح أو منتهي")
                     discount_percent = int(code["discount_percent"])
-                quoted_price = round(float(offer["price_sar"]) * (100 - discount_percent) / 100, 2)
+                try:
+                    quoted_price = owner_admin.discount(code, requested_package, offer["price_sar"]) if discount_code else float(offer["price_sar"])
+                except ValueError as error:
+                    raise ApiError(400, str(error))
                 pending = connection.execute(
                     "SELECT id FROM subscription_requests WHERE organization_id=? AND status='pending' ORDER BY id DESC LIMIT 1",
                     (organization_id,),
@@ -3274,4 +3420,5 @@ if __name__ == "__main__":
     init_db()
     print(f"Khdoom API: http://{HOST}:{PORT}")
     print(f"Database: {DB_PATH}")
+    service_monitor.start(db, DB_PATH, bool(DATABASE_URL), PORT)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

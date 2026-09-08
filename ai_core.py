@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import service_monitor
 import json
 import os
 import re
@@ -246,11 +247,15 @@ class ResponsesClient:
         request = Request(RESPONSES_URL, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), method="POST", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json; charset=utf-8"})
         try:
             with urlopen(request, timeout=90) as response:
-                return json.loads(response.read().decode("utf-8"))
+                result = json.loads(response.read().decode("utf-8"))
+                service_monitor.record("openai", True)
+                return result
         except HTTPError as error:
+            service_monitor.record("openai", False)
             print(f"OPENAI RESPONSES ERROR: {error.code}")
             raise AIServiceError(502, "تعذر إنشاء الرد بالذكاء الاصطناعي الآن")
         except (URLError, TimeoutError, json.JSONDecodeError) as error:
+            service_monitor.record("openai", False)
             print(f"OPENAI CONNECTION ERROR: {error}")
             raise AIServiceError(502, "تعذر الاتصال بخدمة الذكاء الاصطناعي")
 

@@ -27,8 +27,13 @@ def project(row, at=None):
     end = datetime.fromisoformat(result['expires_at']) if result.get('expires_at') else None
     if end and end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
+    start = datetime.fromisoformat(result['scheduled_at']) if result.get('scheduled_at') else None
+    if start and start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
     if result.get('approved') and end and end <= at:
         status = 'expired'
+    elif result.get('approved') and result.get('active') and start and start > at:
+        status = 'scheduled'
     elif result.get('approved') and result.get('active'):
         status = 'published'
     elif result.get('approved'):

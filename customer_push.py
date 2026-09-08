@@ -1,5 +1,6 @@
 """Web Push subscriptions scoped to one public customer-chat session."""
 import json
+import service_monitor
 import os
 
 
@@ -62,10 +63,13 @@ def notify(connection, session_id, title, message):
                 vapid_claims={"sub": os.environ.get("KHDOOM_VAPID_SUBJECT", "mailto:owner@khdoom.app")},
             )
             sent += 1
+            service_monitor.record("push", True)
         except WebPushException as exc:
+            service_monitor.record("push", False)
             if getattr(getattr(exc, "response", None), "status_code", None) in (404, 410):
                 connection.execute("DELETE FROM customer_push_subscriptions WHERE id=?", (row["id"],))
         except Exception:
+            service_monitor.record("push", False)
             # A push-provider/network failure must never roll back the employee reply.
             continue
     return sent
