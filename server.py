@@ -728,6 +728,8 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(active,approved);
         """
         with db() as connection:
+            # Serialize startup migrations so overlapping Render instances cannot deadlock.
+            connection.execute("SELECT pg_advisory_lock(735421)")
             connection.executescript(postgres_schema)
             connection.execute("ALTER TABLE appointment_requests ADD COLUMN IF NOT EXISTS chat_session_id BIGINT")
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS offer_id BIGINT")
