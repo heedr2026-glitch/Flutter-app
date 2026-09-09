@@ -1593,6 +1593,12 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
                 connection.commit()
             self._send(200, {"text": reply, "remaining": daily_limit - used - 1, "sessionToken": supplied_session_token, "lastMessageId": bot_cursor.lastrowid})
             return
+        if method == "GET" and path in ("/owner/security", "/owner/services", "/owner/package-limits", "/owner/legacy", "/owner/legacy-disabled-backup"):
+            self.send_response(302)
+            self.send_header("Location", "/owner")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
         if method == "GET" and path == "/owner/legacy":
             self.send_response(302)
             self.send_header("Location", "/owner")

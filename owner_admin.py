@@ -252,6 +252,10 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   out=paged(c,'SELECT t.*,o.name organization_name,s.package',where,args,'t.id DESC',page)
   for t in out['items']: t['notes']=rows(c,'SELECT note,actor,created_at FROM platform_notes WHERE ticket_id=? ORDER BY id DESC LIMIT 20',(t['id'],))
   return out
+ if re.fullmatch(r'support/\d+',r) and m=='DELETE':
+  ident=int(r.split('/')[1])
+  if not c.execute('SELECT id FROM support_tickets WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'Support request not found')
+  c.execute('DELETE FROM platform_notes WHERE ticket_id=?',(ident,)); c.execute('DELETE FROM support_tickets WHERE id=?',(ident,)); return {'deleted':True}
  if re.fullmatch(r'support/\d+',r) and m=='PUT':
   ident=int(r.split('/')[1]); status=d.get('status')
   if status not in ('open','in_progress','resolved','closed'): raise ValueError('حالة غير صحيحة')
@@ -259,6 +263,12 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if d.get('note'): c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,str(d['note'])[:2000],a['name'],stamp()))
   return {'saved':True}
  if r=='security' and m=='GET':
+  cutoff=(datetime.now(timezone.utc)-timedelta(days=30)).isoformat()
+  for table in ('audit_logs','platform_audit','platform_login_events','platform_unknown_logins'):
+   try: c.execute('DELETE FROM '+table+' WHERE created_at<?',(cutoff,))
+   except Exception: pass
+  try: c.execute('DELETE FROM sessions WHERE expires_at<?',(stamp(),))
+  except Exception: pass
   category=q.get('type','login')
   if category=='audit': return paged(c,'SELECT *','FROM platform_audit',[],'id DESC',page)
   if category=='devices': return paged(c,'SELECT se.device_name,se.device_id,se.last_seen_at,se.trusted,u.name,u.organization_id','FROM sessions se JOIN users u ON u.id=se.user_id WHERE se.expires_at>?',[stamp()],'se.created_at DESC',page)
