@@ -464,8 +464,7 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     return reply
 
 def seed_package_offers(connection: Any) -> None:
-    if connection.execute("SELECT id FROM package_offers LIMIT 1").fetchone():
-        return
+    # Reconcile defaults on every startup so older databases receive the 6-month and yearly choices.
     created = now()
     defaults = (
         ("basic", 1, 0, 49, "شهري"),
