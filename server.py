@@ -503,6 +503,11 @@ def seed_package_offers(connection: Any) -> None:
 
 def init_db() -> None:
     with db() as connection:
+        if DATABASE_URL:
+            # Serialize every PostgreSQL startup migration, including package limits.
+            # This must happen before the first migration block; otherwise two
+            # Render instances can deadlock before the main schema lock is taken.
+            connection.execute("SELECT pg_advisory_lock(735421)")
         package_limits.initialize(connection)
         connection.commit()
     if DATABASE_URL:
