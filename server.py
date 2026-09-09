@@ -743,10 +743,10 @@ def init_db() -> None:
             connection.execute("ALTER TABLE platform_advertisements ADD COLUMN IF NOT EXISTS image_data TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS code_kind TEXT NOT NULL DEFAULT 'activation'")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0")
-            connection.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_id TEXT NOT NULL DEFAULT ''")
-            connection.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device_name TEXT NOT NULL DEFAULT 'جهاز غير معروف'")
-            connection.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS trusted INTEGER NOT NULL DEFAULT 0")
-            connection.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TEXT NOT NULL DEFAULT ''")
+            session_columns = {row["column_name"] for row in connection.execute("SELECT column_name FROM information_schema.columns WHERE table_name='sessions'").fetchall()}
+            for column, definition in (("device_id", "TEXT NOT NULL DEFAULT ''"), ("device_name", "TEXT NOT NULL DEFAULT ''"), ("trusted", "INTEGER NOT NULL DEFAULT 0"), ("last_seen_at", "TEXT NOT NULL DEFAULT ''")):
+                if column not in session_columns:
+                    connection.execute(f"ALTER TABLE sessions ADD COLUMN {column} {definition}")
             organizations_without_chat = connection.execute(
                 "SELECT id FROM organizations WHERE public_chat_token IS NULL OR public_chat_token=''"
             ).fetchall()
