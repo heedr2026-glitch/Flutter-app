@@ -5550,11 +5550,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                                     discountResult = null;
                                     discountError = 'تعذر الاتصال بخادم خدووم';
                                   });
-                        } on Object catch (error) {
-                          if (dialogContext.mounted) {
-                            setDialogState(() => discountError = 'تعذر إرسال الطلب: $error');
-                          }
-                        } finally {
+                                } finally {
                                   if (dialogContext.mounted) {
                                     setDialogState(
                                       () => applyingDiscount = false,
@@ -5631,7 +5627,9 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                             transferName: transferNameController.text,
                             transferReceipt: transferReceipt,
                             discountCode: discountCode,
-                            offerId: int.tryParse(selectedOffer?['id']?.toString() ?? ''),
+                            offerId: int.tryParse(
+                              selectedOffer?['id']?.toString() ?? '',
+                            ),
                           );
                           requestSent = true;
                           if (dialogContext.mounted) {
@@ -5647,10 +5645,6 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                             setDialogState(
                               () => discountError = 'تعذر الاتصال بخادم خدووم',
                             );
-                          }
-                        } on Object catch (error) {
-                          if (dialogContext.mounted) {
-                            setDialogState(() => discountError = 'تعذر إرسال الطلب: $error');
                           }
                         } finally {
                           if (dialogContext.mounted && !requestSent) {
@@ -6678,11 +6672,7 @@ class _TrustedDevicesPageState extends State<TrustedDevicesPage> {
           _loading = false;
           _error = 'تعذر الاتصال بخادم خدووم';
         });
-                        } on Object catch (error) {
-                          if (dialogContext.mounted) {
-                            setDialogState(() => discountError = 'تعذر إرسال الطلب: $error');
-                          }
-                        } finally {
+    } finally {
       api.close();
     }
   }
@@ -7883,11 +7873,7 @@ class _AppointmentsRequestsPageState extends State<AppointmentsRequestsPage> {
     )..token = token;
     try {
       await api.updateAppointmentStatus(cloudId, status);
-                        } on Object catch (error) {
-                          if (dialogContext.mounted) {
-                            setDialogState(() => discountError = 'تعذر إرسال الطلب: $error');
-                          }
-                        } finally {
+    } finally {
       api.close();
     }
   }
@@ -8121,11 +8107,7 @@ class _AppointmentsRequestsPageState extends State<AppointmentsRequestsPage> {
           ScaffoldMessenger.of(context)
               .showSnackBar(SnackBar(content: Text('لم يُحذف الطلب: $error')));
         return;
-                        } on Object catch (error) {
-                          if (dialogContext.mounted) {
-                            setDialogState(() => discountError = 'تعذر إرسال الطلب: $error');
-                          }
-                        } finally {
+      } finally {
         api.close();
       }
     }
@@ -10173,11 +10155,7 @@ class _AiTrainingPageState extends State<AiTrainingPage> {
       if (mounted) setState(() => _trainerReply = error.message);
     } on SocketException {
       if (mounted) setState(() => _trainerReply = 'تعذر الاتصال بخادم خدووم');
-                        } on Object catch (error) {
-                          if (dialogContext.mounted) {
-                            setDialogState(() => discountError = 'تعذر إرسال الطلب: $error');
-                          }
-                        } finally {
+    } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
