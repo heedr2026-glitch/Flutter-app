@@ -11,6 +11,7 @@ import os
 import secrets
 import sqlite3
 import re
+import threading
 import community_admin
 from contextvars import ContextVar
 REQUEST_SCOPE = ContextVar("request_branch_scope", default=None)
@@ -52,6 +53,7 @@ DB_PATH = Path(os.environ.get("KHDOOM_DB", ROOT / "khdoom.db"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "" ).strip()
 HOST = os.environ.get("KHDOOM_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", os.environ.get("KHDOOM_PORT", "8080")))
+STARTUP_READY = False
 OWNER_KEY_PATH = ROOT / "owner.key"
 try:
     BACKUP_RECOVERY_HOURS = max(
@@ -1362,6 +1364,15 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         REQUEST_SCOPE.set(None)
         self.platform_actor = None
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        # Keep Render's port and health probe available while database migrations
+        # finish. Other requests continue through the normal startup path below.
+        if method == "GET" and path == "/health":
+            if STARTUP_READY:
+                self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1, "receptionHistoryVersion": 1, "receptionPersistenceVersion": 1})
+            else:
+                self._send(503, {"status": "starting", "service": "khdoom-api"})
+            return
         if urlparse(self.path).path.startswith('/owner/api/v2/'):
             with db() as admin_connection:
                 downgrade_expired_subscriptions(admin_connection)
@@ -1373,7 +1384,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if whatsapp_bridge.handle(self, method, db):
             return
-        path = urlparse(self.path).path.rstrip("/") or "/"
         with db() as subscription_connection:
             downgrade_expired_subscriptions(subscription_connection)
         if method == "GET" and path == "/":
@@ -2028,9 +2038,6 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if cursor.rowcount == 0:
                 raise ApiError(404, "عرض الباقة غير موجود")
             self._send(200, {"saved": True, "priceSar": price_sar})
-            return
-        if method == "GET" and path == "/health":
-            self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1, "receptionHistoryVersion": 1, "receptionPersistenceVersion": 1})
             return
         if method == "GET" and path == "/api/package-offers":
             with db() as connection:
@@ -3448,8 +3455,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
 
 
 if __name__ == "__main__":
-    init_db()
+    http_server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Khdoom API: http://{HOST}:{PORT}")
+    # Bind the port before migrations so Render can observe the service while
+    # the database is being initialized. The health probe remains 503 until
+    # initialization completes, so traffic is not switched prematurely.
+    threading.Thread(target=http_server.serve_forever, daemon=True).start()
+    init_db()
+    STARTUP_READY = True
     print(f"Database: {DB_PATH}")
     service_monitor.start(db, DB_PATH, bool(DATABASE_URL), PORT)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    threading.Event().wait()
