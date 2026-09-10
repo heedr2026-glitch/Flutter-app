@@ -23,6 +23,9 @@ def configs():
             if not re.fullmatch(r"v[0-9]+\.0", c["api_version"]): raise ValueError()
             if c["phone_number_id"] in phones: raise ValueError()
             orgs.add(c["organization_id"]); phones.add(c["phone_number_id"])
+        token_override = os.environ.get("KHDOOM_WHATSAPP_TOKEN_OVERRIDE", "").strip()
+        if token_override:
+            items = [dict(c, token=token_override) for c in items]
         return items
     except (ValueError, KeyError, TypeError):
         raise Error(503, "إعدادات واتساب على الخادم غير صحيحة")
