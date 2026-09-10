@@ -1393,6 +1393,25 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 </div></body></html>"""
             )
             return
+        if method == "GET" and path in ("/privacy", "/privacy-policy"):
+            self._send_html(
+                """<!doctype html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>سياسة الخصوصية - خدوم</title><style>
+body{margin:0;background:#071126;color:#eef6ff;font-family:Tahoma,Arial;line-height:1.9}
+main{max-width:850px;margin:auto;padding:28px}section{background:#111f42;border:1px solid #1d4f7a;border-radius:22px;padding:24px;margin-bottom:16px}
+h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
+</style></head><body><main>
+<section><h1>سياسة الخصوصية لتطبيق خدوم</h1><p>آخر تحديث: 10 سبتمبر 2026</p>
+<p>نحترم خصوصيتك ونلتزم بحماية البيانات التي تتم معالجتها عبر تطبيق خدوم وخدماته.</p></section>
+<section><h2>البيانات التي نعالجها</h2><p>قد نعالج بيانات الحساب الأساسية، وبيانات المؤسسة والفروع والموظفين، والرسائل التي يرسلها العملاء عبر قنوات التواصل التي يفعّلها صاحب المؤسسة.</p></section>
+<section><h2>كيفية استخدام البيانات</h2><p>نستخدم البيانات لتقديم خدمات إدارة المؤسسات والموظفين والمواعيد والرسائل، وتحسين الأمان، وتشغيل التكاملات التي يطلبها المستخدم.</p></section>
+<section><h2>واتساب</h2><p>عند تفعيل تكامل واتساب، تُعالج الرسائل الواردة والصادرة وفق إعدادات المؤسسة ولغرض تقديم خدمة التواصل. لا نبيع بيانات المستخدمين ولا نستخدم محتوى الرسائل للإعلانات.</p></section>
+<section><h2>الحماية والاحتفاظ</h2><p>نطبق ضوابط تقنية وتنظيمية مناسبة لحماية البيانات، ونحتفظ بها للمدة اللازمة لتقديم الخدمة أو للوفاء بالالتزامات النظامية.</p></section>
+<section><h2>حقوقك والتواصل</h2><p>يمكنك طلب الوصول إلى بياناتك أو تصحيحها أو حذفها، أو الاستفسار عن الخصوصية، عبر مسؤول المؤسسة أو من خلال قنوات الدعم المتاحة داخل التطبيق.</p></section>
+</main></body></html>"""
+            )
+            return
         if method == "GET" and path == "/chat-push-sw.js":
             self._send_javascript(customer_push.service_worker())
             return
