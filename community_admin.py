@@ -22,11 +22,11 @@ def moderation(c,route,method,data,q,page,error,actor=None):
  part=route.split('/')[1:] or ['posts']; kind=part[0]
  if kind=='chat':
   if len(part)==1 and method=='GET':
-   return {'items':rows(c,'SELECT u.id user_id,u.name,u.organization_id,o.name organization_name,MAX(m.created_at) last_message,SUM(CASE WHEN m.sender=\'user\' AND m.read=0 THEN 1 ELSE 0 END) unread FROM community_messages m JOIN users u ON u.id=m.user_id JOIN organizations o ON o.id=u.organization_id GROUP BY u.id,u.name,u.organization_id,o.name ORDER BY MAX(m.id) DESC LIMIT 100')}
+   return {'items':admin.rows(c,'SELECT u.id user_id,u.name,u.organization_id,o.name organization_name,MAX(m.created_at) last_message,SUM(CASE WHEN m.sender=\'user\' AND m.read=0 THEN 1 ELSE 0 END) unread FROM community_messages m JOIN users u ON u.id=m.user_id JOIN organizations o ON o.id=u.organization_id GROUP BY u.id,u.name,u.organization_id,o.name ORDER BY MAX(m.id) DESC LIMIT 100')}
   if len(part)==2:
    user_id=int(part[1])
    if method=='GET':
-    return {'items':rows(c,'SELECT m.id,m.sender,m.body,m.created_at,u.name FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.user_id=? ORDER BY m.id ASC',(user_id,))}
+    return {'items':admin.rows(c,'SELECT m.id,m.sender,m.body,m.created_at,u.name FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.user_id=? ORDER BY m.id ASC',(user_id,))}
    if method=='POST':
     body=str(data.get('body','')).strip()
     if not 1<=len(body)<=3000: raise error(400,'اكتب رسالة من 1 إلى 3000 حرف')
