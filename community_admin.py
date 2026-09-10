@@ -36,7 +36,7 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
     return {'saved':True}
   raise error(404,'محادثة المجتمع غير موجودة')
  if kind=='admin-posts':
-  if method=='GET': return {'items':rows(c,'SELECT id,admin_name name,body,created_at,hidden FROM community_admin_posts ORDER BY id DESC LIMIT 100')}
+  if method=='GET': return {'items':admin.rows(c,'SELECT id,admin_name name,body,created_at,hidden FROM community_admin_posts ORDER BY id DESC LIMIT 100')}
   if method=='PUT' and len(part)==2:
    c.execute('UPDATE community_admin_posts SET hidden=? WHERE id=?',(int(bool(data.get('hidden'))),int(part[1]))); return {'saved':True}
   if method=='POST':
