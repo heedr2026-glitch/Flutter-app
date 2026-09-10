@@ -552,6 +552,18 @@ class KhdoomCloudApi {
     return Map<String, dynamic>.from(result as Map);
   }
 
+  Future<List<dynamic>> communityChat({int after = 0}) async {
+    final result = await _request('GET', '/api/community/chat?after=$after');
+    return List<dynamic>.from(result as List);
+  }
+
+  Future<Map<String, dynamic>> sendCommunityChat(String body) async {
+    return Map<String, dynamic>.from(await _request(
+      'POST', '/api/community/chat',
+      body: {'body': body},
+    ) as Map);
+  }
+
   Future<Map<String, dynamic>> likeCommunityPost(Object id) async {
     final result = await _request('POST', '/api/community/posts/$id/like');
     return Map<String, dynamic>.from(result as Map);

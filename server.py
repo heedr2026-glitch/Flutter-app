@@ -313,6 +313,11 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     if state == "closed":
         state = "idle"
         context = {"customer_name": known_name} if known_name else {}
+    # ترحيل الحجوزات القديمة إلى المسار المختصر بدل إعادة نموذج الأسئلة الطويل.
+    if state in {"await_name", "await_type"}:
+        state = "await_datetime"
+        context.setdefault("customer_name", known_name or "عميل")
+        context.setdefault("request_type", "طلب عميل")
     if appointment_context.explicit_new(message) and state == "waiting_human":
         state = "idle"
     cancel_booking = any(
@@ -367,11 +372,20 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
             context["request_type"] = "موعد مقاس"
         if desired:
             context["scheduled_at"] = desired.isoformat()
-        state = "await_name"
-        reply = "أكيد. ما اسمك الكامل لتسجيل طلب الموعد؟"
-        if known_name:
+        # ابدأ بالموعد؛ الاسم ونوع الطلب ليسا سببًا لتعطيل الحجز.
+        context.setdefault("customer_name", known_name or "عميل")
+        context.setdefault("request_type", "طلب عميل")
+        if desired and _chat_phone(message):
+            context["phone"] = _chat_phone(message)
+            state = "await_confirmation"
+            scheduled = datetime.fromisoformat(context["scheduled_at"])
+            reply = f"الموعد المقترح {_format_appointment_slot(scheduled, context.get('time_period') or 'صباحًا')}. أرسل الطلب؟ اكتب نعم أو لا."
+        elif desired:
             state = "await_phone"
-            reply = f"تمام يا {known_name}، اكتب رقم التواصل لهذا الطلب."
+            reply = "ممتاز. اكتب رقم الجوال فقط لإكمال الحجز."
+        else:
+            state = "await_datetime"
+            reply = "أكيد. أي يوم ووقت يناسبك؟ مثل: الاثنين صباحًا."
     elif state == "await_name":
         if appointment_context.is_followup(message):
             return 'هذا طلب جديد غير مكتمل، وليس موعدًا معتمدًا. هل تقصد متابعة حجز سابق؟ افتح محادثته الأصلية؛ ولإكمال الطلب الجديد اكتب اسمك.'
@@ -398,6 +412,8 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
         if phone is None:
             return "رقم التواصل غير واضح. اكتبه بالأرقام من فضلك."
         context["phone"] = phone
+        context.setdefault("customer_name", known_name or "عميل")
+        context.setdefault("request_type", "طلب عميل")
         if context.get("request_type"):
             if context.get("scheduled_at"):
                 state = "await_confirmation"
@@ -407,8 +423,8 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
                 state = "await_datetime"
                 reply = "اكتب اليوم والفترة المناسبة، مثل: السبت صباحًا أو السبت مساءً."
         else:
-            state = "await_type"
-            reply = "ما نوع الطلب: موعد مقاس، موعد صيانة، أم طلب عميل؟"
+            state = "await_datetime"
+            reply = "أي يوم ووقت يناسبك؟ مثل: السبت صباحًا."
     elif state == "await_type":
         request_type = "موعد مقاس" if "مقاس" in lowered else "موعد صيانة" if "صيانة" in lowered else "طلب عميل"
         context["request_type"] = request_type
@@ -426,8 +442,13 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
             return "أي يوم يناسبك؟ وحدد صباح أو مساء، مثل السبت صباحًا."
         context["scheduled_at"] = desired.isoformat()
         context["time_period"] = period
-        state = "await_confirmation"
-        reply = f"الموعد المقترح يوم {_format_appointment_slot(desired, period)}. هل أرسله للموظف؟ اكتب نعم أو لا."
+        context.setdefault("request_type", "طلب عميل")
+        if context.get("phone"):
+            state = "await_confirmation"
+            reply = f"الموعد المقترح {_format_appointment_slot(desired, period)}. أرسل الطلب؟ اكتب نعم أو لا."
+        else:
+            state = "await_phone"
+            reply = f"ممتاز، الموعد المقترح {_format_appointment_slot(desired, period)}. اكتب رقم الجوال فقط."
     elif state == "await_confirmation":
         if any(word in lowered for word in ("لا", "غير", "غيّر", "غيره")):
             state = "await_datetime"

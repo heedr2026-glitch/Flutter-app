@@ -3035,6 +3035,15 @@ class _DashboardPageState extends State<DashboardPage> {
       // Extra height prevents Arabic text from overflowing on short phones and with larger system text.
       childAspectRatio: 0.62,
       children: [
+        DashboardCard(
+          icon: Icons.chat_bubble_outline,
+          title: 'شات خدوم',
+          subtitle: 'محادثة مباشرة مع إدارة خدوم',
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const CommunityChatPage()),
+          ),
+        ),
         if (_isAdmin)
           DashboardCard(
             icon: Icons.today_outlined,

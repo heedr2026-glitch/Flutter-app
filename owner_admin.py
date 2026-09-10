@@ -46,6 +46,7 @@ def permission(path,method):
   p=p[3:]
   if p in ('me','logout','summary'): return None
   if p=='addons': return 'packages'
+  if p.startswith('community/rewards/'): return 'rewards'
   if p.startswith('addon-offers'): return 'offers'
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
@@ -293,7 +294,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   c.execute('UPDATE advertisements SET active=?,approved=?,scheduled_at=?,expires_at=?,approved_at=?,review_note=? WHERE id=?',(int(status not in ('rejected','stopped')),int(status in ('published','scheduled','stopped')),start,end,stamp(),str(d.get('review_note',''))[:500],ident)); return {'saved':True}
  if r=='community' or r.startswith('community/'):
   import community_admin
-  return community_admin.moderation(c,r,m,d,q,page,s.ApiError)
+  return community_admin.moderation(c,r,m,d,q,page,s.ApiError,a)
  if r=='settings' and m=='GET': return {'database':'PostgreSQL' if s.DATABASE_URL else 'SQLite','sessionHours':8,'pageSize':30,'note':'التكاليف الفعلية والمكالمات والمجتمع تحتاج ربط مصادرها. أسعار الباقات وحدود AI اليومية مرتبطة بالخادم. حقول وحدات واتساب والمكالمات وصفية إلى حين ربط مزود الفوترة.'}
  raise s.ApiError(404,'المسار غير موجود')
 
@@ -307,15 +308,20 @@ def usage(c,q,page,s):
  if q.get('package') in ('free','basic','vip'): where+=" AND COALESCE(s.package,'free')=?"; args.append(q['package'])
  if q.get('organization'): where+=' AND o.id=?'; args.append(int(q['organization']))
  out=paged(c,"SELECT o.id,o.name,COALESCE(s.package,'free') package",where,args,'o.id DESC',page)
+ if not table_exists(c,table,s):
+  for o in out['items']: o.update({'total':0,'today':0,'month':0,'cost':None,'remaining':None})
+  out['summary']={'total':0,'today':0,'month':0}; out['note']='لا يوجد سجل استهلاك بعد.'; return out
  ids=[o['id'] for o in out['items']]
  marks=','.join('?' for _ in ids)
  stats={}; overrides={}; credits={}
  if ids:
   stats={row['organization_id']:row for row in rows(c,f'SELECT organization_id,COUNT(*) total,SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END) today,SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END) month'+(',COUNT(DISTINCT peer) conversations' if wa else '')+f' FROM {table} WHERE organization_id IN ({marks}) GROUP BY organization_id',[day,mon,*ids])}
   if not wa:
-   overrides={r['organization_id']:r['daily_limit'] for r in rows(c,f'SELECT * FROM ai_limits WHERE organization_id IN ({marks})',ids)}
-   credits={r['organization_id']:r['units'] for r in rows(c,f'SELECT * FROM platform_daily_credits WHERE day=? AND organization_id IN ({marks})',[today,*ids])}
- packages={r['package']:r['ai_daily'] for r in rows(c,'SELECT package,ai_daily FROM platform_packages')}
+   if table_exists(c,'ai_limits',s):
+    overrides={r['organization_id']:r['daily_limit'] for r in rows(c,f'SELECT * FROM ai_limits WHERE organization_id IN ({marks})',ids)}
+   if table_exists(c,'platform_daily_credits',s):
+    credits={r['organization_id']:r['units'] for r in rows(c,f'SELECT * FROM platform_daily_credits WHERE day=? AND organization_id IN ({marks})',[today,*ids])}
+ packages={r['package']:r['ai_daily'] for r in rows(c,'SELECT package,ai_daily FROM platform_packages')} if table_exists(c,'platform_packages',s) else {'free':5,'basic':30,'vip':100}
  for o in out['items']:
   o.update(stats.get(o['id'],{'total':0,'today':0,'month':0}));o['cost']=None;o['remaining']=None if wa else max(0,overrides.get(o['id'],packages[o['package']])+credits.get(o['id'],0)-o['today'])
   if wa:o.setdefault('conversations',0)
