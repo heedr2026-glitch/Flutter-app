@@ -10448,8 +10448,6 @@ class AiEmployeesPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final includesReception =
-        subscriptionPackage == 'basic' || subscriptionPackage == 'vip';
     final includesAllEmployees = subscriptionPackage == 'vip';
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -10491,29 +10489,6 @@ class AiEmployeesPage extends StatelessWidget {
                     MaterialPageRoute(builder: (_) => const AiTrainingPage()),
                   );
                 },
-              ),
-              const SizedBox(height: 12),
-              AiEmployeeCard(
-                icon: Icons.support_agent,
-                title: 'موظف استقبال العملاء',
-                subtitle: includesReception
-                    ? 'دردشة الزبائن والأسعار والمواعيد والتحويل لموظف بشري'
-                    : 'متاح في الباقة الأساسية وVIP',
-                locked: !includesReception,
-                onTap: includesReception
-                    ? () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const ReceptionEmployeePage(),
-                          ),
-                        );
-                      }
-                    : () => _showUpgradeDialog(
-                        context,
-                        'موظف استقبال العملاء',
-                        'الباقة الأساسية وVIP',
-                      ),
               ),
               const SizedBox(height: 12),
               AiEmployeeCard(
