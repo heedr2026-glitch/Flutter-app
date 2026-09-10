@@ -1368,10 +1368,11 @@ class Handler(BaseHTTPRequestHandler):
         # Keep Render's port and health probe available while database migrations
         # finish. Other requests continue through the normal startup path below.
         if method == "GET" and path == "/health":
-            if STARTUP_READY:
-                self._send(200, {"status": "ok", "service": "khdoom-api", "branchChatVersion": 1, "appointmentContextVersion": 1, "appointmentFollowupsVersion": 1, "aiConversationVersion": 1, "receptionHandoffVersion": 1, "receptionArabicVersion": 1, "receptionQuotaVersion": 1, "ownerUsageAlertsVersion": 1, "chatIntentVersion": 1, "receptionHistoryVersion": 1, "receptionPersistenceVersion": 1})
-            else:
-                self._send(503, {"status": "starting", "service": "khdoom-api"})
+            # Render uses the status code to switch deployments. Returning 200
+            # here lets an old instance release migration locks during the
+            # zero-downtime handover; normal endpoints remain on the existing
+            # startup path until initialization has completed.
+            self._send(200, {"status": "ok" if STARTUP_READY else "starting", "service": "khdoom-api"})
             return
         if urlparse(self.path).path.startswith('/owner/api/v2/'):
             with db() as admin_connection:
