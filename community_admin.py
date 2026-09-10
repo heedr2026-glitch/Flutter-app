@@ -70,6 +70,8 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
  if method!='GET': raise error(405,'الإجراء غير متاح')
  if kind=='users':
   return admin.paged(c,'SELECT u.id,u.name,u.organization_id,o.name organization_name,(SELECT MAX(created_at) FROM community_posts WHERE user_id=u.id) last_post','FROM users u JOIN organizations o ON o.id=u.organization_id WHERE EXISTS(SELECT 1 FROM community_posts p WHERE p.user_id=u.id) OR EXISTS(SELECT 1 FROM community_comments co WHERE co.user_id=u.id)',[],'u.id DESC',page)
+ if kind=='posts':
+  return admin.paged(c,'SELECT t.*,u.name,u.organization_id,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=t.id) like_count','FROM community_posts t JOIN users u ON u.id=t.user_id',[],'like_count DESC,t.id DESC',page)
  return admin.paged(c,'SELECT t.*,u.name,u.organization_id','FROM community_'+kind+' t JOIN users u ON u.id=t.user_id',[],'t.id DESC',page)
 
 def client(h,method,s):
