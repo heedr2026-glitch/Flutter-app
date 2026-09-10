@@ -686,6 +686,22 @@ def init_db() -> None:
           updated_at TEXT NOT NULL,
           PRIMARY KEY(organization_id, employee_type)
         );
+        CREATE TABLE IF NOT EXISTS ai_company_profiles (
+          organization_id BIGINT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+          activity TEXT NOT NULL DEFAULT '',
+          services TEXT NOT NULL DEFAULT '',
+          service_areas TEXT NOT NULL DEFAULT '',
+          working_hours TEXT NOT NULL DEFAULT '',
+          pricing_policy TEXT NOT NULL DEFAULT '',
+          allowed_prices TEXT NOT NULL DEFAULT '',
+          approval_required TEXT NOT NULL DEFAULT '',
+          required_questions TEXT NOT NULL DEFAULT '',
+          human_handoff TEXT NOT NULL DEFAULT '',
+          booking_policy TEXT NOT NULL DEFAULT '',
+          current_offers TEXT NOT NULL DEFAULT '',
+          special_instructions TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS ai_limits (
           organization_id BIGINT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
           daily_limit INTEGER NOT NULL
@@ -950,6 +966,16 @@ def init_db() -> None:
               content TEXT NOT NULL DEFAULT '',
               updated_at TEXT NOT NULL,
               PRIMARY KEY(organization_id, employee_type)
+            );
+            CREATE TABLE IF NOT EXISTS ai_company_profiles (
+              organization_id INTEGER PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+              activity TEXT NOT NULL DEFAULT '', services TEXT NOT NULL DEFAULT '',
+              service_areas TEXT NOT NULL DEFAULT '', working_hours TEXT NOT NULL DEFAULT '',
+              pricing_policy TEXT NOT NULL DEFAULT '', allowed_prices TEXT NOT NULL DEFAULT '',
+              approval_required TEXT NOT NULL DEFAULT '', required_questions TEXT NOT NULL DEFAULT '',
+              human_handoff TEXT NOT NULL DEFAULT '', booking_policy TEXT NOT NULL DEFAULT '',
+              current_offers TEXT NOT NULL DEFAULT '', special_instructions TEXT NOT NULL DEFAULT '',
+              updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS ai_limits (
               organization_id INTEGER PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
@@ -2739,6 +2765,38 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     (organization_id,),
                 ).fetchall()
                 self._send(200, [dict(row) for row in rows])
+                return
+            if path == "/api/ai-profile" and method == "GET":
+                row = connection.execute(
+                    "SELECT * FROM ai_company_profiles WHERE organization_id=?",
+                    (organization_id,),
+                ).fetchone()
+                if row is None:
+                    org = connection.execute("SELECT activity FROM organizations WHERE id=?", (organization_id,)).fetchone()
+                    self._send(200, {"organization_id": organization_id, "activity": org["activity"] if org else ""})
+                else:
+                    self._send(200, dict(row))
+                return
+            if path == "/api/ai-profile" and method == "PUT":
+                require_permission(user, "manageSettings")
+                data = self._body()
+                fields = (
+                    "activity", "services", "service_areas", "working_hours", "pricing_policy",
+                    "allowed_prices", "approval_required", "required_questions", "human_handoff",
+                    "booking_policy", "current_offers", "special_instructions",
+                )
+                values = [str(data.get(field, "")).strip()[:12000] for field in fields]
+                if not values[0]:
+                    raise ApiError(400, "حدد نشاط المؤسسة أولًا")
+                connection.execute(
+                    """INSERT INTO ai_company_profiles(organization_id,activity,services,service_areas,working_hours,pricing_policy,allowed_prices,approval_required,required_questions,human_handoff,booking_policy,current_offers,special_instructions,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(organization_id) DO UPDATE SET activity=excluded.activity,services=excluded.services,service_areas=excluded.service_areas,working_hours=excluded.working_hours,pricing_policy=excluded.pricing_policy,allowed_prices=excluded.allowed_prices,approval_required=excluded.approval_required,required_questions=excluded.required_questions,human_handoff=excluded.human_handoff,booking_policy=excluded.booking_policy,current_offers=excluded.current_offers,special_instructions=excluded.special_instructions,updated_at=excluded.updated_at""",
+                    (organization_id, *values, now()),
+                )
+                connection.execute("UPDATE organizations SET activity=? WHERE id=?", (values[0], organization_id))
+                connection.commit()
+                self._send(200, {"saved": True})
                 return
             if path == "/api/ai-training" and method == "PUT":
                 data = self._body()

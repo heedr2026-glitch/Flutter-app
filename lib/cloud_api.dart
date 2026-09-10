@@ -430,6 +430,15 @@ class KhdoomCloudApi {
     return List<dynamic>.from(result as List);
   }
 
+  Future<Map<String, dynamic>> aiProfile() async {
+    final result = await _request('GET', '/api/ai-profile');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<void> saveAiProfile(Map<String, dynamic> profile) async {
+    await _request('PUT', '/api/ai-profile', body: profile);
+  }
+
   Future<List<dynamic>> aiTrainingMessages() async {
     final result = await _request('GET', '/api/ai-training/messages');
     return List<dynamic>.from(result as List);

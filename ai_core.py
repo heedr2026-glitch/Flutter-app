@@ -55,6 +55,25 @@ BASE_INSTRUCTIONS = """
 """.strip()
 
 
+ACTIVITY_PLAYBOOKS: dict[str, str] = {
+    "مقاولات": "اجمع نوع المشروع، المدينة، المساحة، وجود المخطط، مرحلة المشروع، نوع التشطيب، موعد البدء، ورقم التواصل.",
+    "زجاج ومرايا": "اجمع نوع العمل، المقاسات، نوع الزجاج، اللون، الموقع، هل يشمل التركيب، الصور، والموعد.",
+    "محاماة": "اجمع نوع القضية، ملخص المشكلة، وجود المستندات، المرحلة الحالية، المدينة، وموعد الاستشارة. لا تقدم قرارًا قانونيًا نهائيًا أو ضمانًا للنتيجة.",
+    "تأجير سيارات": "اجمع نوع السيارة، تاريخ الاستلام والتسليم، المدينة، مدة التأجير، عمر السائق، ورقم التواصل.",
+    "مطعم": "اجمع نوع الطلب، عدد الأشخاص أو الكمية، وقت الاستلام أو التوصيل، الموقع، الحساسية الغذائية، ورقم التواصل.",
+    "متجر": "اجمع المنتج أو المقاس أو اللون أو الكمية، طريقة الاستلام أو الشحن، المدينة، وبيانات التواصل.",
+    "صيانة": "اجمع نوع الجهاز أو الأصل، العطل، الموقع، الصور أو رقم الموديل، هل يلزم زيارة، والموعد المناسب.",
+}
+
+
+def activity_playbook(activity: str) -> str:
+    normalized = str(activity or "").strip()
+    for name, playbook in ACTIVITY_PLAYBOOKS.items():
+        if name in normalized or normalized in name:
+            return playbook
+    return "اسأل أولًا عن نوع الطلب، الموقع، الموعد المطلوب، ورقم التواصل، ثم تابع بأسئلة النشاط التي تظهر من رسالة العميل فقط."
+
+
 ROLES: dict[str, AgentRole] = {
     "reception": AgentRole(
         "موظف الاستقبال",
@@ -146,6 +165,16 @@ class CompanyTools:
         ).fetchall()
         return [line.strip() for row in rows for line in str(row["content"]).splitlines() if line.strip()]
 
+    def _profile(self) -> dict[str, Any]:
+        try:
+            row = self.connection.execute(
+                "SELECT * FROM ai_company_profiles WHERE organization_id=?",
+                (self.context.company_id,),
+            ).fetchone()
+        except Exception:
+            row = None
+        return dict(row) if row else {}
+
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         handler = getattr(self, name, None)
         if handler is None or name not in ROLES[self.context.role].tools:
@@ -162,10 +191,15 @@ class CompanyTools:
         row = self.connection.execute("SELECT id,name,activity,phone FROM organizations WHERE id=?", (self.context.company_id,)).fetchone()
         if row is None:
             return {"ok": False, "error": "المؤسسة غير موجودة"}
-        return {"ok": True, "company": dict(row), "branch_id": self.context.branch_id, "knowledge": self._knowledge()}
+        company = dict(row)
+        profile = self._profile()
+        activity = profile.get("activity") or company.get("activity") or ""
+        return {"ok": True, "company": company, "branch_id": self.context.branch_id,
+                "activity_profile": profile, "activity_playbook": activity_playbook(activity),
+                "knowledge": self._knowledge()}
 
     def get_company_services(self) -> dict[str, Any]:
-        return {"ok": True, "stored_services_and_policies": self._knowledge()}
+        return {"ok": True, "stored_services_and_policies": self._knowledge(), "activity_profile": self._profile()}
 
     def _price(self, service: str) -> tuple[float | None, str | None]:
         needle = service.strip().lower()
@@ -290,7 +324,12 @@ class AgentService:
             tools.append({"type": "web_search"})
         safety_id = hashlib.sha256(f"khdoom:{context.company_id}:{context.user_id or context.session_id or 0}".encode()).hexdigest()[:64]
         for _ in range(5):
-            payload = {"model": PRIMARY_MODEL, "instructions": role.instructions, "input": input_items, "tools": tools, "parallel_tool_calls": False, "max_output_tokens": 1800, "store": False, "safety_identifier": safety_id}
+            activity = str(snapshot.get("activity_profile", {}).get("activity") or snapshot.get("company", {}).get("activity") or "").strip()
+            profile_text = json.dumps(snapshot.get("activity_profile", {}), ensure_ascii=False)
+            instructions = role.instructions + "\n\nملف تشغيل المؤسسة الحالي (بيانات موثوقة خاصة بهذه المؤسسة فقط):\n" + profile_text
+            instructions += "\nنشاط المؤسسة: " + (activity or "غير محدد") + "\nدليل جمع المعلومات حسب النشاط: " + activity_playbook(activity)
+            instructions += "\nاستخدم هذه التعليمات لتغيير أسئلتك وسياقك، ولا تنشئ نموذجًا مختلفًا. إذا تعارضت معلومة عامة مع ملف المؤسسة، التزم بملف المؤسسة ولا تخترع."
+            payload = {"model": PRIMARY_MODEL, "instructions": instructions, "input": input_items, "tools": tools, "parallel_tool_calls": False, "max_output_tokens": 1800, "store": False, "safety_identifier": safety_id}
             response = self.client.transport(payload)
             calls = [item for item in response.get("output", []) if isinstance(item, dict) and item.get("type") == "function_call"]
             if not calls:

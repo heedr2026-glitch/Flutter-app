@@ -23,6 +23,7 @@ import 'home_branches_switch.dart';
 import 'question_answer_training.dart';
 import 'my_advertisements.dart';
 import 'page_refresh_button.dart';
+import 'ai_employee_training_page.dart';
 
 import 'package:url_launcher/url_launcher.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
@@ -10430,6 +10431,20 @@ class AiEmployeesPage extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           child: ListView(
             children: [
+              AiEmployeeCard(
+                icon: Icons.auto_awesome,
+                title: 'تدريب موظف خدووم',
+                subtitle: 'نشاط المؤسسة وخدماتها وسياسات الرد الخاصة بها',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const AiEmployeeTrainingPage(),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
               AiEmployeeCard(
                 icon: Icons.school_outlined,
                 title: 'تدريب موظفي AI',

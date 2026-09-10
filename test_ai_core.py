@@ -12,6 +12,7 @@ CREATE TABLE organizations(id INTEGER PRIMARY KEY,name TEXT,activity TEXT,phone 
 CREATE TABLE ai_training(organization_id INTEGER,employee_type TEXT,content TEXT,updated_at TEXT,PRIMARY KEY(organization_id,employee_type));
 CREATE TABLE appointment_requests(id INTEGER PRIMARY KEY AUTOINCREMENT,organization_id INTEGER,chat_session_id INTEGER,branch_id TEXT,request_type TEXT,title TEXT,customer_name TEXT,phone TEXT,notes TEXT,scheduled_at TEXT,status TEXT,source TEXT,created_at TEXT,updated_at TEXT);
 CREATE TABLE chat_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,organization_id INTEGER,public_token TEXT,state TEXT,context_json TEXT,created_at TEXT,updated_at TEXT,branch_id TEXT);
+CREATE TABLE ai_company_profiles(organization_id INTEGER PRIMARY KEY,activity TEXT,services TEXT,service_areas TEXT,working_hours TEXT,pricing_policy TEXT,allowed_prices TEXT,approval_required TEXT,required_questions TEXT,human_handoff TEXT,booking_policy TEXT,current_offers TEXT,special_instructions TEXT,updated_at TEXT);
 """
 
 
@@ -79,6 +80,29 @@ class AICoreTest(unittest.TestCase):
         self.assertNotIn("مقاولات", json.dumps(one, ensure_ascii=False))
         self.assertIn("مقاولات", two["company"]["activity"])
         self.assertNotIn("مرايا الأحساء", json.dumps(two, ensure_ascii=False))
+
+    def test_activity_profile_changes_prompt_without_cross_company_leakage(self):
+        self.c.execute(
+            "INSERT INTO ai_company_profiles VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (1, "زجاج ومرايا", "واجهات ومرايا", "الأحساء", "9-5", "حسب المقاس", "لا تعرض سعرًا قبل المقاس", "التركيب يحتاج موافقة", "المقاسات، نوع الزجاج، اللون", "الطلبات الكبيرة", "موعد بعد رفع الصور", "عرض الصيف", "اطلب الصور قبل التسعير", "now"),
+        )
+        self.c.execute(
+            "INSERT INTO ai_company_profiles VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (2, "مقاولات", "تشطيب فلل", "الرياض", "8-4", "بعد المعاينة", "سعر المعاينة فقط", "كل عرض يحتاج موافقة", "نوع المشروع، المدينة، المساحة", "العقود", "بعد مراجعة المخطط", "", "لا تعطِ سعرًا نهائيًا", "now"),
+        )
+        self.c.commit()
+        transport = FakeTransport()
+        service = ai_core.AgentService(ai_core.ResponsesClient(transport))
+        service.respond(self.c, ai_core.AgentContext(1, "reception"), "أريد مرآة")
+        glass_prompt = transport.payloads[-1]["instructions"]
+        self.assertIn("زجاج ومرايا", glass_prompt)
+        self.assertIn("المقاسات، نوع الزجاج، اللون", glass_prompt)
+        self.assertNotIn("تشطيب فلل", glass_prompt)
+        service.respond(self.c, ai_core.AgentContext(2, "reception"), "أريد تشطيب فيلا")
+        contracting_prompt = transport.payloads[-1]["instructions"]
+        self.assertIn("مقاولات", contracting_prompt)
+        self.assertIn("نوع المشروع، المدينة، المساحة", contracting_prompt)
+        self.assertNotIn("المقاسات، نوع الزجاج، اللون", contracting_prompt)
 
     def test_tool_call_uses_stored_price_and_calculates_quote(self):
         transport = ToolTransport()
