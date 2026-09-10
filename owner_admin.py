@@ -309,7 +309,7 @@ def usage(c,q,page,s):
  if q.get('organization'): where+=' AND o.id=?'; args.append(int(q['organization']))
  out=paged(c,"SELECT o.id,o.name,COALESCE(s.package,'free') package",where,args,'o.id DESC',page)
  if not table_exists(c,table,s):
-  for o in out['items']: o.update({'total':0,'today':0,'month':0,'cost':None,'remaining':None})
+  for o in out['items']: o.update({'total':0,'today':0,'month':0,'daily_limit':None,'cost':None,'remaining':None})
   out['summary']={'total':0,'today':0,'month':0}; out['note']='لا يوجد سجل استهلاك بعد.'; return out
  ids=[o['id'] for o in out['items']]
  marks=','.join('?' for _ in ids)
@@ -323,7 +323,7 @@ def usage(c,q,page,s):
     credits={r['organization_id']:r['units'] for r in rows(c,f'SELECT * FROM platform_daily_credits WHERE day=? AND organization_id IN ({marks})',[today,*ids])}
  packages={r['package']:r['ai_daily'] for r in rows(c,'SELECT package,ai_daily FROM platform_packages')} if table_exists(c,'platform_packages',s) else {'free':5,'basic':30,'vip':100}
  for o in out['items']:
-  o.update(stats.get(o['id'],{'total':0,'today':0,'month':0}));o['cost']=None;o['remaining']=None if wa else max(0,overrides.get(o['id'],packages[o['package']])+credits.get(o['id'],0)-o['today'])
+  o.update(stats.get(o['id'],{'total':0,'today':0,'month':0}));o['daily_limit']=None if wa else overrides.get(o['id'],packages[o['package']])+credits.get(o['id'],0);o['cost']=None;o['remaining']=None if wa else max(0,o['daily_limit']-o['today'])
   if wa:o.setdefault('conversations',0)
  scope=f' FROM {table} WHERE organization_id IN (SELECT o.id '+where+')'
  summary=c.execute(f'SELECT COUNT(*) total,COALESCE(SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END),0) today,COALESCE(SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END),0) month_count'+scope,[day,mon,*args]).fetchone()
