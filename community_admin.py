@@ -18,9 +18,9 @@ def migrate(c,postgres=False):
  except Exception: pass
  c.execute('CREATE TABLE IF NOT EXISTS community_admin_likes(post_id BIGINT NOT NULL,admin_name TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(post_id,admin_name))')
 
-def moderation(c,route,method,data,q,page,error,actor=None):
+def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
  # تأكد من وجود جداول المجتمع حتى تعمل النسخ التي بدأت قبل آخر ترحيل.
- migrate(c)
+ migrate(c,postgres=postgres)
  part=route.split('/')[1:] or ['posts']; kind=part[0]
  if kind=='chat':
   if len(part)==1 and method=='GET':

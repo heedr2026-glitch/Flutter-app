@@ -294,7 +294,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   c.execute('UPDATE advertisements SET active=?,approved=?,scheduled_at=?,expires_at=?,approved_at=?,review_note=? WHERE id=?',(int(status not in ('rejected','stopped')),int(status in ('published','scheduled','stopped')),start,end,stamp(),str(d.get('review_note',''))[:500],ident)); return {'saved':True}
  if r=='community' or r.startswith('community/'):
   import community_admin
-  return community_admin.moderation(c,r,m,d,q,page,s.ApiError,a)
+  return community_admin.moderation(c,r,m,d,q,page,s.ApiError,a,bool(s.DATABASE_URL))
  if r=='settings' and m=='GET': return {'database':'PostgreSQL' if s.DATABASE_URL else 'SQLite','sessionHours':8,'pageSize':30,'note':'التكاليف الفعلية والمكالمات والمجتمع تحتاج ربط مصادرها. أسعار الباقات وحدود AI اليومية مرتبطة بالخادم. حقول وحدات واتساب والمكالمات وصفية إلى حين ربط مزود الفوترة.'}
  raise s.ApiError(404,'المسار غير موجود')
 
@@ -315,7 +315,7 @@ def usage(c,q,page,s):
  marks=','.join('?' for _ in ids)
  stats={}; overrides={}; credits={}
  if ids:
-  stats={row['organization_id']:row for row in rows(c,f'SELECT organization_id,COUNT(*) total,SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END) today,SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END) month'+(',COUNT(DISTINCT peer) conversations' if wa else '')+f' FROM {table} WHERE organization_id IN ({marks}) GROUP BY organization_id',[day,mon,*ids])}
+  stats={row['organization_id']:{'total':row['total'],'today':row['today_count'],'month':row['month_count'],**({'conversations':row['conversations']} if wa else {})} for row in rows(c,f'SELECT organization_id,COUNT(*) total,SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END) today_count,SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END) month_count'+(',COUNT(DISTINCT peer) conversations' if wa else '')+f' FROM {table} WHERE organization_id IN ({marks}) GROUP BY organization_id',[day,mon,*ids])}
   if not wa:
    if table_exists(c,'ai_limits',s):
     overrides={r['organization_id']:r['daily_limit'] for r in rows(c,f'SELECT * FROM ai_limits WHERE organization_id IN ({marks})',ids)}
@@ -326,6 +326,7 @@ def usage(c,q,page,s):
   o.update(stats.get(o['id'],{'total':0,'today':0,'month':0}));o['cost']=None;o['remaining']=None if wa else max(0,overrides.get(o['id'],packages[o['package']])+credits.get(o['id'],0)-o['today'])
   if wa:o.setdefault('conversations',0)
  scope=f' FROM {table} WHERE organization_id IN (SELECT o.id '+where+')'
- out['summary']=dict(c.execute(f'SELECT COUNT(*) total,COALESCE(SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END),0) today,COALESCE(SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END),0) month'+scope,[day,mon,*args]).fetchone())
+ summary=c.execute(f'SELECT COUNT(*) total,COALESCE(SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END),0) today,COALESCE(SUM(CASE WHEN {tf}>=? THEN 1 ELSE 0 END),0) month_count'+scope,[day,mon,*args]).fetchone()
+ out['summary']={'total':summary['total'],'today':summary['today'],'month':summary['month_count']}
  out['note']='المتبقي لـ AI هو الحد اليومي ويشمل وحدات الإدارة لليوم. التكلفة غير متاحة لعدم وجود سجل فوترة.'
  return out
