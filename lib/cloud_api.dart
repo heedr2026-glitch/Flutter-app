@@ -290,6 +290,11 @@ class KhdoomCloudApi {
     return List<dynamic>.from(result as List);
   }
 
+  Future<List<dynamic>> packageCatalog() async {
+    final result = await _request('GET', '/api/package-catalog');
+    return List<dynamic>.from(result as List);
+  }
+
   Future<Map<String, dynamic>> paymentSettings() async {
     final result = await _request('GET', '/api/payment-settings');
     return Map<String, dynamic>.from(result as Map);

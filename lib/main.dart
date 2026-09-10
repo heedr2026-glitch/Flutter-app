@@ -5139,7 +5139,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
   Map<String, dynamic> _paymentSettings = {};
   PackageResourceLimits _resourceLimits = PackageResourceLimits.defaults;
 
-  static const _packages = [
+  final List<Map<String, Object>> _packages = [
     {
       'id': 'free',
       'name': 'المجانية',
@@ -5208,6 +5208,33 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
           .toList();
     } catch (_) {
       offers = [];
+    }
+    try {
+      final catalog = (await api.packageCatalog())
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+      for (final item in catalog) {
+        final id = item['package']?.toString();
+        Map<String, Object>? package;
+        for (final candidate in _packages) {
+          if (candidate['id'] == id) {
+            package = candidate;
+            break;
+          }
+        }
+        if (package == null) continue;
+        final monthly = item['monthly'];
+        if (id != 'free' && monthly != null) {
+          package['price'] = '${monthly.toString()} ريال / شهر';
+          package['priceValue'] = monthly;
+        }
+        final features = item['features'];
+        if (features is List && features.isNotEmpty) {
+          package['features'] = features.map((value) => value.toString()).toList();
+        }
+      }
+    } catch (_) {
+      // Keep the built-in catalogue if the public settings are unavailable.
     }
     try {
       api.token = await const FlutterSecureStorage().read(

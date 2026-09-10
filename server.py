@@ -2094,6 +2094,16 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 rows = connection.execute("SELECT id,package,paid_months,bonus_months,price_sar,label,starts_at,ends_at FROM package_offers WHERE active=1 ORDER BY package,paid_months,bonus_months,id").fetchall()
             self._send(200, [dict(row) for row in rows if owner_admin.active_offer(row)])
             return
+        if method == "GET" and path == "/api/package-catalog":
+            with db() as connection:
+                rows = connection.execute("SELECT package,monthly,yearly,ai_daily,ai_employees,whatsapp_units,calls_units,ads_units,features FROM platform_packages ORDER BY monthly").fetchall()
+            catalog=[]
+            for row in rows:
+                item=dict(row)
+                item['features']=[line.strip() for line in str(item.get('features') or '').replace('،', ',').splitlines() if line.strip()]
+                catalog.append(item)
+            self._send(200, catalog)
+            return
         if path == "/owner/api/platform-ads" and method == "GET":
             self._owner()
             with db() as connection:
