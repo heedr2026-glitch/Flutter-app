@@ -14,8 +14,6 @@ def migrate(c,postgres=False):
  c.execute(f'''CREATE TABLE IF NOT EXISTS community_messages(id {identity},user_id BIGINT NOT NULL REFERENCES users(id),sender TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL,read INTEGER NOT NULL DEFAULT 0)''')
  c.execute('CREATE INDEX IF NOT EXISTS community_message_user ON community_messages(user_id,id)')
  c.execute(f'''CREATE TABLE IF NOT EXISTS community_admin_posts(id {identity},admin_name TEXT NOT NULL,body TEXT NOT NULL,hidden INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)''')
- try: c.execute('ALTER TABLE community_admin_posts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
- except Exception: pass
  c.execute('CREATE TABLE IF NOT EXISTS community_admin_likes(post_id BIGINT NOT NULL,admin_name TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(post_id,admin_name))')
 
 def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
