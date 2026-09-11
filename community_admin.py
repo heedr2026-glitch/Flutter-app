@@ -116,7 +116,7 @@ def client(h,method,s):
   elif route=='chat' and method=='GET':
    try: after=max(0,int(parse_qs(urlparse(h.path).query).get('after',['0'])[0]))
    except ValueError: raise s.ApiError(400,'رقم الرسالة غير صحيح')
-   result=admin.rows(c,'SELECT id,sender,body,created_at FROM community_messages WHERE user_id=? AND id>? ORDER BY id ASC LIMIT 100',(user['id'],))
+   result=admin.rows(c,'SELECT id,sender,body,created_at FROM community_messages WHERE user_id=? AND id>? ORDER BY id ASC LIMIT 100',(user['id'],after))
    c.execute("UPDATE community_messages SET read=1 WHERE user_id=? AND sender='admin'",(user['id'],))
   elif route=='chat' and method=='POST':
    body=str(h._body().get('body','')).strip()
