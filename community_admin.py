@@ -12,6 +12,10 @@ def migrate(c,postgres=False):
  c.execute('CREATE TABLE IF NOT EXISTS community_likes(post_id BIGINT NOT NULL,user_id BIGINT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(post_id,user_id))')
  c.execute('CREATE TABLE IF NOT EXISTS community_rewards(post_id BIGINT PRIMARY KEY,user_id BIGINT NOT NULL,like_threshold INTEGER NOT NULL,months INTEGER NOT NULL DEFAULT 1,status TEXT NOT NULL DEFAULT \'pending\',created_at TEXT NOT NULL,reviewed_at TEXT)')
  c.execute(f'''CREATE TABLE IF NOT EXISTS community_messages(id {identity},user_id BIGINT NOT NULL REFERENCES users(id),sender TEXT NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL,read INTEGER NOT NULL DEFAULT 0)''')
+ if postgres:
+  c.execute('ALTER TABLE community_messages ADD COLUMN IF NOT EXISTS read INTEGER NOT NULL DEFAULT 0')
+ elif 'read' not in {r['name'] for r in c.execute('PRAGMA table_info(community_messages)')}: 
+  c.execute('ALTER TABLE community_messages ADD COLUMN read INTEGER NOT NULL DEFAULT 0')
  c.execute('CREATE INDEX IF NOT EXISTS community_message_user ON community_messages(user_id,id)')
  c.execute(f'''CREATE TABLE IF NOT EXISTS community_admin_posts(id {identity},admin_name TEXT NOT NULL,body TEXT NOT NULL,hidden INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)''')
  c.execute('CREATE TABLE IF NOT EXISTS community_admin_likes(post_id BIGINT NOT NULL,admin_name TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(post_id,admin_name))')
