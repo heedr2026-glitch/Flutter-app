@@ -104,14 +104,6 @@ class _CommunityPageState extends State<CommunityPage> {
           backgroundColor: const Color(0xFF111B35),
           foregroundColor: Colors.white,
           actions: [
-            IconButton(
-              tooltip: 'محادثة مباشرة مع خدوم',
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const CommunityChatPage()),
-              ),
-              icon: const Icon(Icons.chat_bubble_outline),
-            ),
             IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
           ],
         ),
@@ -263,9 +255,12 @@ class _CommunityChatPageState extends State<CommunityChatPage> {
     final scope = await BranchPreferences.getInstance();
     final api = KhdoomCloudApi(
       scope: scope,
-      baseUrl: scope.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+      baseUrl:
+          scope.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
     );
-    api.token = await _CommunityPageState._storage.read(key: 'cloud_session_token');
+    api.token = await _CommunityPageState._storage.read(
+      key: 'cloud_session_token',
+    );
     return api;
   }
 
@@ -298,10 +293,17 @@ class _CommunityChatPageState extends State<CommunityChatPage> {
   }
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   @override
-  void dispose() { _input.dispose(); _api?.close(); super.dispose(); }
+  void dispose() {
+    _input.dispose();
+    _api?.close();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -319,7 +321,10 @@ class _CommunityChatPageState extends State<CommunityChatPage> {
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.all(10),
-                child: Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+                child: Text(
+                  _error!,
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
               ),
             Expanded(
               child: _loading
@@ -328,20 +333,29 @@ class _CommunityChatPageState extends State<CommunityChatPage> {
                       padding: const EdgeInsets.all(12),
                       itemCount: _messages.length,
                       itemBuilder: (_, i) {
-                        final m = Map<String, dynamic>.from(_messages[i] as Map);
+                        final m = Map<String, dynamic>.from(
+                          _messages[i] as Map,
+                        );
                         final admin = m['sender'] == 'admin';
                         return Align(
-                          alignment: admin ? Alignment.centerLeft : Alignment.centerRight,
+                          alignment: admin
+                              ? Alignment.centerLeft
+                              : Alignment.centerRight,
                           child: Container(
                             margin: const EdgeInsets.only(bottom: 8),
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: admin ? const Color(0xFF15345F) : const Color(0xFF087CAB),
+                              color: admin
+                                  ? const Color(0xFF15345F)
+                                  : const Color(0xFF087CAB),
                               borderRadius: BorderRadius.circular(14),
                             ),
                             child: Text(
                               m['body']?.toString() ?? '',
-                              style: const TextStyle(color: Colors.white, fontSize: 16),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                              ),
                             ),
                           ),
                         );

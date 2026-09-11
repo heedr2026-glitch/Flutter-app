@@ -44,7 +44,7 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
   if method=='POST':
    body=str(data.get('body','')).strip()
    if not 1<=len(body)<=3000: raise error(400,'اكتب منشورًا من 1 إلى 3000 حرف')
-   c.execute('INSERT INTO community_admin_posts(admin_name,body,created_at) VALUES(?,?,?)',(str((actor or {}).get('name','إدارة خدوم'))[:120],body,admin.stamp()))
+   c.execute('INSERT INTO community_admin_posts(admin_name,body,created_at) VALUES(?,?,?)',('إدارة خدوم',body,admin.stamp()))
    return {'saved':True}
   raise error(405,'الإجراء غير متاح')
  if kind=='likes' and len(part)==2 and method=='POST':
@@ -56,7 +56,7 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
   if not post: raise error(404,'المنشور غير موجود')
   reward=str(data.get('kind','days')); amount=int(data.get('amount',1) or 1)
   if reward not in ('days','ai') or amount<1 or amount>3650: raise error(400,'بيانات المكافأة غير صحيحة')
-  c.execute('INSERT INTO platform_rewards(organization_id,kind,amount,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(post['organization_id'],reward,amount,'مكافأة منشور مجتمع خدوم',str((actor or {}).get('name','إدارة خدوم')),stamp()))
+  c.execute('INSERT INTO platform_rewards(organization_id,kind,amount,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(post['organization_id'],reward,amount,'مكافأة منشور مجتمع خدوم',str((actor or {}).get('name','إدارة خدوم')),admin.stamp()))
   return {'saved':True}
  if kind not in ('posts','comments','reports','users','likes'): raise error(404,'القسم غير موجود')
  if len(part)==2:
@@ -94,8 +94,8 @@ def client(h,method,s):
    try: page=max(1,int(parse_qs(urlparse(h.path).query).get('page',['1'])[0]))
    except ValueError:raise s.ApiError(400,'رقم الصفحة غير صحيح')
    result=admin.paged(c,'SELECT p.id,p.body,p.created_at,u.name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id) like_count','FROM community_posts p JOIN users u ON u.id=p.user_id WHERE p.hidden=0 AND u.organization_id=?',[user['organization_id']],'p.id DESC',page)
-   admin_posts=admin.rows(c,'SELECT -p.id id,p.body,p.created_at,p.admin_name name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=-p.id) like_count FROM community_admin_posts p WHERE p.hidden=0 ORDER BY p.id DESC LIMIT 100')
-   result['items']=admin_posts+result['items']; result['total']+=len(admin_posts)
+   admin_posts=admin.rows(c,"SELECT -p.id id,p.body,p.created_at,'إدارة خدوم' name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=-p.id) like_count FROM community_admin_posts p WHERE p.hidden=0 ORDER BY p.id DESC LIMIT 100")
+   result['items']=admin_posts+result['items']; result['items'].sort(key=lambda item: (item.get('created_at') or '', int(item.get('id') or 0)), reverse=True); result['total']+=len(admin_posts)
   elif route=='posts' and method=='POST':
    body=str(h._body().get('body','')).strip()
    if not 1<=len(body)<=3000:raise s.ApiError(400,'المنشور من 1 إلى 3000 حرف')
