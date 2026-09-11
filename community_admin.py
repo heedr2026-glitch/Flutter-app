@@ -81,11 +81,11 @@ def client(h,method,s):
  route=path[len('/api/community/'):]
  with s.db() as c:
   user=h._user(c)
-  # The live service uses PostgreSQL. Keep the request-time safety migration
-  # on the same SQL dialect as startup migration; SQLite's AUTOINCREMENT
-  # syntax causes every community-chat request to fail with HTTP 500 on
-  # PostgreSQL.
-  migrate(c, postgres=isinstance(c, s.PostgresConnection))
+  # Startup migration already creates these tables on PostgreSQL. Avoid
+  # running DDL inside every authenticated chat request; SQLite keeps the
+  # lightweight safety migration for local/legacy instances.
+  if not isinstance(c, s.PostgresConnection):
+   migrate(c)
   if route=='posts' and method=='GET':
    try: page=max(1,int(parse_qs(urlparse(h.path).query).get('page',['1'])[0]))
    except ValueError:raise s.ApiError(400,'رقم الصفحة غير صحيح')
