@@ -34,7 +34,7 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
    if method=='POST':
     body=str(data.get('body','')).strip()
     if not 1<=len(body)<=3000: raise error(400,'اكتب رسالة من 1 إلى 3000 حرف')
-    c.execute('INSERT INTO community_messages(user_id,sender,body,created_at,read) VALUES(?,?,?,?,1)',(user_id,'admin',body,stamp()))
+    c.execute('INSERT INTO community_messages(user_id,sender,body,created_at,read) VALUES(?,?,?,?,1)',(user_id,'admin',body,admin.stamp()))
     return {'saved':True}
   raise error(404,'محادثة المجتمع غير موجودة')
  if kind=='admin-posts':
@@ -44,12 +44,12 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
   if method=='POST':
    body=str(data.get('body','')).strip()
    if not 1<=len(body)<=3000: raise error(400,'اكتب منشورًا من 1 إلى 3000 حرف')
-   c.execute('INSERT INTO community_admin_posts(admin_name,body,created_at) VALUES(?,?,?)',(str((actor or {}).get('name','إدارة خدوم'))[:120],body,stamp()))
+   c.execute('INSERT INTO community_admin_posts(admin_name,body,created_at) VALUES(?,?,?)',(str((actor or {}).get('name','إدارة خدوم'))[:120],body,admin.stamp()))
    return {'saved':True}
   raise error(405,'الإجراء غير متاح')
  if kind=='likes' and len(part)==2 and method=='POST':
   post_id=int(part[1]); name=str((actor or {}).get('name','إدارة خدوم'))[:120]
-  c.execute('INSERT INTO community_admin_likes(post_id,admin_name,created_at) VALUES(?,?,?) ON CONFLICT(post_id,admin_name) DO NOTHING',(post_id,name,stamp()))
+  c.execute('INSERT INTO community_admin_likes(post_id,admin_name,created_at) VALUES(?,?,?) ON CONFLICT(post_id,admin_name) DO NOTHING',(post_id,name,admin.stamp()))
   return {'saved':True}
  if kind=='rewards' and len(part)==2 and method=='POST':
   post_id=int(part[1]); post=c.execute('SELECT p.user_id,u.organization_id FROM community_posts p JOIN users u ON u.id=p.user_id WHERE p.id=?',(post_id,)).fetchone()
