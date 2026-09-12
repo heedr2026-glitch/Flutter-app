@@ -13,8 +13,15 @@ def configs():
     try:
         items = json.loads(os.environ.get("KHDOOM_WHATSAPP_CONFIG", "[]"))
         if not isinstance(items, list): raise ValueError()
+        # Keep the secret JSON focused on credentials while allowing Meta's
+        # current WABA/phone identifiers to be corrected without editing or
+        # exposing the access token and app secret.
+        waba_override = os.environ.get("KHDOOM_WHATSAPP_WABA_ID", "").strip()
+        phone_override = os.environ.get("KHDOOM_WHATSAPP_PHONE_NUMBER_ID", "").strip()
         orgs, phones = set(), set()
         for c in items:
+            if waba_override: c["waba_id"] = waba_override
+            if phone_override: c["phone_number_id"] = phone_override
             c["organization_id"] = int(c["organization_id"])
             if c["organization_id"] <= 0 or c["organization_id"] in orgs: raise ValueError()
             for k in ("token", "app_secret", "verify_token", "phone_number_id", "waba_id", "api_version"):
