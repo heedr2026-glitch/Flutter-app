@@ -86,6 +86,15 @@ def ingest(c, cfg, payload):
         raise Error(400, "حدث غير صحيح")
     matched = inserted = 0
     for entry in payload.get("entry", []):
+        incoming_entry_id = str(entry.get("id", ""))
+        incoming_phone_ids = sorted({
+            str(change.get("value", {}).get("metadata", {}).get("phone_number_id", ""))
+            for change in entry.get("changes", [])
+            if isinstance(change, dict)
+        } - {""})
+        if incoming_entry_id != cfg["waba_id"] or incoming_phone_ids and cfg["phone_number_id"] not in incoming_phone_ids:
+            print("WhatsApp ingest identifiers entry_id=%s phone_ids=%s expected_waba=%s expected_phone=%s" % (
+                incoming_entry_id, incoming_phone_ids, cfg["waba_id"], cfg["phone_number_id"]))
         if str(entry.get("id")) != cfg["waba_id"]: continue
         for change in entry.get("changes", []):
             value = change.get("value", {})
