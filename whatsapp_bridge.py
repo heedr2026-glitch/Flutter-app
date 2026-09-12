@@ -202,6 +202,9 @@ def handle(h, method, db, on_inbound=None):
             user = h._user(c)
             if user["role"] != "admin": raise Error(403,"إدارة واتساب متاحة لمسؤول المؤسسة فقط")
             initialize(c); org = user["organization_id"]
+            package_row = c.execute("SELECT package FROM subscriptions WHERE organization_id=?", (org,)).fetchone()
+            if not package_row or str(package_row["package"]).lower() != "vip":
+                raise Error(403, "خدمة واتساب متاحة في باقة VIP فقط")
             if path == "/api/whatsapp/status" and method == "GET": result = status(c,org)
             elif path == "/api/whatsapp/messages" and method == "GET":
                 result = {"messages":[dict(r) for r in c.execute(
