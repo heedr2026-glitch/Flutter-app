@@ -160,6 +160,50 @@ if psycopg is not None:
 AI_AGENT_SERVICE = ai_core.AgentService()
 
 
+def whatsapp_auto_reply(connection: Any, cfg: dict[str, Any], peer: str, message: str, meta_id: str) -> None:
+    """Route a newly received WhatsApp message through the reception employee."""
+    organization_id = int(cfg["organization_id"])
+    branch = str(cfg.get("branch_id") or "main")
+    user = connection.execute(
+        "SELECT id FROM users WHERE organization_id=? AND role='admin' AND active=1 ORDER BY id LIMIT 1",
+        (organization_id,),
+    ).fetchone()
+    if user is None:
+        print("WhatsApp auto-reply skipped=no_active_admin", flush=True)
+        return
+    package, daily_limit, used = ai_allowance(connection, organization_id, enforce=False)
+    if package not in ("basic", "vip"):
+        print("WhatsApp auto-reply skipped=package", flush=True)
+        return
+    if used >= daily_limit:
+        print("WhatsApp auto-reply skipped=daily_limit", flush=True)
+        return
+    session = reception_conversations.session_for(connection, organization_id, user["id"], branch)
+    history = []
+    if session is not None:
+        rows = connection.execute(
+            "SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12",
+            (session["id"],),
+        ).fetchall()
+        history = [{"role": row["sender"], "text": str(row["message"])} for row in reversed(rows)]
+    training = ai_training_text(connection, organization_id, "reception")
+    reply = ai_agent_reply(
+        connection, organization_id, "reception", message,
+        user_id=user["id"], session_id=session["id"] if session else None,
+        branch_id=branch, history=history,
+        runtime={"approved_training": training, "source": "whatsapp"},
+    )
+    connection.execute(
+        "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
+        (organization_id, user["id"], "whatsapp_reception_reply", now(), branch),
+    )
+    client_id = "waauto_" + re.sub(r"[^A-Za-z0-9_-]", "", meta_id)[:80]
+    result = whatsapp_bridge.send(connection, organization_id, {
+        "to": peer, "message": reply, "clientMessageId": client_id,
+    })
+    print("WhatsApp auto-reply state=%s" % result.get("state", "unknown"), flush=True)
+
+
 def ai_agent_reply(
     connection: Any,
     organization_id: int,
@@ -313,6 +357,26 @@ def _appointment_chat_reply(connection: Any, organization_id: int, session: Any,
     if state == "closed":
         state = "idle"
         context = {"customer_name": known_name} if known_name else {}
+    # A new booking starts a fresh request while retaining the customer's
+    # known name. Ask for contact details before collecting the appointment
+    # slot so the flow does not silently skip the required phone field.
+    if appointment_context.explicit_new(message) and state == "idle":
+        context = {
+            "original_request": message,
+            "customer_name": known_name,
+            "request_type": "طلب عميل",
+        }
+        context = {key: value for key, value in context.items() if value}
+        maintenance = service_maintenance_status(connection, organization_id, 'appointments')
+        if maintenance['active']:
+            return maintenance['message'] + ' — لا يمكن إرسال حجز جديد الآن.'
+        state = "await_phone"
+        connection.execute(
+            "UPDATE chat_sessions SET state=?,context_json=?,updated_at=? WHERE id=?",
+            (state, json.dumps(context, ensure_ascii=False), now(), session["id"]),
+        )
+        name = f" يا {known_name}" if known_name else ""
+        return f"تمام{name}، وش رقم التواصل لإكمال الموعد؟"
     # ترحيل الحجوزات القديمة إلى المسار المختصر بدل إعادة نموذج الأسئلة الطويل.
     if state in {"await_name", "await_type"}:
         state = "await_datetime"
@@ -1432,7 +1496,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if community_admin.client(self, method, __import__('sys').modules[__name__]):
             return
-        if whatsapp_bridge.handle(self, method, db):
+        if whatsapp_bridge.handle(self, method, db, on_inbound=whatsapp_auto_reply):
             return
         with db() as subscription_connection:
             downgrade_expired_subscriptions(subscription_connection)

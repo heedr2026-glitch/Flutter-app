@@ -81,7 +81,7 @@ def status(c, org):
       "display_phone_number": result.get("display_phone_number", ""), "webhook_received": bool(received),
       "detail": "تم التحقق من الهاتف لدى ميتا. " + ("وصل إشعار موقّع من ميتا." if received else "بانتظار أول رسالة واردة للتحقق من الاستقبال.")}
 
-def ingest(c, cfg, payload):
+def ingest(c, cfg, payload, on_inbound=None):
     if not isinstance(payload, dict) or payload.get("object") != "whatsapp_business_account":
         raise Error(400, "حدث غير صحيح")
     matched = inserted = 0
@@ -113,7 +113,13 @@ def ingest(c, cfg, payload):
                   (id,organization_id,phone_number_id,peer,direction,body,timestamp,state,meta_id,branch_id)
                   VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
                   (uuid.uuid4().hex,cfg["organization_id"],cfg["phone_number_id"],peer,"inbound",body[:10000],stamp,"received",mid,cfg.get("branch_id")))
-                inserted += max(0, cursor.rowcount)
+                if cursor.rowcount:
+                    inserted += 1
+                    if on_inbound is not None:
+                        try:
+                            on_inbound(c, cfg, peer, body[:10000], mid)
+                        except Exception as error:
+                            print("WhatsApp auto-reply failed=%s" % type(error).__name__, flush=True)
             for s in value.get("statuses", []):
                 ranks = {"sending":0,"unknown":0,"accepted":1,"sent":2,"failed":2,"delivered":3,"read":4}
                 state = s.get("status")
@@ -160,7 +166,7 @@ def send(c, org, data):
     c.commit()
     return dict(c.execute("SELECT * FROM whatsapp_messages WHERE id=?",(mid,)).fetchone())
 
-def handle(h, method, db):
+def handle(h, method, db, on_inbound=None):
     path = urlparse(h.path).path.rstrip("/")
     if path != "/webhooks/whatsapp" and not path.startswith("/api/whatsapp/"): return False
     try:
@@ -188,7 +194,7 @@ def handle(h, method, db):
                 payload = json.loads(raw)
                 with db() as c:
                     initialize(c)
-                    for cfg in valid: ingest(c,cfg,payload)
+                    for cfg in valid: ingest(c,cfg,payload,on_inbound=on_inbound)
                     c.commit()
             except (ValueError,TypeError,AttributeError): raise Error(400,"حدث غير صحيح")
             h._send(200,{"received":True}); return True
