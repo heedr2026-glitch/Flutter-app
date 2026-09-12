@@ -62,6 +62,7 @@ def graph(cfg, path, body=None):
             return json.load(response)
     except HTTPError as e:
         code = e.code
+        print("WhatsApp Graph API rejected request status=%s" % code, flush=True)
         e.close()
         raise Error(502, "رفضت ميتا الطلب؛ تحقق من الرمز والصلاحيات ورقم الهاتف (HTTP %s)" % code)
     except (URLError, TimeoutError, ValueError, OSError):
