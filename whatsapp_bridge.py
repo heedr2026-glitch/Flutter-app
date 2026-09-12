@@ -119,7 +119,9 @@ def ingest(c, cfg, payload, on_inbound=None):
                         try:
                             on_inbound(c, cfg, peer, body[:10000], mid)
                         except Exception as error:
-                            print("WhatsApp auto-reply failed=%s" % type(error).__name__, flush=True)
+                            detail = getattr(error, "message", str(error))
+                            print("WhatsApp auto-reply failed=%s detail=%s" % (
+                                type(error).__name__, str(detail)[:240]), flush=True)
             for s in value.get("statuses", []):
                 ranks = {"sending":0,"unknown":0,"accepted":1,"sent":2,"failed":2,"delivered":3,"read":4}
                 state = s.get("status")
