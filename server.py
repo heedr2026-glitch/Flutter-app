@@ -171,10 +171,10 @@ def whatsapp_auto_reply(connection: Any, cfg: dict[str, Any], peer: str, message
     if user is None:
         print("WhatsApp auto-reply skipped=no_active_admin", flush=True)
         return
+    # WhatsApp uses the same daily allowance as the in-app receptionist. The
+    # free plan intentionally remains limited by ai_allowance (currently five
+    # replies/day), but it must not be silently restricted to in-app replies.
     package, daily_limit, used = ai_allowance(connection, organization_id, enforce=False)
-    if package not in ("basic", "vip"):
-        print("WhatsApp auto-reply skipped=package", flush=True)
-        return
     if used >= daily_limit:
         print("WhatsApp auto-reply skipped=daily_limit", flush=True)
         return
