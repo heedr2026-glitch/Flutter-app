@@ -271,7 +271,10 @@ class ResponsesClient:
         self.transport = transport or self._http
 
     def _http(self, payload: dict[str, Any]) -> dict[str, Any]:
-        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        # Render stores the production credential under the Khdoom-specific
+        # name; keep the standard name as a local/development fallback.
+        api_key = (os.environ.get("KHDOOM_AI_API_KEY", "").strip()
+                   or os.environ.get("OPENAI_API_KEY", "").strip())
         if not api_key:
             raise AIServiceError(503, "خدمة AI لم تُفعّل في إعدادات الخادم بعد")
         try:

@@ -1888,7 +1888,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             whatsapp_configured = any(os.environ.get(name, "").strip() for name in ("KHDOOM_WHATSAPP_CONFIG",))
             calls_configured = any(os.environ.get(name, "").strip() for name in ("KHDOOM_CALLS_API_KEY", "TWILIO_AUTH_TOKEN", "TWILIO_ACCOUNT_SID"))
             integrations = [
-                {"name": "OpenAI", "status": "maintenance" if ai_maintenance else ("ready" if os.environ.get("OPENAI_API_KEY", "").strip() else "not_connected"), "detail": ("النموذج: " + ai_core.PRIMARY_MODEL) if os.environ.get("OPENAI_API_KEY", "").strip() else "لم يُضف مفتاح الربط بعد."},
+                {"name": "OpenAI", "status": "maintenance" if ai_maintenance else ("ready" if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "not_connected"), "detail": ("النموذج: " + ai_core.PRIMARY_MODEL) if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "لم يُضف مفتاح الربط بعد."},
                 {"name": "شات العملاء", "status": "maintenance" if chat_maintenance else "ready", "detail": "قناة الشات العامة متاحة للمؤسسات." if not chat_maintenance else emergency_by_service["chat"].get("message", "الخدمة تحت الصيانة مؤقتًا")},
                 {"name": "واتساب", "status": "unverified" if whatsapp_configured else "not_connected", "detail": "إعدادات موجودة؛ تحقق من الاتصال من صفحة واتساب." if whatsapp_configured else "مرحلة لاحقة — لم يتم ربط واتساب حتى الآن."},
                 {"name": "الاتصال", "status": "ready" if calls_configured else "not_connected", "detail": "تم العثور على إعدادات الربط." if calls_configured else "مرحلة لاحقة — لم يتم ربط خدمة الاتصال حتى الآن."},
