@@ -566,11 +566,11 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
 
   Widget _avatar(String label, {double size = 48}) => CircleAvatar(
     radius: size / 2,
-    backgroundColor: const Color(0xFFB7D7C9),
+    backgroundColor: const Color(0xFF1E3A8A),
     child: Text(
       label.isEmpty ? '؟' : label.substring(0, 1),
       style: TextStyle(
-        color: const Color(0xFF075E54),
+        color: const Color(0xFF7DD3FC),
         fontSize: size * .36,
         fontWeight: FontWeight.w700,
       ),
@@ -578,7 +578,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
   );
 
   PreferredSizeWidget _whatsAppAppBar({required bool conversation}) => AppBar(
-    backgroundColor: const Color(0xFF075E54),
+    backgroundColor: const Color(0xFF111B35),
     foregroundColor: Colors.white,
     elevation: 0,
     titleSpacing: conversation ? 0 : 16,
@@ -643,19 +643,21 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
   Widget _chatList(Map<String, Map<String, dynamic>> peers) {
     final entries = peers.entries.toList();
     return Container(
-      color: const Color(0xFFF7F8F8),
+      color: const Color(0xFF0B1020),
       child: Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
             child: TextField(
               controller: _search,
+              style: const TextStyle(color: Colors.white),
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
                 hintText: 'بحث في المحادثات',
-                prefixIcon: const Icon(Icons.search, color: Color(0xFF667781)),
+                prefixIcon: const Icon(Icons.search, color: Color(0xFF7DD3FC)),
                 filled: true,
-                fillColor: const Color(0xFFEFF2F3),
+                fillColor: const Color(0xFF172554),
+                hintStyle: const TextStyle(color: Color(0xFF94A3B8)),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(24),
                   borderSide: BorderSide.none,
@@ -678,17 +680,18 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                             color: Colors.grey.shade400,
                           ),
                           const SizedBox(height: 12),
-                          const Text(
-                            'لا توجد محادثات بعد',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
+                            const Text(
+                              'لا توجد محادثات بعد',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
                             ),
                           ),
                           const SizedBox(height: 6),
                           Text(
                             'ستظهر هنا رسائل العملاء الجديدة',
-                            style: TextStyle(color: Colors.grey.shade600),
+                            style: const TextStyle(color: Color(0xFF94A3B8)),
                           ),
                         ],
                       ),
@@ -715,6 +718,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                                 style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
+                                  color: Colors.white,
                                 ),
                               ),
                             ),
@@ -722,7 +726,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                               _messageTime(message),
                               style: const TextStyle(
                                 fontSize: 12,
-                                color: Color(0xFF667781),
+                                color: Color(0xFF94A3B8),
                               ),
                             ),
                           ],
@@ -743,7 +747,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  color: Color(0xFF667781),
+                                  color: Color(0xFFCBD5E1),
                                 ),
                               ),
                             ),
@@ -789,7 +793,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
         margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
         padding: const EdgeInsets.fromLTRB(10, 7, 8, 6),
         decoration: BoxDecoration(
-          color: outbound ? const Color(0xFFD9FDD3) : Colors.white,
+          color: outbound ? const Color(0xFF123A5A) : const Color(0xFF172554),
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(9),
             topRight: const Radius.circular(9),
@@ -811,13 +815,13 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
             Flexible(
               child: Text(
                 message['body']?.toString() ?? 'مرفق',
-                style: const TextStyle(fontSize: 16, height: 1.35),
+                style: const TextStyle(color: Colors.white, fontSize: 16, height: 1.35),
               ),
             ),
             const SizedBox(width: 8),
             Text(
               _messageTime(message),
-              style: const TextStyle(fontSize: 11, color: Color(0xFF667781)),
+              style: const TextStyle(fontSize: 11, color: Color(0xFFCBD5E1)),
             ),
             if (outbound) ...[
               const SizedBox(width: 3),
@@ -825,8 +829,8 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                 message['state'] == 'delivered' ? Icons.done_all : Icons.done,
                 size: 16,
                 color: message['state'] == 'delivered'
-                    ? const Color(0xFF53BDEB)
-                    : const Color(0xFF667781),
+                    ? const Color(0xFF38BDF8)
+                    : const Color(0xFF94A3B8),
               ),
             ],
           ],
@@ -838,7 +842,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
   Widget _composer() => SafeArea(
     top: false,
     child: Container(
-      color: const Color(0xFFF0F2F5),
+      color: const Color(0xFF111B35),
       padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
@@ -847,7 +851,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
             onPressed: () {},
             icon: const Icon(
               Icons.emoji_emotions_outlined,
-              color: Color(0xFF54656F),
+              color: Color(0xFF7DD3FC),
             ),
             tooltip: 'رموز تعبيرية',
           ),
@@ -855,19 +859,20 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
             onPressed: widget.peer == null
                 ? null
                 : () => _pickAndSendImage(widget.peer!, ImageSource.gallery),
-            icon: const Icon(Icons.attach_file, color: Color(0xFF54656F)),
+            icon: const Icon(Icons.attach_file, color: Color(0xFF7DD3FC)),
             tooltip: 'إرفاق',
           ),
           IconButton(
             onPressed: widget.peer == null
                 ? null
                 : () => _pickAndSendImage(widget.peer!, ImageSource.camera),
-            icon: const Icon(Icons.camera_alt_outlined, color: Color(0xFF54656F)),
+            icon: const Icon(Icons.camera_alt_outlined, color: Color(0xFF7DD3FC)),
             tooltip: 'تصوير وإرسال',
           ),
           Expanded(
             child: TextField(
               controller: _input,
+              style: const TextStyle(color: Colors.white),
               minLines: 1,
               maxLines: 5,
               maxLength: 4096,
@@ -875,7 +880,8 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
               decoration: InputDecoration(
                 hintText: 'اكتب رسالة',
                 filled: true,
-                fillColor: Colors.white,
+                fillColor: const Color(0xFF172554),
+                hintStyle: const TextStyle(color: Color(0xFF94A3B8)),
                 counterText: '',
                 contentPadding: const EdgeInsets.symmetric(
                   horizontal: 16,
