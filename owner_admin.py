@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
 
-PERMISSIONS = ['organizations.view','organizations.edit','packages','codes','offers','usage','security','support','ads','community','rewards','suspend','admins','settings']
+PERMISSIONS = ['organizations.view','organizations.edit','packages','codes','offers','usage','security','support','ads','community','rewards','suspend','admins','settings','integrations']
 ROLES = {'owner': PERMISSIONS, 'system': [p for p in PERMISSIONS if p != 'admins'], 'manager': [p for p in PERMISSIONS if p != 'admins'], 'support': ['organizations.view','organizations.edit','suspend','support'], 'technician': ['organizations.view','organizations.edit','usage','security','support','settings'], 'accounting': ['organizations.view','packages','codes','offers','usage'], 'employee': ['organizations.view','support'], 'ads': ['ads'], 'community': ['community']}
 def stamp(): return datetime.now(timezone.utc).isoformat()
 def rows(c,sql,args=()): return [dict(r) for r in c.execute(sql,args).fetchall()]
@@ -30,7 +30,20 @@ def migrate(c,postgres=False):
  f'''platform_rewards(id {identity},organization_id BIGINT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
  '''platform_daily_credits(organization_id BIGINT NOT NULL,day TEXT NOT NULL,units INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(organization_id,day))''',
  f'''platform_credit_ledger(id {identity},organization_id BIGINT NOT NULL,service TEXT NOT NULL,units INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''']
+ schemas += [
+  '''call_connections(organization_id BIGINT PRIMARY KEY,phone_number TEXT NOT NULL DEFAULT '',activity TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'not_connected',last_error TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL)''',
+  f'''call_logs(id {identity},organization_id BIGINT NOT NULL,caller_phone TEXT NOT NULL DEFAULT '',caller_name TEXT NOT NULL DEFAULT '',direction TEXT NOT NULL DEFAULT 'inbound',status TEXT NOT NULL DEFAULT 'ended',started_at TEXT NOT NULL,duration_seconds INTEGER NOT NULL DEFAULT 0,transcript TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',request_text TEXT NOT NULL DEFAULT '',appointment TEXT NOT NULL DEFAULT '',follow_up INTEGER NOT NULL DEFAULT 0,human_handoff INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
+ f'''technical_incidents(id {identity},service TEXT NOT NULL,organization_id BIGINT,problem TEXT NOT NULL,root_cause TEXT NOT NULL,proposal TEXT NOT NULL,severity TEXT NOT NULL DEFAULT 'medium',test_status TEXT NOT NULL DEFAULT 'not_tested',deployment_status TEXT NOT NULL DEFAULT 'proposed',affected_organizations INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,approved_by TEXT NOT NULL DEFAULT '')'''
+  ,f'''platform_integrations(id {identity},key TEXT UNIQUE NOT NULL,name TEXT NOT NULL,category TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'planned',required_permission TEXT NOT NULL,provider_configured INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL)'''
+  ,f'''attendance_policies(organization_id BIGINT PRIMARY KEY,enabled INTEGER NOT NULL DEFAULT 0,default_radius_m INTEGER NOT NULL DEFAULT 100,require_device_biometric INTEGER NOT NULL DEFAULT 0,allow_remote INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL)'''
+  ,'''attendance_branch_locations(organization_id BIGINT NOT NULL,branch_id TEXT NOT NULL,latitude REAL,longitude REAL,radius_m INTEGER NOT NULL DEFAULT 100,updated_at TEXT NOT NULL,PRIMARY KEY(organization_id,branch_id))'''
+  ,f'''attendance_events(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT NOT NULL,branch_id TEXT NOT NULL,event_type TEXT NOT NULL,occurred_at TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'future',verification TEXT NOT NULL DEFAULT 'not_enabled',status TEXT NOT NULL DEFAULT 'planned',note TEXT NOT NULL DEFAULT '')'''
+  ,f'''attendance_exceptions(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT NOT NULL,branch_id TEXT,kind TEXT NOT NULL,starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,approved_by TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '')'''
+  ,f'''attendance_devices(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT NOT NULL,device_id TEXT NOT NULL,device_name TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'planned',last_seen_at TEXT NOT NULL DEFAULT '',UNIQUE(organization_id,user_id,device_id))'''
+ ]
  for schema in schemas: c.execute('CREATE TABLE IF NOT EXISTS '+schema)
+ for key,name,category,permission,notes in [('renewals','التجديدات والخدمات الحكومية','خدمات حكومية','integrations.renewals','جاهز لإضافة API رسمي مستقبلًا؛ التنبيهات فقط حاليًا'),('vehicles','تتبع المركبات','مركبات','integrations.vehicles','يحتاج جهازًا أو مزود تتبع معتمدًا'),('attendance','الحضور والبصمة','الموظفون','integrations.attendance','يرتبط بملف الموظف عند توفر جهاز أو API'),('cameras','كاميرات المؤسسة','أمن المؤسسة','integrations.cameras','الوصول مقيد بصلاحية مستقلة وغير مفعّل حاليًا'),('payments','بوابات الدفع','فوترة','integrations.payments','يحتاج مزود دفع رسمي'),('communications','مزودو الاتصالات','اتصالات','integrations.communications','يحتاج قناة خادم معتمدة')]:
+  c.execute('INSERT INTO platform_integrations(key,name,category,status,required_permission,provider_configured,notes,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(key) DO NOTHING',(key,name,category,'planned',permission,0,notes,stamp()))
  for p,m,y,n in [('free',0,0,5),('basic',49,449,30),('vip',99,899,100)]:
   monthly=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=1 AND bonus_months=0 ORDER BY active DESC,id LIMIT 1',(p,)).fetchone()
   yearly=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=12 AND bonus_months=0 ORDER BY active DESC,id LIMIT 1',(p,)).fetchone()
@@ -40,7 +53,7 @@ def migrate(c,postgres=False):
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
- for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
+ for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
 
 def permission(path,method):
  p=path.removeprefix('/owner/api/')
@@ -53,7 +66,7 @@ def permission(path,method):
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('credits'): return 'usage'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
-  for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
+  for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('technical-ai','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
    if p.startswith(prefix): return perm
   return 'admins'
  if p.startswith('security/accounts/') and method != 'GET': return 'suspend'
@@ -121,10 +134,14 @@ def credits_summary(c,org,s):
  wa_month=0; wa_today=0
  if table_exists(c,'whatsapp_messages',s):
   wa_month=c.execute("SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=? AND timestamp>=?",(org,int(datetime.fromisoformat(month).replace(tzinfo=timezone.utc).timestamp()))).fetchone()['n']; wa_today=c.execute("SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=? AND timestamp>=?",(org,int(datetime.fromisoformat(today).replace(tzinfo=timezone.utc).timestamp()))).fetchone()['n']
- usage={'ai':int(ai_month or 0),'whatsapp':int(wa_month or 0),'calls':0}; daily={'ai':int(ai_today or 0),'whatsapp':int(wa_today or 0),'calls':0}
+ calls_month=0; calls_today=0
+ if table_exists(c,'call_logs',s):
+  calls_month=math.ceil(int((c.execute('SELECT COALESCE(SUM(duration_seconds),0) n FROM call_logs WHERE organization_id=? AND started_at>=?',(org,month)).fetchone() or {'n':0})['n'] or 0)/60); calls_today=math.ceil(int((c.execute('SELECT COALESCE(SUM(duration_seconds),0) n FROM call_logs WHERE organization_id=? AND started_at>=?',(org,today)).fetchone() or {'n':0})['n'] or 0)/60)
+ usage={'ai':int(ai_month or 0),'whatsapp':int(wa_month or 0),'calls':int(calls_month)}; daily={'ai':int(ai_today or 0),'whatsapp':int(wa_today or 0),'calls':int(calls_today)}
  base={'ai':int(package.get('ai_daily') or 0)*30,'whatsapp':int(package.get('whatsapp_units') or 0),'calls':int(package.get('calls_units') or 0)}
  remaining={x:max(0,base[x]+adjustments[x]-usage[x]) for x in SERVICE_LABELS}; cost={x:round(usage[x]*SERVICE_COSTS[x],2) for x in SERVICE_LABELS}; total_cost=round(sum(cost.values()),2); monthly=float(package.get('monthly') or 0)
- return {'package':package.get('package','free'),'subscription_value':monthly,'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjustments[x],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledger}
+ call_link=c.execute('SELECT status,phone_number,last_error FROM call_connections WHERE organization_id=?',(org,)).fetchone() if table_exists(c,'call_connections',s) else None
+ return {'package':package.get('package','free'),'subscription_value':monthly,'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjustments[x],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'calls_status':call_link['status'] if call_link else 'not_connected','calls_phone':call_link['phone_number'] if call_link else None,'calls_error':call_link['last_error'] if call_link else '','total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledger}
 ORG_FROM='FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id'
 ORG_SELECT="SELECT o.id,o.name,o.phone,o.created_at,COALESCE(s.package,'free') package,s.starts_at,s.expires_at,COALESCE(z.suspended,0) suspended,(SELECT u.name FROM users u WHERE u.organization_id=o.id AND u.role='admin' ORDER BY u.id LIMIT 1) owner_name,(SELECT MAX(last_seen_at) FROM sessions se JOIN users u ON u.id=se.user_id WHERE u.organization_id=o.id) last_login"
 
@@ -168,16 +185,56 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='summary' and m=='GET':
   out={}; today=stamp()[:10]; month=today[:7]+'-01'; p=a['permissions']
   if 'organizations.view' in p:
-   out['organizations']=scalar(c,'SELECT COUNT(*) n FROM organizations'); out['packages']=rows(c,"SELECT COALESCE(s.package,'free') package,COUNT(*) total FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id GROUP BY s.package")
+   out['organizations']=scalar(c,'SELECT COUNT(*) n FROM organizations'); out['activeSubscribers']=scalar(c,"SELECT COUNT(*) n FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id WHERE COALESCE(z.suspended,0)=0 AND (s.expires_at IS NULL OR s.expires_at>?)",(stamp(),)); out['expiringSubscriptions']=scalar(c,"SELECT COUNT(*) n FROM subscriptions WHERE expires_at>? AND expires_at<=?",(stamp(),(datetime.now(timezone.utc)+timedelta(days=14)).isoformat())); out['packages']=rows(c,"SELECT COALESCE(s.package,'free') package,COUNT(*) total FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id GROUP BY s.package")
    out['newToday']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE created_at>=?',(today,)); out['newMonth']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE created_at>=?',(month,))
   if 'usage' in p:
-   out['ai']=scalar(c,'SELECT COUNT(*) n FROM ai_usage'); out['calls']=None; out['whatsapp']=scalar(c,'SELECT COUNT(*) n FROM whatsapp_messages') if table_exists(c,'whatsapp_messages',s) else None
+   out['ai']=scalar(c,'SELECT COUNT(*) n FROM ai_usage'); out['calls']=0; out['callFailures']=0
+   if table_exists(c,'call_logs',s):
+    seconds=c.execute('SELECT COALESCE(SUM(duration_seconds),0) n FROM call_logs').fetchone()['n'] or 0; out['calls']=math.ceil(int(seconds)/60); out['callFailures']=scalar(c,"SELECT COUNT(*) n FROM call_logs WHERE status IN ('failed','no_answer','busy')")
+   out['whatsapp']=scalar(c,'SELECT COUNT(*) n FROM whatsapp_messages') if table_exists(c,'whatsapp_messages',s) else None
+   out['lowBalanceOrganizations']=0
+   if 'organizations.view' in p:
+    for org in rows(c,'SELECT id FROM organizations'):
+     credits=credits_summary(c,org['id'],s)
+     if any(v['base']>0 and v['remaining']<=max(1,math.ceil(v['base']*.1)) for v in credits['services'].values()): out['lowBalanceOrganizations']+=1
   if 'support' in p: out['support']=scalar(c,"SELECT COUNT(*) n FROM support_tickets WHERE status IN ('open','in_progress')")
   if 'ads' in p: out['ads']=scalar(c,'SELECT COUNT(*) n FROM advertisements WHERE active=1 AND approved=1 AND (scheduled_at IS NULL OR scheduled_at<=?) AND (expires_at IS NULL OR expires_at>?)',(stamp(),stamp()))
   if 'security' in p:
    out['logins']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action IN ('login','failed_login','new_device') AND created_at>=?",(today,)); out['alerts']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action IN ('failed_login','blocked_device_login','new_device','owner_account_status') AND created_at>=?",(today,)); out['passwordResets']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action='password_reset' AND created_at>=?",(today,))+scalar(c,"SELECT COUNT(*) n FROM platform_audit WHERE action='password_reset' AND created_at>=?",(today,))
    out['logins']+=scalar(c,'SELECT COUNT(*) n FROM platform_unknown_logins WHERE created_at>=?',(today,))
   return out
+ if r=='service-health' and m=='GET':
+  services=[]
+  whatsapp_count=scalar(c,'SELECT COUNT(*) n FROM whatsapp_connections') if table_exists(c,'whatsapp_connections',s) else 0
+  whatsapp_errors=scalar(c,"SELECT COUNT(*) n FROM whatsapp_webhooks WHERE received_at<?",((datetime.now(timezone.utc)-timedelta(hours=24)).isoformat(),)) if table_exists(c,'whatsapp_webhooks',s) else 0
+  services.append({'service':'whatsapp','label':'واتساب','status':'ready' if whatsapp_count and not whatsapp_errors else 'warning' if whatsapp_count else 'not_connected','affected':whatsapp_count,'lastError':'لا توجد مزامنة خلال 24 ساعة' if whatsapp_count and whatsapp_errors else ''})
+  ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip())
+  services.append({'service':'ai','label':'الذكاء الاصطناعي','status':'ready' if ai_ready else 'not_configured','affected':scalar(c,'SELECT COUNT(*) n FROM organizations') if not ai_ready else 0,'lastError':'' if ai_ready else 'مفتاح خدمة الذكاء غير مهيأ على الخادم'})
+  if table_exists(c,'call_connections',s):
+   call_count=scalar(c,"SELECT COUNT(*) n FROM call_connections WHERE status='ready'"); call_failures=scalar(c,"SELECT COUNT(*) n FROM call_logs WHERE status IN ('failed','no_answer','busy') AND created_at>=?",((datetime.now(timezone.utc)-timedelta(hours=24)).isoformat(),)) if table_exists(c,'call_logs',s) else 0
+   services.append({'service':'calls','label':'المكالمات','status':'warning' if call_failures else 'ready' if call_count else 'not_connected','affected':call_count,'lastError':f'{call_failures} مكالمة فاشلة خلال 24 ساعة' if call_failures else ''})
+  services.extend([{'service':'payment','label':'الدفع','status':'ready','affected':0,'lastError':''},{'service':'server','label':'السيرفر','status':'ready','affected':0,'lastError':''},{'service':'notifications','label':'الإشعارات','status':'ready','affected':0,'lastError':''}])
+  return {'checkedAt':stamp(),'services':services,'incidents':[x for x in services if x['status'] not in ('ready',)]}
+ if r=='service-health/check' and m=='POST':
+  service=str(d.get('service','')).strip()
+  if service not in ('whatsapp','ai','calls','payment','server','notifications'): raise ValueError('الخدمة غير معروفة')
+  audit(c,a['name'],'service_check','service-health/'+service)
+  return {'checkedAt':stamp(),'service':service,'message':'تم تسجيل طلب الفحص؛ النتيجة الحالية متاحة في مركز الأعطال'}
+ if r=='technical-ai' and m=='GET':
+  return {'items':rows(c,"SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id ORDER BY i.id DESC LIMIT 100"),'note':'الموظف التقني يشخّص ويقترح فقط؛ لا يعدّل الإنتاج أو ينشر أي إصلاح تلقائيًا.'}
+ if r=='integrations' and m=='GET':
+  return {'items':rows(c,'SELECT key,name,category,status,required_permission,provider_configured,notes,updated_at FROM platform_integrations ORDER BY id'),'note':'هذه الوحدات مجهزة للتوسع فقط. لا توجد خدمة مستقبلية مفعلة دون تكامل رسمي وإعداد خادم وصلاحية مناسبة.'}
+ if r=='technical-ai/diagnose' and m=='POST':
+  service=str(d.get('service','')).strip(); services={'whatsapp':('واتساب','فشل webhook أو صلاحيات الربط','فحص رمز التحقق والتوقيع وسجل آخر webhook','تحديث الإعدادات فقط بعد نجاح اختبار مستقل'),'ai':('الذكاء الاصطناعي','الخدمة غير مهيأة أو تجاوزت الحد','مراجعة إعداد الخادم وحدود الباقة','إعادة مزامنة الحالة دون تغيير الأسرار'),'calls':('المكالمات','قناة الاتصال غير جاهزة أو بها فشل','فحص حالة قناة خدووم وسجل المكالمات','إعادة محاولة الاتصال بعد التحقق من الرصيد')}
+  if service not in services: raise ValueError('اختر خدمة مدعومة')
+  label,problem,cause,proposal=services[service]; ts=stamp(); cur=c.execute('INSERT INTO technical_incidents(service,problem,root_cause,proposal,severity,test_status,deployment_status,affected_organizations,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)', (service,problem,cause,proposal,'medium','not_tested','proposed',0,ts,ts)); audit(c,a['name'],'technical_diagnosis',service); return {'id':cur.lastrowid,'service':label,'problem':problem,'rootCause':cause,'proposal':proposal,'testStatus':'not_tested','deploymentStatus':'proposed'}
+ if re.fullmatch(r'technical-ai/\d+/(test|approve|reject)',r) and m=='POST':
+  ident=int(r.split('/')[1]); action=r.split('/')[2]; item=c.execute('SELECT id FROM technical_incidents WHERE id=?',(ident,)).fetchone()
+  if not item: raise ValueError('التشخيص غير موجود')
+  if action=='test': c.execute("UPDATE technical_incidents SET test_status='passed',updated_at=? WHERE id=?",(stamp(),ident)); message='تم تسجيل نجاح الاختبار؛ لم يتم نشر أي كود'
+  elif action=='approve': c.execute("UPDATE technical_incidents SET deployment_status='approved',approved_by=?,updated_at=? WHERE id=?",(a['name'],stamp(),ident)); message='تمت الموافقة للمراجعة؛ النشر ما زال يدويًا'
+  else: c.execute("UPDATE technical_incidents SET deployment_status='rejected',updated_at=? WHERE id=?",(stamp(),ident)); message='تم رفض الإصلاح المقترح'
+  audit(c,a['name'],'technical_'+action,ident); return {'saved':True,'message':message}
  if r=='admins' and m=='GET': return {'items':rows(c,'SELECT id,name,username,role,permissions,active,created_at FROM platform_admins ORDER BY id DESC LIMIT 200'),'roles':ROLES,'permissions':PERMISSIONS}
  if (r=='admins' and m=='POST') or (re.fullmatch(r'admins/\d+',r) and m=='PUT'):
   name=str(d.get('name','')).strip(); username=str(d.get('username','')).strip().lower(); role=d.get('role'); privileges=d.get('permissions',ROLES.get(role,[]))
@@ -205,7 +262,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if re.fullmatch(r'organizations/\d+',r) and m=='GET':
   ident=int(r.split('/')[1]); org=c.execute(ORG_SELECT+',o.activity '+ORG_FROM+' WHERE o.id=?',(ident,)).fetchone()
   if not org: raise s.ApiError(404,'المؤسسة غير موجودة')
-  out=dict(org); out['account_id']=(c.execute('SELECT account_id FROM account_organizations WHERE organization_id=?',(ident,)).fetchone() or {'account_id':None})['account_id']; out['branches']=rows(c,'SELECT id,name,status FROM organization_branches WHERE organization_id=? ORDER BY created_at,id',(ident,)); out['users']=rows(c,'SELECT id,name,email,phone,role,active FROM users WHERE organization_id=? ORDER BY id LIMIT 100',(ident,)); out['devices']=rows(c,'SELECT se.token_hash id,se.device_name,se.device_id,se.last_seen_at,se.trusted,se.expires_at,u.name FROM sessions se JOIN users u ON u.id=se.user_id WHERE u.organization_id=? AND se.expires_at>? ORDER BY se.last_seen_at DESC LIMIT 100',(ident,stamp())); out['employees']=rows(c,'SELECT employee_type,COUNT(*) requests FROM ai_usage WHERE organization_id=? GROUP BY employee_type',(ident,)); out['ads']=rows(c,'SELECT id,title,active,approved,expires_at FROM advertisements WHERE organization_id=? ORDER BY id DESC LIMIT 50',(ident,)); out['rewards']=rows(c,'SELECT kind,amount,reason,actor,created_at FROM platform_rewards WHERE organization_id=? ORDER BY id DESC LIMIT 30',(ident,)); out['credits']=credits_summary(c,ident,s); wa=c.execute('SELECT phone_number,phone_number_id,waba_id,updated_at FROM whatsapp_connections WHERE organization_id=?',(ident,)).fetchone() if table_exists(c,'whatsapp_connections',s) else None; wa_messages=scalar(c,'SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=?',(ident,)) if table_exists(c,'whatsapp_messages',s) else 0; wa_hook=c.execute('SELECT received_at FROM whatsapp_webhooks WHERE phone_number_id=?',(wa['phone_number_id'],)).fetchone() if wa and table_exists(c,'whatsapp_webhooks',s) else None; ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip()); out['services']={'account':{'status':'ok','label':'الحساب'},'package':{'status':'ok' if org['package'] else 'warning','label':'الباقة'},'permissions':{'status':'ok' if out['users'] else 'warning','label':'الصلاحيات'},'whatsapp':{'status':'ok' if wa else 'not_connected','label':'واتساب','phone':wa['phone_number'] if wa else None,'messages':wa_messages,'webhook':bool(wa_hook)},'ai':{'status':'ok' if ai_ready else 'not_configured','label':'AI','requests':out['credits']['services']['ai']['used_month']},'calls':{'status':'not_connected','label':'المكالمات'},'payment':{'status':'ok','label':'الدفع'},'server':{'status':'ok','label':'السيرفر'}}; return out
+  out=dict(org); out['account_id']=(c.execute('SELECT account_id FROM account_organizations WHERE organization_id=?',(ident,)).fetchone() or {'account_id':None})['account_id']; out['branches']=rows(c,'SELECT id,name,status FROM organization_branches WHERE organization_id=? ORDER BY created_at,id',(ident,)); out['users']=rows(c,'SELECT id,name,email,phone,role,active FROM users WHERE organization_id=? ORDER BY id LIMIT 100',(ident,)); out['devices']=rows(c,'SELECT se.token_hash id,se.device_name,se.device_id,se.last_seen_at,se.trusted,se.expires_at,u.name FROM sessions se JOIN users u ON u.id=se.user_id WHERE u.organization_id=? AND se.expires_at>? ORDER BY se.last_seen_at DESC LIMIT 100',(ident,stamp())); out['employees']=rows(c,'SELECT employee_type,COUNT(*) requests FROM ai_usage WHERE organization_id=? GROUP BY employee_type',(ident,)); out['ads']=rows(c,'SELECT id,title,active,approved,expires_at FROM advertisements WHERE organization_id=? ORDER BY id DESC LIMIT 50',(ident,)); out['rewards']=rows(c,'SELECT kind,amount,reason,actor,created_at FROM platform_rewards WHERE organization_id=? ORDER BY id DESC LIMIT 30',(ident,)); out['credits']=credits_summary(c,ident,s); wa=c.execute('SELECT phone_number,phone_number_id,waba_id,updated_at FROM whatsapp_connections WHERE organization_id=?',(ident,)).fetchone() if table_exists(c,'whatsapp_connections',s) else None; wa_messages=scalar(c,'SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=?',(ident,)) if table_exists(c,'whatsapp_messages',s) else 0; wa_hook=c.execute('SELECT received_at FROM whatsapp_webhooks WHERE phone_number_id=?',(wa['phone_number_id'],)).fetchone() if wa and table_exists(c,'whatsapp_webhooks',s) else None; call_link=c.execute('SELECT phone_number,status,last_error,updated_at FROM call_connections WHERE organization_id=?',(ident,)).fetchone() if table_exists(c,'call_connections',s) else None; ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip()); out['services']={'account':{'status':'ok','label':'الحساب'},'package':{'status':'ok' if org['package'] else 'warning','label':'الباقة'},'permissions':{'status':'ok' if out['users'] else 'warning','label':'الصلاحيات'},'whatsapp':{'status':'ok' if wa else 'not_connected','label':'واتساب','phone':wa['phone_number'] if wa else None,'messages':wa_messages,'webhook':bool(wa_hook)},'ai':{'status':'ok' if ai_ready else 'not_configured','label':'AI','requests':out['credits']['services']['ai']['used_month']},'calls':{'status':call_link['status'] if call_link else 'not_connected','label':'المكالمات','phone':call_link['phone_number'] if call_link else None,'last_error':call_link['last_error'] if call_link else ''},'payment':{'status':'ok','label':'الدفع'},'server':{'status':'ok','label':'السيرفر'}}; return out
  if re.fullmatch(r'organizations/\d+/(status|logout|reward)',r) and m=='POST':
   ident=int(r.split('/')[1]); action=r.split('/')[2]
   if not c.execute('SELECT id FROM organizations WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'المؤسسة غير موجودة')
@@ -334,7 +391,15 @@ def dispatch(c,r,m,d,q,page,a,h,s):
 
 def usage(c,q,page,s):
  kind=q.get('type','ai'); today=stamp()[:10]; month=today[:7]+'-01'
- if kind=='calls': return {'items':[],'note':'لا يوجد سجل مكالمات أو دقائق أو فواتير مزود في قاعدة البيانات الحالية.'}
+ if kind=='calls':
+  if not table_exists(c,'call_logs',s): return {'items':[],'note':'لا يوجد سجل مكالمات بعد.'}
+  where='FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id WHERE 1=1'; args=[]
+  if q.get('package') in ('free','basic','vip'): where+=' AND COALESCE(s.package,?)=?'; args.extend(['free',q['package']])
+  if q.get('organization'): where+=' AND o.id=?'; args.append(int(q['organization']))
+  out=paged(c,"SELECT o.id,o.name,COALESCE(s.package,'free') package",where,args,'o.id DESC',page); ids=[o['id'] for o in out['items']]
+  for o in out['items']:
+   total=c.execute('SELECT COALESCE(SUM(duration_seconds),0) n FROM call_logs WHERE organization_id=?',(o['id'],)).fetchone()['n']; day=c.execute('SELECT COALESCE(SUM(duration_seconds),0) n FROM call_logs WHERE organization_id=? AND started_at>=?',(o['id'],today)).fetchone()['n']; month_seconds=c.execute('SELECT COALESCE(SUM(duration_seconds),0) n FROM call_logs WHERE organization_id=? AND started_at>=?',(o['id'],month)).fetchone()['n']; minutes=math.ceil(int(total or 0)/60); today_minutes=math.ceil(int(day or 0)/60); month_minutes=math.ceil(int(month_seconds or 0)/60); limit=c.execute('SELECT calls_units FROM platform_packages WHERE package=?',(o['package'],)).fetchone(); base=int(limit['calls_units'] or 0) if limit else 0; o.update({'total':minutes,'today':today_minutes,'month':month_minutes,'remaining':max(0,base-month_minutes),'daily_limit':base,'cost':round(minutes*SERVICE_COSTS['calls'],2),'conversations':c.execute('SELECT COUNT(*) n FROM call_logs WHERE organization_id=?',(o['id'],)).fetchone()['n']})
+  out['summary']={'total':sum(x['total'] for x in out['items']),'today':sum(x['today'] for x in out['items']),'month':sum(x['month'] for x in out['items'])}; out['note']='كل دقيقة مكالمة تخصم من رصيد المكالمات. التكلفة المعروضة تقديرية حسب وزن الخدمة المحدد في الخادم.'; return out
  wa=kind=='whatsapp'
  if wa and not table_exists(c,'whatsapp_messages',s): return {'items':[],'note':'لم يسجل خادم واتساب بيانات في هذه القاعدة بعد.'}
  table='whatsapp_messages' if wa else 'ai_usage'; tf='timestamp' if wa else 'created_at'; day=int(datetime.fromisoformat(today).replace(tzinfo=timezone.utc).timestamp()) if wa else today; mon=int(datetime.fromisoformat(month).replace(tzinfo=timezone.utc).timestamp()) if wa else month

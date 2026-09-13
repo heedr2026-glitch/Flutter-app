@@ -10046,8 +10046,8 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
                               MaterialPageRoute(
                                 builder: (_) => CommercialRecordRenewalPage(
                                   platformTitle: title,
-                                  website: alert['website']?.toString() ??
-                                      'https://business.sa',
+                                website: alert['website']?.toString() ??
+                                    'https://business.sa',
                                 ),
                               ),
                             ),
@@ -12681,6 +12681,9 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
   bool _askForName = true;
   bool _askForLocation = true;
   bool _isLoading = true;
+  bool _callsBusy = false;
+  Map<String, dynamic>? _cloudCalls;
+  List<Map<String, dynamic>> _callLogs = [];
 
   @override
   void initState() {
@@ -12698,11 +12701,179 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
       _askForLocation = prefs.getBool('calls_ask_location') ?? true;
       _isLoading = false;
     });
+    await _loadCloudCalls();
+  }
+
+  Future<void> _loadCloudCalls() async {
+    final prefs = await BranchPreferences.getInstance();
+    final token = await const FlutterSecureStorage().read(
+      key: 'cloud_session_token',
+    );
+    if (token == null || token.isEmpty) return;
+    final api = KhdoomCloudApi(
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+      scope: prefs,
+    )..token = token;
+    try {
+      final config = await api.callsConfig();
+      final logs = await api.callLogs();
+      if (!mounted) return;
+      setState(() {
+        _cloudCalls = config;
+        _callLogs = logs
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+      });
+    } catch (_) {
+      if (mounted) setState(() => _cloudCalls = null);
+    } finally {
+      api.close();
+    }
+  }
+
+  Future<void> _connectCalls() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('إعداد المكالمات'),
+        content: const Text('هل تريد ربط مكالمات المؤسسة بخدووم؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('موافق'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _callsBusy = true);
+    try {
+      final prefs = await BranchPreferences.getInstance();
+      final token = await const FlutterSecureStorage().read(
+        key: 'cloud_session_token',
+      );
+      if (token == null || token.isEmpty)
+        throw const CloudApiException(401, 'سجّل الدخول أولًا');
+      final api = KhdoomCloudApi(
+        baseUrl:
+            prefs.getString('cloud_api_url') ??
+            'https://khdoom-api.onrender.com',
+        scope: prefs,
+      )..token = token;
+      try {
+        _cloudCalls = await api.connectCalls();
+      } finally {
+        api.close();
+      }
+      final gatewayReady = _cloudCalls?['status'] == 'ready';
+      await _saveBool('calls_employee_enabled', gatewayReady);
+      if (mounted) {
+        setState(() => _isEnabled = gatewayReady);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              gatewayReady
+                  ? 'تم ربط المكالمات بنجاح ✅'
+                  : 'تم حفظ الإعداد، وتنتظر قناة خدووم تفعيل الخادم',
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is CloudApiException ? error.message : 'تعذر ربط المكالمات',
+            ),
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _callsBusy = false);
+    }
   }
 
   Future<void> _saveBool(String key, bool value) async {
     final prefs = await BranchPreferences.getInstance();
     await prefs.setBool(key, value);
+  }
+
+  Future<void> _requestOutboundCall() async {
+    if (_cloudCalls?['status'] != 'ready') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('خدمة المكالمات غير جاهزة على الخادم')),
+      );
+      return;
+    }
+    final controller = TextEditingController();
+    final phone = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('مكالمة صادرة'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.phone,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'رقم العميل'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('اتصال'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || phone == null || phone.isEmpty) return;
+    setState(() => _callsBusy = true);
+    try {
+      final prefs = await BranchPreferences.getInstance();
+      final token = await const FlutterSecureStorage().read(
+        key: 'cloud_session_token',
+      );
+      if (token == null || token.isEmpty) {
+        throw const CloudApiException(401, 'سجّل الدخول أولًا');
+      }
+      final api = KhdoomCloudApi(
+        baseUrl:
+            prefs.getString('cloud_api_url') ??
+            'https://khdoom-api.onrender.com',
+        scope: prefs,
+      )..token = token;
+      try {
+        await api.requestOutboundCall(phone);
+      } finally {
+        api.close();
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم تسجيل طلب المكالمة الصادرة ✅')),
+        );
+        await _loadCloudCalls();
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is CloudApiException ? error.message : 'تعذر بدء المكالمة',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _callsBusy = false);
+    }
   }
 
   Future<void> _setEmployeeStatus(bool value) async {
@@ -12735,6 +12906,72 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
             : ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF111B35),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: const Color(0xFF285682)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'إعداد المكالمات',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'رقم المؤسسة: ${_cloudCalls?['phone'] ?? 'غير متاح'}',
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                        Text(
+                          'النشاط: ${_cloudCalls?['activity'] ?? 'غير محدد'}',
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                        Text(
+                          'الحالة: ${_cloudCalls?['status'] == 'ready'
+                              ? 'متصل'
+                              : _cloudCalls?['status'] == 'pending_setup'
+                              ? 'بانتظار إعداد الخادم'
+                              : 'غير مربوط'}',
+                          style: TextStyle(
+                            color: _cloudCalls?['status'] == 'ready'
+                                ? const Color(0xFF4ADE80)
+                                : const Color(0xFFFBBF24),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        FilledButton.icon(
+                          onPressed: _callsBusy ? null : _connectCalls,
+                          icon: const Icon(Icons.link),
+                          label: Text(
+                            _callsBusy ? 'جارٍ الربط…' : 'ربط المكالمات',
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed:
+                              _callsBusy || _cloudCalls?['status'] != 'ready'
+                              ? null
+                              : _requestOutboundCall,
+                          icon: const Icon(Icons.call_outlined),
+                          label: const Text('مكالمة صادرة'),
+                        ),
+                        if ((_cloudCalls?['lastError']?.toString() ?? '')
+                            .isNotEmpty)
+                          Text(
+                            _cloudCalls!['lastError'].toString(),
+                            style: const TextStyle(color: Colors.amber),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
                   Container(
                     padding: const EdgeInsets.all(18),
                     decoration: BoxDecoration(
@@ -12785,7 +13022,7 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
                               ),
                               const SizedBox(height: 3),
                               const Text(
-                                'الاستقبال الفعلي للمكالمات يحتاج مزود اتصال سحابي وسيُربط لاحقًا.',
+                                'تُدار المكالمات عبر قناة خدووم الآمنة، ويُحفظ السجل داخل حساب المؤسسة.',
                                 style: TextStyle(
                                   color: Colors.white60,
                                   height: 1.4,
@@ -12857,42 +13094,95 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 28,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF172554),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Column(
-                      children: [
-                        Icon(
-                          Icons.phone_callback_outlined,
-                          color: Color(0xFF7DD3FC),
-                          size: 42,
-                        ),
-                        SizedBox(height: 12),
-                        Text(
-                          'لا توجد مكالمات مسجلة',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 17,
+                  if (_callLogs.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 28,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF172554),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: const Column(
+                        children: [
+                          Icon(
+                            Icons.phone_callback_outlined,
+                            color: Color(0xFF7DD3FC),
+                            size: 42,
                           ),
+                          SizedBox(height: 12),
+                          Text(
+                            'لا توجد مكالمات مسجلة',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 17,
+                            ),
+                          ),
+                          SizedBox(height: 6),
+                          Text(
+                            'سيظهر السجل بعد وصول مكالمات المؤسسة إلى خادم خدووم.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.white54),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    ..._callLogs.map(
+                      (call) => Card(
+                        color: const Color(0xFF172554),
+                        child: ListTile(
+                          onTap: () => _showCallDetails(call),
+                          leading: const Icon(
+                            Icons.phone_in_talk,
+                            color: Color(0xFF7DD3FC),
+                          ),
+                          title: Text(
+                            '${call['caller_name']?.toString().isNotEmpty == true ? call['caller_name'] : call['caller_phone'] ?? 'عميل'} — ${call['direction'] == 'outbound' ? 'صادرة' : 'واردة'}',
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                          subtitle: Text(
+                            '${call['status'] ?? 'منتهية'} · ${call['duration_seconds'] ?? 0} ثانية\n${call['summary'] ?? 'لا يوجد ملخص'}',
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                          isThreeLine: true,
                         ),
-                        SizedBox(height: 6),
-                        Text(
-                          'سيظهر السجل بعد ربط مزود الاتصال بخادم خدوم.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white54),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
                 ],
               ),
+      ),
+    );
+  }
+
+  void _showCallDetails(Map<String, dynamic> call) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('تفاصيل المكالمة'),
+        content: SingleChildScrollView(
+          child: Text(
+            'الرقم: ${call['caller_phone'] ?? 'غير متاح'}\n'
+            'الاسم: ${call['caller_name'] ?? 'غير معروف'}\n'
+            'النوع: ${call['direction'] == 'outbound' ? 'صادرة' : 'واردة'}\n'
+            'الحالة: ${call['status'] ?? 'غير محددة'}\n'
+            'المدة: ${call['duration_seconds'] ?? 0} ثانية\n'
+            'الطلب: ${call['request_text'] ?? 'غير مسجل'}\n'
+            'الموعد: ${call['appointment'] ?? 'لا يوجد'}\n'
+            'المتابعة: ${call['follow_up'] ?? 'لا يوجد'}\n'
+            'تحويل لموظف: ${call['human_handoff'] == 1 ? 'نعم' : 'لا'}\n\n'
+            'الملخص:\n${call['summary'] ?? 'لا يوجد'}\n\n'
+            'التفريغ:\n${call['transcript'] ?? 'لا يوجد'}',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إغلاق'),
+          ),
+        ],
       ),
     );
   }

@@ -807,6 +807,18 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS support_tickets (
           id BIGSERIAL PRIMARY KEY, organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id BIGINT REFERENCES users(id) ON DELETE SET NULL, category TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', owner_reply TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS call_connections (
+          organization_id BIGINT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+          phone_number TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'not_connected', last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS call_logs (
+          id BIGSERIAL PRIMARY KEY, organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          caller_phone TEXT NOT NULL DEFAULT '', caller_name TEXT NOT NULL DEFAULT '', direction TEXT NOT NULL DEFAULT 'inbound',
+          status TEXT NOT NULL DEFAULT 'ended', started_at TEXT NOT NULL, duration_seconds INTEGER NOT NULL DEFAULT 0,
+          transcript TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', request_text TEXT NOT NULL DEFAULT '', appointment TEXT NOT NULL DEFAULT '',
+          follow_up INTEGER NOT NULL DEFAULT 0, human_handoff INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS global_maintenance (
           service TEXT PRIMARY KEY,
           expires_at TEXT,
@@ -1082,6 +1094,18 @@ def init_db() -> None:
             );
             CREATE TABLE IF NOT EXISTS support_tickets (
               id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, category TEXT NOT NULL, message TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', owner_reply TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS call_connections (
+              organization_id INTEGER PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+              phone_number TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'not_connected', last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS call_logs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              caller_phone TEXT NOT NULL DEFAULT '', caller_name TEXT NOT NULL DEFAULT '', direction TEXT NOT NULL DEFAULT 'inbound',
+              status TEXT NOT NULL DEFAULT 'ended', started_at TEXT NOT NULL, duration_seconds INTEGER NOT NULL DEFAULT 0,
+              transcript TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', request_text TEXT NOT NULL DEFAULT '', appointment TEXT NOT NULL DEFAULT '',
+              follow_up INTEGER NOT NULL DEFAULT 0, human_handoff INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS global_maintenance (
           service TEXT PRIMARY KEY,
@@ -1489,6 +1513,22 @@ class Handler(BaseHTTPRequestHandler):
             # zero-downtime handover; normal endpoints remain on the existing
             # startup path until initialization has completed.
             self._send(200, {"status": "ok" if STARTUP_READY else "starting", "service": "khdoom-api"})
+            return
+        if path == "/webhooks/calls" and method == "POST":
+            expected = os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip()
+            supplied = self.headers.get("X-Khdoom-Call-Secret", "")
+            if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+                raise ApiError(401, "تعذر التحقق من قناة المكالمات")
+            data = self._body(); phone = str(data.get("organizationPhone") or data.get("to") or "").strip(); organization_id = data.get("organizationId")
+            with db() as call_connection:
+                if organization_id is None and phone:
+                    found = call_connection.execute("SELECT organization_id FROM call_connections WHERE phone_number=?", (phone,)).fetchone(); organization_id = found["organization_id"] if found else None
+                if organization_id is None: raise ApiError(404, "لم يتم العثور على مؤسسة مرتبطة بالرقم")
+                allowed = call_connection.execute("SELECT organization_id FROM call_connections WHERE organization_id=? AND enabled=1", (int(organization_id),)).fetchone()
+                if not allowed: raise ApiError(409, "خدمة المكالمات غير مفعلة للمؤسسة")
+                cursor = call_connection.execute("INSERT INTO call_logs(organization_id,caller_phone,caller_name,direction,status,started_at,duration_seconds,transcript,summary,request_text,appointment,follow_up,human_handoff,last_error,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (int(organization_id),str(data.get("callerPhone", ""))[:40],str(data.get("callerName", ""))[:160],str(data.get("direction", "inbound"))[:20],str(data.get("status", "ended"))[:30],str(data.get("startedAt") or now()),int(data.get("durationSeconds", 0) or 0),str(data.get("transcript", ""))[:30000],str(data.get("summary", ""))[:4000],str(data.get("request", ""))[:2000],str(data.get("appointment", ""))[:2000],int(bool(data.get("followUp"))),int(bool(data.get("humanHandoff"))),str(data.get("lastError", ""))[:1000],now()))
+                call_connection.commit()
+            self._send(201, {"saved": True, "id": cursor.lastrowid})
             return
         if urlparse(self.path).path.startswith('/owner/api/v2/'):
             with db() as admin_connection:
@@ -2742,6 +2782,39 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if path == "/api/session-status" and method == "GET":
                 self._send(200, {"valid": True})
                 return
+            if path == "/api/calls/config" and method == "GET":
+                row = connection.execute("SELECT phone_number,activity,enabled,status,last_error,updated_at FROM call_connections WHERE organization_id=?", (organization_id,)).fetchone()
+                organization = connection.execute("SELECT phone,activity FROM organizations WHERE id=?", (organization_id,)).fetchone()
+                self._send(200, {"phone": row["phone_number"] if row else organization["phone"], "activity": row["activity"] if row else organization["activity"], "enabled": bool(row and row["enabled"]), "status": row["status"] if row else "not_connected", "lastError": row["last_error"] if row else "", "updatedAt": row["updated_at"] if row else None})
+                return
+            if path == "/api/calls/connect" and method == "POST":
+                if user["role"] != "admin":
+                    raise ApiError(403, "ربط المكالمات متاح لمالك المؤسسة فقط")
+                organization = connection.execute("SELECT phone,activity FROM organizations WHERE id=?", (organization_id,)).fetchone()
+                if not organization or not str(organization["phone"] or "").strip():
+                    raise ApiError(400, "أضف رقم المؤسسة أولًا")
+                gateway_ready = any(os.environ.get(name, "").strip() for name in ("KHDOOM_CALLS_GATEWAY_URL", "KHDOOM_CALLS_API_KEY"))
+                status = "ready" if gateway_ready else "pending_setup"
+                message = "" if gateway_ready else "قناة المكالمات تحتاج إعداد الخادم"
+                connection.execute("INSERT INTO call_connections(organization_id,phone_number,activity,enabled,status,last_error,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET phone_number=excluded.phone_number,activity=excluded.activity,enabled=excluded.enabled,status=excluded.status,last_error=excluded.last_error,updated_at=excluded.updated_at", (organization_id, organization["phone"], organization["activity"], 1, status, message, now()))
+                audit_log(connection, organization_id, user["id"], "calls_connected", "تم حفظ إعداد مكالمات المؤسسة", "calls", str(organization_id))
+                connection.commit()
+                self._send(200, {"connected": True, "status": status, "message": "تم ربط المكالمات بخدووم" if gateway_ready else "تم حفظ الربط، وتحتاج قناة المكالمات إعدادًا من الخادم"})
+                return
+            if path == "/api/calls" and method == "GET":
+                rows = connection.execute("SELECT id,caller_phone,caller_name,direction,status,started_at,duration_seconds,transcript,summary,request_text,appointment,follow_up,human_handoff,last_error,created_at FROM call_logs WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
+                self._send(200, [dict(row) for row in rows])
+                return
+            if path == "/api/calls/outbound" and method == "POST":
+                if user["role"] != "admin":
+                    raise ApiError(403, "المكالمات الصادرة متاحة لمالك المؤسسة فقط")
+                target = str(self._body().get("phone", "")).strip()[:40]
+                if not target: raise ApiError(400, "أدخل رقم العميل")
+                link = connection.execute("SELECT enabled,status FROM call_connections WHERE organization_id=?", (organization_id,)).fetchone()
+                if not link or not link["enabled"]: raise ApiError(409, "اربط مكالمات المؤسسة أولًا")
+                if link["status"] != "ready": raise ApiError(503, "خدمة المكالمات غير جاهزة على الخادم")
+                cursor = connection.execute("INSERT INTO call_logs(organization_id,caller_phone,direction,status,started_at,created_at) VALUES(?,?,?,?,?,?)", (organization_id, target, "outbound", "queued", now(), now()))
+                audit_log(connection, organization_id, user["id"], "outbound_call_requested", "طلب مكالمة صادرة", "calls", str(cursor.lastrowid)); connection.commit(); self._send(202, {"queued": True, "id": cursor.lastrowid}); return
             if path == "/api/support-tickets" and method == "GET":
                 rows = connection.execute("SELECT id,category,message,status,owner_reply,created_at,updated_at FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
                 self._send(200, [dict(row) for row in rows])

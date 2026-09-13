@@ -207,7 +207,7 @@ def send(c, org, data):
             raise Error(413, "حجم الصورة أكبر من المسموح")
         if not re.fullmatch(r"[a-zA-Z0-9+/=_-]+", encoded):
             raise Error(400, "بيانات الصورة غير صحيحة")
-            text = text or "[مرفق]"
+        text = text or "[مرفق]"
     if not re.fullmatch(r"[0-9]{7,15}",peer) or not 1 <= len(text) <= 4096 or not re.fullmatch(r"[a-zA-Z0-9_-]{8,100}",cid):
         raise Error(400,"بيانات الرسالة غير صحيحة")
     old = c.execute("SELECT * FROM whatsapp_messages WHERE organization_id=? AND client_id=?",(org,cid)).fetchone()

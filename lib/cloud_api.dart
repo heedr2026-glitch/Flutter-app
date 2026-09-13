@@ -573,6 +573,30 @@ class KhdoomCloudApi {
     ) as Map);
   }
 
+  Future<Map<String, dynamic>> callsConfig() async {
+    final result = await _request('GET', '/api/calls/config');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<Map<String, dynamic>> connectCalls() async {
+    final result = await _request('POST', '/api/calls/connect', body: const {});
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<List<dynamic>> callLogs() async {
+    final result = await _request('GET', '/api/calls');
+    return List<dynamic>.from(result as List);
+  }
+
+  Future<Map<String, dynamic>> requestOutboundCall(String phone) async {
+    final result = await _request(
+      'POST',
+      '/api/calls/outbound',
+      body: {'phone': phone},
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   Future<Map<String, dynamic>> likeCommunityPost(Object id) async {
     final result = await _request('POST', '/api/community/posts/$id/like');
     return Map<String, dynamic>.from(result as Map);
