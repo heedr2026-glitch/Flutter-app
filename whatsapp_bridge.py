@@ -194,14 +194,20 @@ def send(c, org, data):
     media_type = str(data.get("mediaType", "")).strip().lower()
     media_name = str(data.get("mediaName", "image.jpg")).strip()[:120]
     encoded = str(data.get("mediaBase64", "")).strip()
-    if media_type and media_type != "image":
-        raise Error(415, "إرسال هذا النوع من الوسائط غير مفعّل بعد")
-    if media_type == "image":
+    media_specs = {
+        "image": ("image", "image/jpeg"),
+        "audio": ("audio", "audio/ogg"),
+        "video": ("video", "video/mp4"),
+        "document": ("document", "application/octet-stream"),
+    }
+    if media_type and media_type not in media_specs:
+        raise Error(415, "نوع المرفق غير مدعوم من واتساب")
+    if media_type:
         if not encoded or len(encoded) > 950000:
             raise Error(413, "حجم الصورة أكبر من المسموح")
         if not re.fullmatch(r"[a-zA-Z0-9+/=_-]+", encoded):
             raise Error(400, "بيانات الصورة غير صحيحة")
-        text = text or "[صورة]"
+            text = text or "[مرفق]"
     if not re.fullmatch(r"[0-9]{7,15}",peer) or not 1 <= len(text) <= 4096 or not re.fullmatch(r"[a-zA-Z0-9_-]{8,100}",cid):
         raise Error(400,"بيانات الرسالة غير صحيحة")
     old = c.execute("SELECT * FROM whatsapp_messages WHERE organization_id=? AND client_id=?",(org,cid)).fetchone()
@@ -221,21 +227,25 @@ def send(c, org, data):
     c.commit()
     if cursor.rowcount != 1: raise Error(409,"المحاولة قيد التنفيذ؛ حدّث المحادثة")
     try:
-        if media_type == "image":
+        if media_type:
             try:
                 content = base64.b64decode(encoded, validate=True)
             except (ValueError, TypeError):
                 raise Error(400, "بيانات الصورة غير صحيحة")
             if not 1 <= len(content) <= 700000:
-                raise Error(413, "حجم الصورة أكبر من المسموح")
-            mime = mimetypes.guess_type(media_name)[0] or "image/jpeg"
+                raise Error(413, "حجم المرفق أكبر من المسموح")
+            kind, fallback_mime = media_specs[media_type]
+            mime = mimetypes.guess_type(media_name)[0] or fallback_mime
             uploaded = graph_upload(cfg, media_name, mime, content)
             media_id = str(uploaded.get("id", ""))
-            if not media_id: raise Error(502, "لم تُصدر ميتا معرف الصورة")
+            if not media_id: raise Error(502, "لم تُصدر ميتا معرف المرفق")
+            media_body = {"id": media_id}
+            if media_type == "image": media_body["caption"] = text if text != "[مرفق]" else ""
+            if media_type == "document": media_body["filename"] = media_name
             result = graph(cfg,cfg["phone_number_id"]+"/messages",
-              {"messaging_product":"whatsapp","to":peer,"type":"image","image":{"id":media_id,"caption":text if text != "[صورة]" else ""}})
+              {"messaging_product":"whatsapp","to":peer,"type":kind,kind:media_body})
             c.execute("UPDATE whatsapp_messages SET state=?,meta_id=?,media_type=?,media_name=?,media_id=? WHERE id=?",
-              ("accepted",result["messages"][0]["id"],"image",media_name,media_id,mid))
+              ("accepted",result["messages"][0]["id"],media_type,media_name,media_id,mid))
             c.commit()
             return dict(c.execute("SELECT * FROM whatsapp_messages WHERE id=?",(mid,)).fetchone())
         result = graph(cfg,cfg["phone_number_id"]+"/messages",

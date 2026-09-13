@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:record/record.dart';
 
 import 'branch_store.dart';
 
@@ -120,6 +121,8 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
   final _id = TextEditingController();
   final _search = TextEditingController();
   final _input = TextEditingController();
+  final _recorder = AudioRecorder();
+  bool _recording = false;
   Timer? _poll;
   bool _refreshing = false;
   String? _messageError;
@@ -147,6 +150,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
     _phone.dispose();
     _id.dispose();
     _search.dispose();
+    _recorder.dispose();
     super.dispose();
   }
 
@@ -494,6 +498,48 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _toggleRecording(String peer) async {
+    if (_busy) return;
+    if (await _recorder.isRecording()) {
+      final path = await _recorder.stop();
+      if (mounted) setState(() => _recording = false);
+      if (path == null || !mounted) return;
+      final file = File(path);
+      if (!await file.exists()) return;
+      setState(() => _busy = true);
+      try {
+        final api = await _gateway();
+        final id = List.generate(16, (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+        final result = await api.call('/api/whatsapp/messages', data: {
+          'to': peer,
+          'message': '',
+          'mediaType': 'audio',
+          'mediaName': 'voice.ogg',
+          'mediaBase64': base64Encode(await file.readAsBytes()),
+          'clientMessageId': id,
+        }) as Map;
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم إرسال المقطع الصوتي')));
+          await _refreshMessages(api: api);
+        }
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+      return;
+    }
+    if (!await _recorder.hasPermission()) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('اسمح لخدوم باستخدام الميكروفون أولًا')));
+      return;
+    }
+    await _recorder.start(
+      const RecordConfig(encoder: AudioEncoder.opus),
+      path: '${Directory.systemTemp.path}/khdoom_voice_${DateTime.now().millisecondsSinceEpoch}.ogg',
+    );
+    if (mounted) setState(() => _recording = true);
   }
 
   Widget _field(TextEditingController c, String label) => Padding(
@@ -847,19 +893,23 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
             backgroundColor: const Color(0xFF00A884),
             child: IconButton(
               color: Colors.white,
-              tooltip: _input.text.trim().isEmpty ? 'تسجيل صوتي' : 'إرسال',
-              icon: Icon(_input.text.trim().isEmpty ? Icons.mic : Icons.send),
+              tooltip: _recording
+                  ? 'إيقاف وإرسال التسجيل'
+                  : _input.text.trim().isEmpty
+                  ? 'تسجيل صوتي'
+                  : 'إرسال',
+              icon: Icon(
+                _recording
+                    ? Icons.stop
+                    : _input.text.trim().isEmpty
+                    ? Icons.mic
+                    : Icons.send,
+              ),
               onPressed: _busy
                   ? null
                   : () {
                       if (_input.text.trim().isEmpty) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'تسجيل الصوت سيُتاح بعد تفعيل صلاحية الميكروفون',
-                            ),
-                          ),
-                        );
+                        _toggleRecording(widget.peer!);
                       } else {
                         _reply(widget.peer!, draft: _input.text);
                       }
