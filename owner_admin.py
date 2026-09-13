@@ -5,6 +5,7 @@ import json
 import math
 import re
 import secrets
+import os
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
 
@@ -27,7 +28,8 @@ def migrate(c,postgres=False):
  f'''platform_notes(id {identity},ticket_id BIGINT NOT NULL,note TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
  '''platform_org_state(organization_id BIGINT PRIMARY KEY,suspended INTEGER NOT NULL DEFAULT 0)''',
  f'''platform_rewards(id {identity},organization_id BIGINT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
- '''platform_daily_credits(organization_id BIGINT NOT NULL,day TEXT NOT NULL,units INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(organization_id,day))''']
+ '''platform_daily_credits(organization_id BIGINT NOT NULL,day TEXT NOT NULL,units INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(organization_id,day))''',
+ f'''platform_credit_ledger(id {identity},organization_id BIGINT NOT NULL,service TEXT NOT NULL,units INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''']
  for schema in schemas: c.execute('CREATE TABLE IF NOT EXISTS '+schema)
  for p,m,y,n in [('free',0,0,5),('basic',49,449,30),('vip',99,899,100)]:
   monthly=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=1 AND bonus_months=0 ORDER BY active DESC,id LIMIT 1',(p,)).fetchone()
@@ -38,7 +40,7 @@ def migrate(c,postgres=False):
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
- for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('organizations','created_at'),('subscriptions','package,organization_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
+ for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
 
 def permission(path,method):
  p=path.removeprefix('/owner/api/')
@@ -49,6 +51,7 @@ def permission(path,method):
   if p.startswith('community/rewards/'): return 'rewards'
   if p.startswith('addon-offers'): return 'offers'
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
+  if p.startswith('credits'): return 'usage'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
   for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
    if p.startswith(prefix): return perm
@@ -106,6 +109,22 @@ def paged(c,select,where,args,order,page):
 def table_exists(c,name,s):
  if s.DATABASE_URL: return c.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?',(name,)).fetchone() is not None
  return c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",(name,)).fetchone() is not None
+SERVICE_LABELS={'whatsapp':'واتساب','ai':'الذكاء الاصطناعي','calls':'المكالمات'}
+SERVICE_COSTS={'whatsapp':0.01,'ai':0.02,'calls':0.05}
+def credits_summary(c,org,s):
+ package_row=c.execute('SELECT COALESCE(s.package,?) package,COALESCE(p.monthly,0) monthly,p.ai_daily,p.whatsapp_units,p.calls_units FROM subscriptions s LEFT JOIN platform_packages p ON p.package=s.package WHERE s.organization_id=?',('free',org)).fetchone()
+ package=dict(package_row or {'package':'free','monthly':0,'ai_daily':5,'whatsapp_units':0,'calls_units':0})
+ month=stamp()[:7]+'-01'; today=stamp()[:10]; adjustments={x:0 for x in SERVICE_LABELS}; ledger=rows(c,'SELECT service,units,reason,actor,created_at FROM platform_credit_ledger WHERE organization_id=? AND created_at>=? ORDER BY id DESC LIMIT 100',(org,month))
+ for x in ledger:
+  if x['service'] in adjustments: adjustments[x['service']]+=int(x['units'] or 0)
+ ai_month=c.execute('SELECT COUNT(*) n FROM ai_usage WHERE organization_id=? AND created_at>=?',(org,month)).fetchone()['n']; ai_today=c.execute('SELECT COUNT(*) n FROM ai_usage WHERE organization_id=? AND created_at>=?',(org,today)).fetchone()['n']
+ wa_month=0; wa_today=0
+ if table_exists(c,'whatsapp_messages',s):
+  wa_month=c.execute("SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=? AND timestamp>=?",(org,int(datetime.fromisoformat(month).replace(tzinfo=timezone.utc).timestamp()))).fetchone()['n']; wa_today=c.execute("SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=? AND timestamp>=?",(org,int(datetime.fromisoformat(today).replace(tzinfo=timezone.utc).timestamp()))).fetchone()['n']
+ usage={'ai':int(ai_month or 0),'whatsapp':int(wa_month or 0),'calls':0}; daily={'ai':int(ai_today or 0),'whatsapp':int(wa_today or 0),'calls':0}
+ base={'ai':int(package.get('ai_daily') or 0)*30,'whatsapp':int(package.get('whatsapp_units') or 0),'calls':int(package.get('calls_units') or 0)}
+ remaining={x:max(0,base[x]+adjustments[x]-usage[x]) for x in SERVICE_LABELS}; cost={x:round(usage[x]*SERVICE_COSTS[x],2) for x in SERVICE_LABELS}; total_cost=round(sum(cost.values()),2); monthly=float(package.get('monthly') or 0)
+ return {'package':package.get('package','free'),'subscription_value':monthly,'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjustments[x],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledger}
 ORG_FROM='FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id'
 ORG_SELECT="SELECT o.id,o.name,o.phone,o.created_at,COALESCE(s.package,'free') package,s.starts_at,s.expires_at,COALESCE(z.suspended,0) suspended,(SELECT MAX(last_seen_at) FROM sessions se JOIN users u ON u.id=se.user_id WHERE u.organization_id=o.id) last_login"
 
@@ -236,6 +255,20 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   out=rows(c,'SELECT * FROM package_offers ORDER BY id DESC')
   for o in out: o['effective_active']=bool(o['active'] and active_offer(o))
   return out
+ if r=='credits' and m=='GET':
+  condition='WHERE 1=1'; args=['free']
+  if q.get('package') in ('free','basic','vip'): condition+=' AND COALESCE(s.package,?)=?'; args.extend(['free',q['package']])
+  items=rows(c,'SELECT o.id,o.name,COALESCE(s.package,?) package FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id '+condition,args)
+  for item in items: item['credits']=credits_summary(c,item['id'],s)
+  return {'items':items,'total':len(items),'page':1,'pageSize':len(items)}
+ if re.fullmatch(r'credits/\d+',r) and m=='POST':
+  ident=int(r.split('/')[1]); service=str(d.get('service','')).strip(); units=number(d.get('units'),-1000000,1000000,True); reason=str(d.get('reason','')).strip()[:500]
+  if service not in SERVICE_LABELS: raise ValueError('اختر خدمة صحيحة')
+  if units==0 or not reason: raise ValueError('اكتب كمية غير صفرية وسبب التعديل')
+  if not c.execute('SELECT id FROM organizations WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'المؤسسة غير موجودة')
+  c.execute('INSERT INTO platform_credit_ledger(organization_id,service,units,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(ident,service,units,a['name'],reason,stamp()))
+  audit(c,a['name'],'credit_adjustment',f'{ident}/{service}/{units}/{reason}')
+  return {'saved':True,'credits':credits_summary(c,ident,s)}
  if r=='offers' and m=='POST':
   pkg=d.get('package'); start=date(d.get('starts_at')); end=date(d.get('ends_at')); kind=d.get('offer_type','price')
   if pkg not in ('basic','vip','basic,vip') or (start and end and end<=start) or kind not in ('price','percent','bonus'): raise ValueError('تحقق من الباقة والتواريخ ونوع العرض')
