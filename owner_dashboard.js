@@ -1,6 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const pkg={free:'المجانية',basic:'الأساسية',vip:'VIP'}, roleNames={owner:'المالك',system:'مدير النظام',support:'الدعم الفني',accounting:'المحاسبة',ads:'الإعلانات',community:'مشرف المجتمع'};
+const pkg={free:'المجانية',basic:'الأساسية',vip:'VIP'}, roleNames={owner:'مالك خدووم',system:'مدير النظام',manager:'مدير',support:'الدعم الفني',technician:'تقني',accounting:'المحاسبة',employee:'موظف عادي',ads:'الإعلانات',community:'مشرف المجتمع'};
 const permissionNames={'organizations.view':'مشاهدة المؤسسات','organizations.edit':'تعديل المؤسسات والأجهزة',packages:'الباقات والاشتراكات',codes:'أكواد الخصم',offers:'العروض',usage:'الاستهلاك',security:'الأمن',support:'الدعم',ads:'الإعلانات',community:'المجتمع',rewards:'المكافآت',suspend:'إيقاف المؤسسات',admins:'مستخدمو الإدارة',settings:'الإعدادات'};
 let ownerKey='',token='',me=null,current='home',currentPage=1,filter='',search='',since='',profileId=null,version=0;
 const can=p=>!p||me?.permissions.includes(p), fmt=v=>v===null||v===undefined||v===''?'غير متاح':esc(v), when=v=>{if(!v)return '—';let d=new Date(v);if(Number.isNaN(d.getTime()))return esc(v);let z=n=>String(n).padStart(2,'0');return esc(d.getFullYear()+'/'+z(d.getMonth()+1)+'/'+z(d.getDate())+' '+z(d.getHours())+':'+z(d.getMinutes()))};
@@ -12,6 +12,7 @@ function table(items,columns){return items.length?`<div class="tablewrap"><table
 function pages(d){if(d.total===undefined)return;let b=document.createElement('div');b.className='toolbar';b.append(action('السابق',()=>{currentPage--;render()}),document.createTextNode(`الصفحة ${d.page} · ${d.total} سجل`),action('التالي',()=>{currentPage++;render()}));b.firstChild.disabled=d.page<=1;b.lastChild.disabled=d.page*30>=d.total;$('content').append(b)}
 function tabs(options,selected,cb){let wrap=document.createElement('div');wrap.className='tabs';for(let [v,l]of options)wrap.append(action(l,()=>cb(v),selected===v?'primary':''));$('content').append(wrap)}
 function note(t){return `<div class="note">${esc(t)}</div>`}
+function renderOrgHealth(d){let labels={account:'الحساب',package:'الباقة',permissions:'الصلاحيات',whatsapp:'واتساب',ai:'AI',calls:'المكالمات',payment:'الدفع',server:'السيرفر'},mark=v=>v==='ok'?'✅':v==='warning'?'⚠️':v==='not_configured'?'—':'❌';return `<div class="panel"><h3>صحة المؤسسة</h3><p>المالك: ${esc(d.owner_name||'غير محدد')} · آخر دخول: ${when(d.last_login)}</p><div class="stats">${Object.entries(d.services||{}).map(([k,v])=>`<span>${labels[k]||v.label||k} ${mark(v.status)}${v.phone?' · '+esc(v.phone):''}</span>`).join('')}</div><p class="muted">آخر رسالة واتساب: ${fmt(d.services?.whatsapp?.messages)} · webhook: ${d.services?.whatsapp?.webhook?'يعمل':'غير متاح'} · طلبات AI: ${fmt(d.services?.ai?.requests)}</p></div>`}
 function append(html){$('content').insertAdjacentHTML('beforeend',html)}
 function communityPostCards(items){
  if(!items.length)return '<div class="panel empty">لا توجد منشورات في المجتمع.</div>';
@@ -82,3 +83,4 @@ $('content').onclick=async e=>{let b=e.target.closest('[data-act]');if(!b)return
  if(act==='admin')adminForm(x,$('content')._adminData);
  if(act==='subscription')edit('مراجعة الاشتراك',[f('status','القرار','select',[['approved','موافقة'],['rejected','رفض']]),f('package','الباقة','select',packageOptions),f('durationDays','مدة الأيام','number')],{status:'approved',package:x.requested_package,durationDays:30},d=>api('/owner/api/subscription-requests/'+id,'PUT',{action:d.status==='approved'?'approve':'reject',selectedPackage:d.package,durationDays:d.durationDays}));
 }catch(e){flash(e.message)}};
+const khdoomBaseRender=render;render=async function(){await khdoomBaseRender();if(current==='profile'&&!$('orgHealth')){try{let d=await api('organizations/'+profileId);append('<div id="orgHealth">'+renderOrgHealth(d)+'</div>')}catch(_){}}};
