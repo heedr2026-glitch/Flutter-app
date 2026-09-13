@@ -20,6 +20,7 @@ import 'organization_categories.dart';
 import 'assistant_conversation.dart';
 import 'appointment_followup_card.dart';
 import 'home_branches_switch.dart';
+import 'commercial_record_renewal_page.dart';
 import 'question_answer_training.dart';
 import 'my_advertisements.dart';
 import 'page_refresh_button.dart';
@@ -8491,6 +8492,19 @@ class AlertsPage extends StatelessWidget {
                   context,
                   MaterialPageRoute(
                     builder: (_) => const OrganizationAlertsPage(),
+                  ),
+                );
+              },
+            ),
+            AlertCard(
+              icon: Icons.auto_awesome,
+              title: 'التجديد الذكي للسجل التجاري',
+              subtitle: 'تنبيه، موافقة المالك، وبدء الطلب الرسمي',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const CommercialRecordRenewalPage(),
                   ),
                 );
               },
