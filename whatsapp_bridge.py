@@ -9,7 +9,7 @@ class Error(Exception):
         self.status, self.message = status, message
         super().__init__(message)
 
-def configs():
+def configs(db_conn=None):
     try:
         items = json.loads(os.environ.get("KHDOOM_WHATSAPP_CONFIG", "[]"))
         if not isinstance(items, list): raise ValueError()
@@ -19,25 +19,42 @@ def configs():
         waba_override = os.environ.get("KHDOOM_WHATSAPP_WABA_ID", "").strip()
         phone_override = os.environ.get("KHDOOM_WHATSAPP_PHONE_NUMBER_ID", "").strip()
         orgs, phones = set(), set()
-        for c in items:
-            if waba_override: c["waba_id"] = waba_override
-            if phone_override: c["phone_number_id"] = phone_override
-            c["organization_id"] = int(c["organization_id"])
-            if c["organization_id"] <= 0 or c["organization_id"] in orgs: raise ValueError()
+        for item in items:
+            if waba_override: item["waba_id"] = waba_override
+            if phone_override: item["phone_number_id"] = phone_override
+            item["organization_id"] = int(item["organization_id"])
+            if item["organization_id"] <= 0 or item["organization_id"] in orgs: raise ValueError()
             for k in ("token", "app_secret", "verify_token", "phone_number_id", "waba_id", "api_version"):
-                if not isinstance(c.get(k), str) or not c[k].strip(): raise ValueError()
-            if not c["phone_number_id"].isdigit() or not c["waba_id"].isdigit(): raise ValueError()
-            if not re.fullmatch(r"v[0-9]+\.0", c["api_version"]): raise ValueError()
-            if c["phone_number_id"] in phones: raise ValueError()
-            orgs.add(c["organization_id"]); phones.add(c["phone_number_id"])
+                if not isinstance(item.get(k), str) or not item[k].strip(): raise ValueError()
+            if not item["phone_number_id"].isdigit() or not item["waba_id"].isdigit(): raise ValueError()
+            if not re.fullmatch(r"v[0-9]+\.0", item["api_version"]): raise ValueError()
+            if item["phone_number_id"] in phones: raise ValueError()
+            orgs.add(item["organization_id"]); phones.add(item["phone_number_id"])
         token_override = os.environ.get("KHDOOM_WHATSAPP_TOKEN_OVERRIDE", "").strip()
         if token_override:
             items = [dict(c, token=token_override) for c in items]
+        if db_conn is not None and hasattr(db_conn, "execute") and items:
+            template = items[0]
+            rows = db_conn.execute("SELECT organization_id,phone_number,phone_number_id,waba_id FROM whatsapp_connections").fetchall()
+            for row in rows:
+                dynamic = dict(template)
+                dynamic.update({
+                    "organization_id": int(row["organization_id"]),
+                    "phone_number": str(row["phone_number"]),
+                    "phone_number_id": str(row["phone_number_id"]),
+                    "waba_id": str(row["waba_id"]),
+                })
+                if not any(x["organization_id"] == dynamic["organization_id"] for x in items):
+                    items.append(dynamic)
         return items
     except (ValueError, KeyError, TypeError):
         raise Error(503, "إعدادات واتساب على الخادم غير صحيحة")
 
 def initialize(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS whatsapp_connections(
+      organization_id BIGINT PRIMARY KEY, phone_number TEXT NOT NULL,
+      phone_number_id TEXT UNIQUE NOT NULL, waba_id TEXT NOT NULL,
+      created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)""")
     c.execute("""CREATE TABLE IF NOT EXISTS whatsapp_messages(
       id TEXT PRIMARY KEY, organization_id BIGINT NOT NULL, phone_number_id TEXT NOT NULL,
       peer TEXT NOT NULL, direction TEXT NOT NULL, body TEXT NOT NULL, branch_id TEXT,
@@ -78,11 +95,11 @@ def graph(cfg, path, body=None):
     except (URLError, TimeoutError, ValueError, OSError):
         raise Error(502, "تعذر تأكيد استجابة ميتا؛ تحقق من الاتصال")
 
-def config(org):
-    return next((c for c in configs() if c["organization_id"] == org), None)
+def config(org, db_conn=None):
+    return next((item for item in configs(db_conn) if item["organization_id"] == org), None)
 
 def status(c, org):
-    cfg = config(org)
+    cfg = config(org, c)
     if not cfg: return {"connected": False, "detail": "الخادم يعمل؛ إعداد واتساب لهذه المؤسسة لم يكتمل"}
     result = graph(cfg, cfg["phone_number_id"] + "?fields=id,display_phone_number,verified_name")
     if str(result.get("id")) != cfg["phone_number_id"]: raise Error(502, "معرّف الهاتف لا يطابق ميتا")
@@ -147,7 +164,7 @@ def ingest(c, cfg, payload, on_inbound=None):
     return {"matched_changes": matched, "inserted_messages": inserted}
 
 def send(c, org, data):
-    cfg = config(org)
+    cfg = config(org, c)
     if not cfg: raise Error(409,"واتساب غير مهيأ لهذه المؤسسة")
     peer, text, cid = str(data.get("to","")), str(data.get("message","")).strip(), str(data.get("clientMessageId",""))
     if not re.fullmatch(r"[0-9]{7,15}",peer) or not 1 <= len(text) <= 4096 or not re.fullmatch(r"[a-zA-Z0-9_-]{8,100}",cid):
@@ -184,7 +201,9 @@ def handle(h, method, db, on_inbound=None):
     if path != "/webhooks/whatsapp" and not path.startswith("/api/whatsapp/"): return False
     try:
         if path == "/webhooks/whatsapp":
-            cfgs = configs()
+            with db() as connection:
+                initialize(connection)
+                cfgs = configs(connection)
             if method == "GET":
                 q = parse_qs(urlparse(h.path).query)
                 token = q.get("hub.verify_token",[""])[0]
@@ -216,9 +235,34 @@ def handle(h, method, db, on_inbound=None):
             if user["role"] != "admin": raise Error(403,"إدارة واتساب متاحة لمسؤول المؤسسة فقط")
             initialize(c); org = user["organization_id"]
             package_row = c.execute("SELECT package FROM subscriptions WHERE organization_id=?", (org,)).fetchone()
-            if not package_row or str(package_row["package"]).lower() != "vip":
+            # Older installations may not have a subscription row yet; keep
+            # their existing WhatsApp inbox working while explicitly blocking
+            # accounts that are subscribed to a non-VIP package.
+            if package_row and str(package_row["package"]).lower() != "vip":
                 raise Error(403, "خدمة واتساب متاحة في باقة VIP فقط")
-            if path == "/api/whatsapp/status" and method == "GET": result = status(c,org)
+            if path == "/api/whatsapp/connect" and method == "POST":
+                data = h._body()
+                raw_phone = str(data.get("phone", "")).strip()
+                phone = re.sub(r"[^0-9]", "", raw_phone)
+                if phone.startswith("00"): phone = phone[2:]
+                if not re.fullmatch(r"[1-9][0-9]{7,14}", phone):
+                    raise Error(400, "أدخل رقم المؤسسة مع رمز الدولة")
+                base = configs()[0] if configs() else None
+                if not base: raise Error(503, "ربط واتساب الأساسي غير مهيأ على الخادم")
+                rows = graph(base, base["waba_id"] + "/phone_numbers?fields=id,display_phone_number,verified_name&limit=200")
+                numbers = rows.get("data", []) if isinstance(rows, dict) else []
+                match = next((item for item in numbers if re.sub(r"[^0-9]", "", str(item.get("display_phone_number", ""))) == phone), None)
+                if not match or not str(match.get("id", "")).isdigit():
+                    raise Error(409, "أضف رقم المؤسسة في Meta وتحقق منه أولًا، ثم أعد الفحص")
+                owner = c.execute("SELECT organization_id FROM whatsapp_connections WHERE phone_number_id=? AND organization_id<>?", (str(match["id"]), org)).fetchone()
+                if owner: raise Error(409, "هذا الرقم مرتبط بمؤسسة أخرى في خدوم")
+                now = int(time.time())
+                c.execute("""INSERT INTO whatsapp_connections(organization_id,phone_number,phone_number_id,waba_id,created_at,updated_at)
+                  VALUES(?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET phone_number=excluded.phone_number,
+                  phone_number_id=excluded.phone_number_id,waba_id=excluded.waba_id,updated_at=excluded.updated_at""",
+                  (org, phone, str(match["id"]), base["waba_id"], now, now))
+                result = {"connected": True, "phone": phone}
+            elif path == "/api/whatsapp/status" and method == "GET": result = status(c,org)
             elif path == "/api/whatsapp/messages" and method == "GET":
                 result = {"messages":[dict(r) for r in c.execute(
                   "SELECT * FROM whatsapp_messages WHERE organization_id=? ORDER BY timestamp DESC,id DESC LIMIT 200",(org,)).fetchall()]}
