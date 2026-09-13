@@ -7,6 +7,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:image_picker/image_picker.dart';
 
 import 'branch_store.dart';
 
@@ -450,6 +451,51 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
     if (mounted) await _check();
   }
 
+  Future<void> _pickAndSendImage(String peer, ImageSource source) async {
+    if (_busy) return;
+    final image = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 82,
+      maxWidth: 1600,
+      maxHeight: 1600,
+    );
+    if (image == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final bytes = await image.readAsBytes();
+      final api = await _gateway();
+      final id = List.generate(
+        16,
+        (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0'),
+      ).join();
+      final result = await api.call(
+        '/api/whatsapp/messages',
+        data: {
+          'to': peer,
+          'message': '',
+          'mediaType': 'image',
+          'mediaName': image.name,
+          'mediaBase64': base64Encode(bytes),
+          'clientMessageId': id,
+        },
+      ) as Map;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result['state'] == 'accepted' ? 'تم إرسال الصورة' : 'حالة الصورة: ${result['state']}')),
+        );
+        await _refreshMessages(api: api);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Widget _field(TextEditingController c, String label) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 8),
     child: TextField(
@@ -760,9 +806,18 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
             tooltip: 'رموز تعبيرية',
           ),
           IconButton(
-            onPressed: () {},
+            onPressed: widget.peer == null
+                ? null
+                : () => _pickAndSendImage(widget.peer!, ImageSource.gallery),
             icon: const Icon(Icons.attach_file, color: Color(0xFF54656F)),
             tooltip: 'إرفاق',
+          ),
+          IconButton(
+            onPressed: widget.peer == null
+                ? null
+                : () => _pickAndSendImage(widget.peer!, ImageSource.camera),
+            icon: const Icon(Icons.camera_alt_outlined, color: Color(0xFF54656F)),
+            tooltip: 'تصوير وإرسال',
           ),
           Expanded(
             child: TextField(

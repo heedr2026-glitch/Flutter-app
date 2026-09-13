@@ -1,5 +1,5 @@
 """WhatsApp Cloud API: explicit organization binding, signed webhooks, no client secrets."""
-import hashlib, hmac, json, os, re, time, uuid
+import base64, hashlib, hmac, json, mimetypes, os, re, time, uuid
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, parse_qs
@@ -60,6 +60,11 @@ def initialize(c):
       peer TEXT NOT NULL, direction TEXT NOT NULL, body TEXT NOT NULL, branch_id TEXT,
       timestamp BIGINT NOT NULL, state TEXT NOT NULL, meta_id TEXT, client_id TEXT,
       UNIQUE(organization_id,phone_number_id,meta_id), UNIQUE(organization_id,client_id))""")
+    for column, definition in (("media_type", "TEXT"), ("media_name", "TEXT"), ("media_id", "TEXT")):
+        try:
+            c.execute("ALTER TABLE whatsapp_messages ADD COLUMN %s %s" % (column, definition))
+        except Exception:
+            pass
     if hasattr(c, '_connection'):
         c.execute('ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS branch_id TEXT')
     elif 'branch_id' not in {r['name'] for r in c.execute('PRAGMA table_info(whatsapp_messages)')}:
@@ -94,6 +99,25 @@ def graph(cfg, path, body=None):
         raise Error(502, "رفضت ميتا الطلب؛ تحقق من الرمز والصلاحيات ورقم الهاتف (HTTP %s)" % code)
     except (URLError, TimeoutError, ValueError, OSError):
         raise Error(502, "تعذر تأكيد استجابة ميتا؛ تحقق من الاتصال")
+
+def graph_upload(cfg, filename, mime, content):
+    boundary = "----KhdoomMedia" + uuid.uuid4().hex
+    chunks = [
+        ("--" + boundary + "\r\nContent-Disposition: form-data; name=messaging_product\r\n\r\nwhatsapp\r\n").encode(),
+        ("--" + boundary + "\r\nContent-Disposition: form-data; name=file; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (filename, mime)).encode(),
+        content,
+        ("\r\n--" + boundary + "--\r\n").encode(),
+    ]
+    request = Request("https://graph.facebook.com/" + cfg["api_version"] + "/" + cfg["phone_number_id"] + "/media",
+      data=b"".join(chunks), headers={"Authorization": "Bearer " + cfg["token"],
+      "Content-Type": "multipart/form-data; boundary=" + boundary})
+    try:
+        with build_opener(NoRedirect()).open(request, timeout=30) as response:
+            return json.load(response)
+    except (HTTPError, URLError, TimeoutError, ValueError, OSError) as error:
+        code = getattr(error, "code", "network")
+        print("WhatsApp media upload failed status=%s" % code, flush=True)
+        raise Error(502, "تعذر رفع الصورة إلى ميتا؛ تحقق من صلاحيات الوسائط")
 
 def config(org, db_conn=None):
     return next((item for item in configs(db_conn) if item["organization_id"] == org), None)
@@ -167,6 +191,17 @@ def send(c, org, data):
     cfg = config(org, c)
     if not cfg: raise Error(409,"واتساب غير مهيأ لهذه المؤسسة")
     peer, text, cid = str(data.get("to","")), str(data.get("message","")).strip(), str(data.get("clientMessageId",""))
+    media_type = str(data.get("mediaType", "")).strip().lower()
+    media_name = str(data.get("mediaName", "image.jpg")).strip()[:120]
+    encoded = str(data.get("mediaBase64", "")).strip()
+    if media_type and media_type != "image":
+        raise Error(415, "إرسال هذا النوع من الوسائط غير مفعّل بعد")
+    if media_type == "image":
+        if not encoded or len(encoded) > 950000:
+            raise Error(413, "حجم الصورة أكبر من المسموح")
+        if not re.fullmatch(r"[a-zA-Z0-9+/=_-]+", encoded):
+            raise Error(400, "بيانات الصورة غير صحيحة")
+        text = text or "[صورة]"
     if not re.fullmatch(r"[0-9]{7,15}",peer) or not 1 <= len(text) <= 4096 or not re.fullmatch(r"[a-zA-Z0-9_-]{8,100}",cid):
         raise Error(400,"بيانات الرسالة غير صحيحة")
     old = c.execute("SELECT * FROM whatsapp_messages WHERE organization_id=? AND client_id=?",(org,cid)).fetchone()
@@ -186,6 +221,23 @@ def send(c, org, data):
     c.commit()
     if cursor.rowcount != 1: raise Error(409,"المحاولة قيد التنفيذ؛ حدّث المحادثة")
     try:
+        if media_type == "image":
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError):
+                raise Error(400, "بيانات الصورة غير صحيحة")
+            if not 1 <= len(content) <= 700000:
+                raise Error(413, "حجم الصورة أكبر من المسموح")
+            mime = mimetypes.guess_type(media_name)[0] or "image/jpeg"
+            uploaded = graph_upload(cfg, media_name, mime, content)
+            media_id = str(uploaded.get("id", ""))
+            if not media_id: raise Error(502, "لم تُصدر ميتا معرف الصورة")
+            result = graph(cfg,cfg["phone_number_id"]+"/messages",
+              {"messaging_product":"whatsapp","to":peer,"type":"image","image":{"id":media_id,"caption":text if text != "[صورة]" else ""}})
+            c.execute("UPDATE whatsapp_messages SET state=?,meta_id=?,media_type=?,media_name=?,media_id=? WHERE id=?",
+              ("accepted",result["messages"][0]["id"],"image",media_name,media_id,mid))
+            c.commit()
+            return dict(c.execute("SELECT * FROM whatsapp_messages WHERE id=?",(mid,)).fetchone())
         result = graph(cfg,cfg["phone_number_id"]+"/messages",
           {"messaging_product":"whatsapp","to":peer,"type":"text","text":{"body":text}})
         meta_id = result["messages"][0]["id"]
