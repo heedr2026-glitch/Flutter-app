@@ -472,6 +472,56 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
     }
   }
 
+  Future<void> _deleteRejected(Map<String, dynamic> ad) async {
+    final id = int.tryParse(ad['id']?.toString() ?? '');
+    if (id == null || advertisementStatus(ad) != 'rejected') return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('حذف الإعلان المرفوض؟'),
+        content: const Text(
+          'سيختفي من قائمة إعلاناتك نهائيًا، ولن يؤثر على الإعلانات المنشورة.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('حذف'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _submitting = true);
+    try {
+      await MyAdsService.withApi((api) => api.deleteAdvertisement(id));
+      if (mounted) {
+        setState(
+          () => _ads.removeWhere(
+            (item) => item['id'].toString() == id.toString(),
+          ),
+        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('تم حذف الإعلان المرفوض')));
+      }
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is CloudApiException ? error.message : 'تعذر حذف الإعلان',
+            ),
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
   String _date(dynamic raw) {
     final date = DateTime.tryParse(raw?.toString() ?? '')?.toLocal();
     return date == null
@@ -585,16 +635,32 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
                               'rejected',
                               'paused',
                             ].contains(advertisementStatus(ad)))
-                              TextButton.icon(
-                                onPressed: _submitting
-                                    ? null
-                                    : () => _request(ad),
-                                icon: const Icon(Icons.replay),
-                                label: Text(
-                                  advertisementStatus(ad) == 'expired'
-                                      ? 'طلب تجديد الإعلان'
-                                      : 'تعديل وإعادة الإرسال للمراجعة',
-                                ),
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  TextButton.icon(
+                                    onPressed: _submitting
+                                        ? null
+                                        : () => _request(ad),
+                                    icon: const Icon(Icons.replay),
+                                    label: Text(
+                                      advertisementStatus(ad) == 'expired'
+                                          ? 'طلب تجديد الإعلان'
+                                          : 'تعديل وإعادة الإرسال للمراجعة',
+                                    ),
+                                  ),
+                                  if (advertisementStatus(ad) == 'rejected')
+                                    TextButton.icon(
+                                      onPressed: _submitting
+                                          ? null
+                                          : () => _deleteRejected(ad),
+                                      icon: const Icon(Icons.delete_outline),
+                                      label: const Text('حذف المرفوض'),
+                                      style: TextButton.styleFrom(
+                                        foregroundColor: Colors.redAccent,
+                                      ),
+                                    ),
+                                ],
                               ),
                           ],
                         ),
@@ -641,9 +707,12 @@ class _AdvertisementRequestDialogState
       final mime = name.endsWith('.png') ? 'image/png' : 'image/jpeg';
       final encoded = 'data:$mime;base64,${base64Encode(bytes)}';
       if (encoded.length > 680000) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('حجم الصورة كبير. اختر صورة أقل من 500 كيلوبايت.')),
-        );
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('حجم الصورة كبير. اختر صورة أقل من 500 كيلوبايت.'),
+            ),
+          );
         return;
       }
       if (mounted) setState(() => _imageData = encoded);
@@ -651,6 +720,7 @@ class _AdvertisementRequestDialogState
       if (mounted) setState(() => _pickingImage = false);
     }
   }
+
   @override
   void initState() {
     super.initState();
@@ -706,14 +776,16 @@ class _AdvertisementRequestDialogState
                   maxLength: 80,
                   decoration: const InputDecoration(labelText: 'وسيلة التواصل'),
                 ),
-OutlinedButton.icon(
+                OutlinedButton.icon(
                   onPressed: _pickingImage ? null : _pickImage,
                   icon: const Icon(Icons.add_photo_alternate_outlined),
-                  label: Text(_pickingImage
-                      ? 'جارٍ تجهيز الصورة…'
-                      : _imageData.isEmpty
-                          ? 'إضافة صورة الإعلان'
-                          : 'تغيير صورة الإعلان'),
+                  label: Text(
+                    _pickingImage
+                        ? 'جارٍ تجهيز الصورة…'
+                        : _imageData.isEmpty
+                        ? 'إضافة صورة الإعلان'
+                        : 'تغيير صورة الإعلان',
+                  ),
                 ),
                 if (_imageData.isNotEmpty) ...[
                   const SizedBox(height: 8),

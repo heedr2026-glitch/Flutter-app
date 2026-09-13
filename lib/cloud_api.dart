@@ -336,6 +336,10 @@ class KhdoomCloudApi {
     return List<dynamic>.from(result as List);
   }
 
+  Future<void> deleteAdvertisement(int id) async {
+    await _request('DELETE', '/api/ads/$id');
+  }
+
   Future<Map<String, dynamic>> createAdvertisement({
     required String title,
     required String message,

@@ -203,6 +203,7 @@ class KhdoomNotifications {
       'device_blocked' => 'تم حظر جهاز 🔒',
       'blocked_device_login' => 'محاولة دخول من جهاز محظور 🚨',
       'support_ticket_updated' => 'تحديث من الدعم الفني 🛠️',
+      'support_request' => 'طلب دعم جديد من مشترك 🛠️',
       _ => 'تنبيه أمني من خدووم 🔐',
     };
     await _plugin.show(
@@ -2296,6 +2297,7 @@ class _DashboardPageState extends State<DashboardPage> {
             'device_unblocked',
             'blocked_device_login',
             'support_ticket_updated',
+            'support_request',
             'sessions_disconnected',
           };
           final logs = List<dynamic>.from(initialRequests[2] as List);
@@ -2310,6 +2312,7 @@ class _DashboardPageState extends State<DashboardPage> {
             'device_blocked',
             'blocked_device_login',
             'support_ticket_updated',
+            'support_request',
           };
           for (final raw in logs.reversed) {
             final item = Map<String, dynamic>.from(raw as Map);
@@ -6157,6 +6160,7 @@ class _SecurityAlertsPageState extends State<SecurityAlertsPage> {
     'device_unblocked',
     'blocked_device_login',
     'sessions_disconnected',
+    'support_request',
   };
   List<Map<String, dynamic>> _alerts = [];
   bool _loading = true;
