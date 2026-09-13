@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -5,7 +7,14 @@ import 'package:url_launcher/url_launcher.dart';
 /// A safe renewal assistant: it prepares the owner, but never signs in or
 /// submits a government request on the owner's behalf.
 class CommercialRecordRenewalPage extends StatefulWidget {
-  const CommercialRecordRenewalPage({super.key});
+  const CommercialRecordRenewalPage({
+    super.key,
+    this.platformTitle = 'السجل التجاري',
+    this.website = 'https://business.sa',
+  });
+
+  final String platformTitle;
+  final String website;
 
   @override
   State<CommercialRecordRenewalPage> createState() =>
@@ -14,7 +23,8 @@ class CommercialRecordRenewalPage extends StatefulWidget {
 
 class _CommercialRecordRenewalPageState
     extends State<CommercialRecordRenewalPage> {
-  static const _approvalKey = 'commercial_record_renewal_owner_approval_v1';
+  String get _prefix =>
+      'platform_renewal_${base64UrlEncode(utf8.encode(widget.platformTitle))}';
   final _number = TextEditingController();
   DateTime? _dueDate;
   bool _approved = false;
@@ -30,9 +40,9 @@ class _CommercialRecordRenewalPageState
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _approved = prefs.getBool(_approvalKey) ?? false;
-      _number.text = prefs.getString('commercial_record_number') ?? '';
-      final raw = prefs.getString('commercial_record_due_date');
+      _approved = prefs.getBool('${_prefix}_approval') ?? false;
+      _number.text = prefs.getString('${_prefix}_number') ?? '';
+      final raw = prefs.getString('${_prefix}_due_date');
       _dueDate = raw == null ? null : DateTime.tryParse(raw);
       _ready = true;
     });
@@ -40,12 +50,12 @@ class _CommercialRecordRenewalPageState
 
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('commercial_record_number', _number.text.trim());
+    await prefs.setString('${_prefix}_number', _number.text.trim());
     if (_dueDate == null) {
-      await prefs.remove('commercial_record_due_date');
+      await prefs.remove('${_prefix}_due_date');
     } else {
       await prefs.setString(
-        'commercial_record_due_date',
+        '${_prefix}_due_date',
         _dueDate!.toIso8601String(),
       );
     }
@@ -75,14 +85,14 @@ class _CommercialRecordRenewalPageState
       if (confirmed != true) return;
     }
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_approvalKey, value);
+    await prefs.setBool('${_prefix}_approval', value);
     if (mounted) setState(() => _approved = value);
   }
 
   Future<void> _openBusiness() async {
     if (!_approved) return;
     await _save();
-    final uri = Uri.parse('https://business.sa');
+    final uri = Uri.parse(widget.website);
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication) &&
         mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -107,7 +117,7 @@ class _CommercialRecordRenewalPageState
       child: Scaffold(
         backgroundColor: const Color(0xFF0B1020),
         appBar: AppBar(
-          title: const Text('التجديد الذكي للسجل التجاري'),
+          title: Text('التجديد الذكي — ${widget.platformTitle}'),
           backgroundColor: const Color(0xFF111B35),
           foregroundColor: Colors.white,
         ),
@@ -123,8 +133,8 @@ class _CommercialRecordRenewalPageState
                   children: [
                     const Icon(Icons.auto_awesome, color: Color(0xFF38BDF8), size: 34),
                     const SizedBox(height: 10),
-                    const Text(
-                      'مساعد تجديد السجل',
+                    Text(
+                      'مساعد تجديد ${widget.platformTitle}',
                       style: TextStyle(color: Colors.white, fontSize: 21, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),

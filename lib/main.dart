@@ -10036,6 +10036,20 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
                         spacing: 0,
                         children: [
                           IconButton(
+                            tooltip: 'التجديد الذكي',
+                            onPressed: () => Navigator.push<void>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => CommercialRecordRenewalPage(
+                                  platformTitle: title,
+                                  website: alert['website']?.toString() ??
+                                      'https://business.sa',
+                                ),
+                              ),
+                            ),
+                            icon: Icon(Icons.auto_awesome, color: color),
+                          ),
+                          IconButton(
                             tooltip: 'تعديل',
                             onPressed: () => _editAlert(alert),
                             icon: Icon(Icons.edit_outlined, color: color),
