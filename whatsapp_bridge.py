@@ -305,7 +305,19 @@ def handle(h, method, db, on_inbound=None):
             h._send(200,{"received":True}); return True
         with db() as c:
             user = h._user(c)
-            if user["role"] != "admin": raise Error(403,"إدارة واتساب متاحة لمسؤول المؤسسة فقط")
+            try:
+                permissions = json.loads(user["permissions"] or "{}")
+            except (TypeError, ValueError):
+                permissions = {}
+            is_admin = user["role"] == "admin"
+            can_view = is_admin or permissions.get("viewConversations") is True
+            can_reply = is_admin or permissions.get("replyConversations") is True
+            if method == "GET" and path in ("/api/whatsapp/status", "/api/whatsapp/messages") and not can_view:
+                raise Error(403,"لا تملك صلاحية مشاهدة محادثات واتساب")
+            if method == "POST" and path == "/api/whatsapp/messages" and not can_reply:
+                raise Error(403,"لا تملك صلاحية الرد على محادثات واتساب")
+            if (path == "/api/whatsapp/connect" or method == "POST" and path != "/api/whatsapp/messages") and not is_admin:
+                raise Error(403,"ربط واتساب متاح لمسؤول المؤسسة فقط")
             initialize(c); org = user["organization_id"]
             package_row = c.execute("SELECT package FROM subscriptions WHERE organization_id=?", (org,)).fetchone()
             # Older installations may not have a subscription row yet; keep
