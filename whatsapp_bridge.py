@@ -60,15 +60,26 @@ def initialize(c):
       peer TEXT NOT NULL, direction TEXT NOT NULL, body TEXT NOT NULL, branch_id TEXT,
       timestamp BIGINT NOT NULL, state TEXT NOT NULL, meta_id TEXT, client_id TEXT,
       UNIQUE(organization_id,phone_number_id,meta_id), UNIQUE(organization_id,client_id))""")
-    for column, definition in (("media_type", "TEXT"), ("media_name", "TEXT"), ("media_id", "TEXT")):
-        try:
-            c.execute("ALTER TABLE whatsapp_messages ADD COLUMN %s %s" % (column, definition))
-        except Exception:
-            pass
+    optional_columns = (("media_type", "TEXT"), ("media_name", "TEXT"), ("media_id", "TEXT"))
     if hasattr(c, '_connection'):
-        c.execute('ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS branch_id TEXT')
-    elif 'branch_id' not in {r['name'] for r in c.execute('PRAGMA table_info(whatsapp_messages)')}:
-        c.execute('ALTER TABLE whatsapp_messages ADD COLUMN branch_id TEXT')
+        # Do not catch a PostgreSQL ALTER error: a failed statement aborts the
+        # whole transaction. Check the catalog before changing the schema.
+        existing = {
+            str(row['column_name'])
+            for row in c.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name=?",
+                ("whatsapp_messages",),
+            ).fetchall()
+        }
+        for column, definition in optional_columns:
+            if column not in existing:
+                c.execute("ALTER TABLE whatsapp_messages ADD COLUMN %s %s" % (column, definition))
+    else:
+        existing = {r['name'] for r in c.execute('PRAGMA table_info(whatsapp_messages)')}
+        for column, definition in optional_columns:
+            if column not in existing:
+                c.execute('ALTER TABLE whatsapp_messages ADD COLUMN %s %s' % (column, definition))
     c.execute("""CREATE TABLE IF NOT EXISTS whatsapp_webhooks(
       phone_number_id TEXT PRIMARY KEY, received_at BIGINT NOT NULL)""")
 
