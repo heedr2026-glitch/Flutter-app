@@ -10046,8 +10046,9 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
                               MaterialPageRoute(
                                 builder: (_) => CommercialRecordRenewalPage(
                                   platformTitle: title,
-                                website: alert['website']?.toString() ??
-                                    'https://business.sa',
+                                  website:
+                                      alert['website']?.toString() ??
+                                      'https://business.sa',
                                 ),
                               ),
                             ),
@@ -10115,15 +10116,41 @@ class _AiTrainingPageState extends State<AiTrainingPage> {
   Future<KhdoomCloudApi> _api() async {
     final prefs = await BranchPreferences.getInstance();
     const storage = FlutterSecureStorage();
-    final token = await storage.read(key: 'cloud_session_token');
+    final baseUrl =
+        prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com';
+    var token = await storage.read(key: 'cloud_session_token');
     if (token == null || token.isEmpty) {
-      throw const CloudApiException(401, 'سجل الدخول أولًا لحفظ التدريب');
+      final username =
+          prefs.getString('remembered_login_username') ??
+          prefs.getString('admin_login_username') ??
+          '';
+      final employeeId = prefs.getString('session_employee_id');
+      final password = employeeId == null
+          ? await storage.read(key: 'admin_account_password')
+          : await storage.read(key: 'employee_password_$employeeId');
+      if (username.isNotEmpty && password != null && password.isNotEmpty) {
+        final refreshed = KhdoomCloudApi(scope: prefs, baseUrl: baseUrl);
+        try {
+          final device = await khdoomDeviceIdentity();
+          final result = await refreshed.login(
+            username,
+            password,
+            deviceId: device['id']!,
+            deviceName: device['name']!,
+          );
+          token = result['token']?.toString();
+          if (token != null && token!.isNotEmpty) {
+            await storage.write(key: 'cloud_session_token', value: token);
+          }
+        } finally {
+          refreshed.close();
+        }
+      }
     }
-    return KhdoomCloudApi(
-      scope: prefs,
-      baseUrl:
-          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
-    )..token = token;
+    if (token == null || token.isEmpty) {
+      throw const CloudApiException(401, 'سجّل الدخول إلى حساب خدووم أولًا');
+    }
+    return KhdoomCloudApi(scope: prefs, baseUrl: baseUrl)..token = token;
   }
 
   Future<void> _load({bool preserveDraft = false}) async {
