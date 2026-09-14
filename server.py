@@ -1519,10 +1519,15 @@ class Handler(BaseHTTPRequestHandler):
             supplied = self.headers.get("X-Khdoom-Call-Secret", "")
             if not expected or not supplied or not hmac.compare_digest(expected, supplied):
                 raise ApiError(401, "تعذر التحقق من قناة المكالمات")
-            data = self._body(); phone = str(data.get("organizationPhone") or data.get("to") or "").strip(); organization_id = data.get("organizationId")
+            data = self._body()
+            # لا نثق بمعرّف المؤسسة القادم من المزود أو العميل؛ نحدد المستأجر
+            # فقط من رقم الوجهة المسجل داخل خدووم.
+            phone = str(data.get("organizationPhone") or data.get("to") or "").strip()
             with db() as call_connection:
-                if organization_id is None and phone:
-                    found = call_connection.execute("SELECT organization_id FROM call_connections WHERE phone_number=?", (phone,)).fetchone(); organization_id = found["organization_id"] if found else None
+                if not phone:
+                    raise ApiError(400, "رقم المؤسسة مطلوب لتحديد جهة المكالمة")
+                found = call_connection.execute("SELECT organization_id FROM call_connections WHERE phone_number=?", (phone,)).fetchone()
+                organization_id = found["organization_id"] if found else None
                 if organization_id is None: raise ApiError(404, "لم يتم العثور على مؤسسة مرتبطة بالرقم")
                 allowed = call_connection.execute("SELECT organization_id FROM call_connections WHERE organization_id=? AND enabled=1", (int(organization_id),)).fetchone()
                 if not allowed: raise ApiError(409, "خدمة المكالمات غير مفعلة للمؤسسة")
