@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY server.py /app/server.py
 COPY owner_addons.js organization_addons.py owner_admin.py community_admin.py owner_dashboard.html owner_dashboard.js whatsapp_bridge.py twitter_integration.py /app/
 COPY ad_policy.py /app/ad_policy.py
+COPY tenant_isolation.py /app/tenant_isolation.py
 COPY branch_appointments.py /app/branch_appointments.py
 COPY branch_sync.py /app/branch_sync.py
 COPY appointment_context.py /app/appointment_context.py
