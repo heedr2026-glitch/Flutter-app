@@ -12,11 +12,14 @@ import secrets
 import sqlite3
 import re
 import threading
+import time
+from collections import defaultdict, deque
 import community_admin
 from contextvars import ContextVar
 REQUEST_SCOPE = ContextVar("request_branch_scope", default=None)
 import organization_addons
 import twitter_integration
+import tenant_isolation
 import owner_admin
 import package_limits
 import ad_policy
@@ -54,6 +57,10 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "" ).strip()
 HOST = os.environ.get("KHDOOM_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", os.environ.get("KHDOOM_PORT", "8080")))
 STARTUP_READY = False
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_MAX_REQUESTS = 120
 OWNER_KEY_PATH = ROOT / "owner.key"
 try:
     BACKUP_RECOVERY_HOURS = max(
@@ -71,6 +78,132 @@ except ValueError:
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_phone(value: object) -> str:
+    """Canonical E.164-like digits used for tenant routing (without '+')."""
+    phone = re.sub(r"[^0-9]", "", str(value or ""))
+    return phone[2:] if phone.startswith("00") else phone
+
+def record_login_failure(connection: Any, request: Any, *, organization_id: int | None,
+                         user_id: int | None, username: str, code: int, reason: str,
+                         data: dict[str, Any] | None = None, user: Any = None,
+                         backend_status: str = "ok", database_status: str = "ok",
+                         session_status: str = "not_created") -> None:
+    """Store bounded diagnostic metadata only; never store passwords or tokens."""
+    data = data or {}
+    user_exists = int(user is not None)
+    account_active = int(bool(user and user["active"]))
+    organization_linked = int(bool(user and user["organization_id"] and connection.execute(
+        "SELECT 1 FROM organizations WHERE id=?", (user["organization_id"],)).fetchone()))
+    hash_status = "not_checked"
+    permissions_status = "not_checked"
+    if user is not None:
+        hash_status = "valid" if re.fullmatch(r"[0-9a-fA-F]{64}", str(user["password_hash"] or "")) and re.fullmatch(r"[0-9a-fA-F]{32}", str(user["password_salt"] or "")) else "invalid"
+        try:
+            permissions = json.loads(user["permissions"] or "{}")
+            permissions_status = "valid" if isinstance(permissions, dict) else "invalid"
+        except (TypeError, json.JSONDecodeError):
+            permissions_status = "invalid"
+    try:
+        connection.execute(
+            """INSERT INTO login_failures(
+               organization_id,user_id,username,device_name,app_version,ip,
+               error_code,reason,database_status,backend_status,session_status,
+               user_exists,account_active,organization_linked,password_hash_status,
+               permissions_status,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (organization_id, user_id, username[:120],
+             str(data.get("deviceName") or request.headers.get("X-Device-Name", "جهاز غير معروف"))[:120],
+             str(data.get("appVersion") or request.headers.get("X-App-Version", ""))[:40],
+             request.client_address[0][:64], code, reason[:240], database_status,
+             backend_status, session_status, user_exists, account_active,
+             organization_linked, hash_status, permissions_status, now()),
+        )
+        causes = {
+            "user_not_found": "المستخدم غير موجود في قاعدة البيانات أو لم تتم مزامنته",
+            "account_inactive": "الحساب موجود لكنه موقوف",
+            "organization_suspended": "المؤسسة موقوفة",
+            "password_verification_failed": "فشل التحقق من كلمة المرور",
+            "device_blocked": "الجهاز محظور من المؤسسة",
+        }
+        diagnosis = causes.get(reason, "فشل غير محدد في مسار تسجيل الدخول")
+        connection.execute(
+            """INSERT INTO technical_tasks(
+               organization_id,user_id,service,problem,severity,status,diagnosis,
+               proposal,action_taken,result,started_at,finished_at,created_by)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (organization_id, user_id, "login", "فشل تسجيل الدخول", "medium", "diagnosed",
+             diagnosis, "مراجعة التقرير ثم تنفيذ إصلاح آمن بموافقة وصلاحية مناسبة",
+             "لا إجراء تلقائي؛ لم يتم تغيير كلمة المرور أو حذف أي بيانات",
+             "تم التشخيص", now(), now(), "auto-login"),
+        )
+    except Exception:
+        # Diagnostics must never prevent the normal login response.
+        pass
+
+def technical_auto_monitor() -> None:
+    """Create a bounded diagnostic task when a login outage pattern appears."""
+    while True:
+        try:
+            with db() as connection:
+                cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+                failures = connection.execute(
+                    """SELECT COUNT(DISTINCT COALESCE(
+                           CAST(user_id AS TEXT), username || ':' || device_name)) AS n
+                       FROM login_failures WHERE created_at>=?""",
+                    (cutoff,),
+                ).fetchone()["n"]
+                recent_task = connection.execute(
+                    "SELECT id FROM technical_tasks WHERE service='login' AND created_by='auto-monitor' AND started_at>=? LIMIT 1",
+                    (cutoff,),
+                ).fetchone()
+                if failures >= 3 and recent_task is None:
+                    ts = now()
+                    connection.execute(
+                        """INSERT INTO technical_tasks(
+                           service,problem,severity,status,diagnosis,proposal,
+                           started_at,created_by)
+                           VALUES(?,?,?,?,?,?,?,?)""",
+                        ("login", "تكرار فشل تسجيل الدخول خلال فترة قصيرة", "high",
+                         "diagnosed", "تم رصد نمط متكرر في Login API؛ يلزم فحص الحسابات والجلسات وقاعدة البيانات",
+                         "مراجعة سجلات المصادقة وفحص المؤسسة المتأثرة قبل أي تعديل", ts, "auto-monitor"),
+                    )
+                    connection.execute(
+                        """INSERT INTO technical_incidents(
+                           service,problem,root_cause,proposal,severity,test_status,
+                           deployment_status,affected_organizations,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                        ("login", "عطل عام محتمل في تسجيل الدخول",
+                         "تكررت أخطاء المصادقة من عدة محاولات خلال 10 دقائق",
+                         "تشخيص الجلسات والصلاحيات وكلمات المرور دون تغيير تلقائي",
+                         "high", "not_tested", "proposed", 0, ts, ts),
+                    )
+                    connection.commit()
+        except Exception as error:
+            print(f"TECHNICAL MONITOR ERROR: {type(error).__name__}", flush=True)
+        time.sleep(60)
+
+
+def insert_chat_message(connection: Any, organization_id: int, session_id: int,
+                        sender: str, message: str, created_at: str):
+    """Insert a scoped chat message, retaining compatibility with tiny test DBs."""
+    try:
+        has_scope = bool(connection.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name=? AND column_name=?",
+            ("chat_messages", "organization_id"),
+        ).fetchone())
+    except Exception:
+        has_scope = any(row[1] == "organization_id" for row in connection.execute("PRAGMA table_info(chat_messages)"))
+    if has_scope:
+        return connection.execute(
+            "INSERT INTO chat_messages(organization_id,session_id,sender,message,created_at) VALUES(?,?,?,?,?)",
+            (organization_id, session_id, sender, message, created_at),
+        )
+    return connection.execute(
+        "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
+        (session_id, sender, message, created_at),
+    )
 
 
 def format_arabic_datetime(value: datetime) -> str:
@@ -172,8 +305,8 @@ def whatsapp_auto_reply(connection: Any, cfg: dict[str, Any], peer: str, message
         print("WhatsApp auto-reply skipped=no_active_admin", flush=True)
         return
     package, daily_limit, used = ai_allowance(connection, organization_id, enforce=False)
-    if package != "vip":
-        print("WhatsApp auto-reply skipped=vip_required", flush=True)
+    if package not in ("basic", "vip"):
+        print("WhatsApp auto-reply skipped=ai_reception_requires_basic_or_vip", flush=True)
         return
     if used >= daily_limit:
         print("WhatsApp auto-reply skipped=daily_limit", flush=True)
@@ -182,8 +315,8 @@ def whatsapp_auto_reply(connection: Any, cfg: dict[str, Any], peer: str, message
     history = []
     if session is not None:
         rows = connection.execute(
-            "SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12",
-            (session["id"],),
+            "SELECT sender,message FROM chat_messages WHERE organization_id=? AND session_id=? ORDER BY id DESC LIMIT 12",
+            (organization_id, session["id"]),
         ).fetchall()
         history = [{"role": row["sender"], "text": str(row["message"])} for row in reversed(rows)]
     training = ai_training_text(connection, organization_id, "reception")
@@ -700,6 +833,7 @@ def init_db() -> None:
         );
         CREATE TABLE IF NOT EXISTS chat_messages (
           id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
           session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
           sender TEXT NOT NULL CHECK(sender IN ('customer','bot','human')),
           message TEXT NOT NULL,
@@ -889,6 +1023,7 @@ def init_db() -> None:
             owner_admin.migrate(connection, postgres=True)
             community_admin.migrate(connection, postgres=True)
             organization_addons.migrate(connection, postgres=True)
+            tenant_isolation.migrate(connection, postgres=True)
             twitter_integration.migrate(connection, postgres=True)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -995,6 +1130,7 @@ def init_db() -> None:
             );
             CREATE TABLE IF NOT EXISTS chat_messages (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
               session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
               sender TEXT NOT NULL CHECK(sender IN ('customer','bot','human')),
               message TEXT NOT NULL,
@@ -1249,6 +1385,7 @@ def init_db() -> None:
         owner_admin.migrate(connection)
         community_admin.migrate(connection)
         organization_addons.migrate(connection)
+        tenant_isolation.migrate(connection)
         twitter_integration.migrate(connection, postgres=True)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
         OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
@@ -1417,8 +1554,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.end_headers()
         self.wfile.write(body)
+
+    def _rate_limited(self, path: str) -> bool:
+        if not path.startswith("/api/") and not path.startswith("/owner/api/"):
+            return False
+        key = f"{self.client_address[0]}:{'owner' if path.startswith('/owner/api/') else 'api'}"
+        now_monotonic = time.monotonic()
+        with _RATE_LIMIT_LOCK:
+            bucket = _RATE_LIMIT_BUCKETS[key]
+            while bucket and now_monotonic - bucket[0] > _RATE_LIMIT_WINDOW_SECONDS:
+                bucket.popleft()
+            limit = 20 if path in ("/api/login", "/api/register") else _RATE_LIMIT_MAX_REQUESTS
+            if len(bucket) >= limit:
+                return True
+            bucket.append(now_monotonic)
+        return False
 
     def _send_html(self, html: str, *, ad_management: bool = False, status: int = 200) -> None:
         if '<title>عروض باقات خدووم</title>' in html:
@@ -1427,6 +1583,13 @@ class Handler(BaseHTTPRequestHandler):
                     html = html.replace(f'<{tag} id="{field}"', f'<label for="{field}">{caption}</label><{tag} id="{field}"')
         if ad_management:
             html = html.replace('</body>', '<script>' + (ROOT / 'owner_ads.js').read_text(encoding='utf-8') + '</script></body>')
+        if '<title>لوحة أمن خدووم</title>' in html:
+            html = html.replace('</body>', '''<script>
+const khdoomOrganizations=(organizations)=>organizations||[];
+renderAccounts=function(accounts,organizations=[]){if(!organizations.length){fetch('/owner/api/security/overview',{headers:hdr()}).then(r=>r.json()).then(d=>renderAccounts(accounts,d.organizations||[]));return}const all=khdoomOrganizations(organizations),by=new Map(all.map(o=>[String(o.id),{name:o.name,accounts:[]}]));(accounts||[]).forEach(x=>{const k=String(x.organization_id);if(!by.has(k))by.set(k,{name:x.organization_name,accounts:[]});by.get(k).accounts.push(x)});document.getElementById('accounts').innerHTML=[...by.values()].map(g=>`<div class="event"><h3>${esc(g.name||'مؤسسة غير معروفة')}</h3>${g.accounts.length?g.accounts.map(x=>`<p>المستخدم: ${esc(x.name)} (${esc(x.username)}) — ${x.active?'نشط':'مجمّد'}</p>`).join(''):'<p class="muted">لا يوجد حساب مرتبط حاليًا.</p>'}</div>`).join('')||'<p>لا توجد مؤسسات.</p>'};
+renderDevices=function(active,blocked,accounts,organizations=[]){if(!organizations.length){fetch('/owner/api/security/overview',{headers:hdr()}).then(r=>r.json()).then(d=>renderDevices(active,blocked,accounts,d.organizations||[]));return}const groups=new Map();const group=x=>{const k=String(x.organization_id);if(!groups.has(k))groups.set(k,{name:x.organization_name,accounts:[],devices:[],blocked:[]});return groups.get(k)};khdoomOrganizations(organizations).forEach(group);(accounts||[]).forEach(x=>group(x).accounts.push({...x,devices:[]}));(active||[]).forEach(x=>group(x).devices.push(x));(blocked||[]).forEach(x=>group(x).blocked.push(x));deviceGroups=[...groups.values()];showDeviceOrganizations()};
+setupAuditOrganizations=function(accounts,organizations=[]){const select=document.getElementById('auditOrg');if(!select)return;const seen=new Map(khdoomOrganizations(organizations).map(x=>[x.id,x.name]));(accounts||[]).forEach(x=>seen.set(x.organization_id,x.organization_name));select.innerHTML='<option value="">جميع المؤسسات</option>'+[...seen].map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('')};
+</script></body>''')
         body = html.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1505,6 +1668,9 @@ class Handler(BaseHTTPRequestHandler):
         REQUEST_SCOPE.set(None)
         self.platform_actor = None
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if self._rate_limited(path):
+            self._send(429, {"error": "طلبات كثيرة حاليًا. حاول مرة أخرى بعد قليل."})
+            return
         # Keep Render's port and health probe available while database migrations
         # finish. Other requests continue through the normal startup path below.
         if method == "GET" and path == "/health":
@@ -1512,7 +1678,13 @@ class Handler(BaseHTTPRequestHandler):
             # here lets an old instance release migration locks during the
             # zero-downtime handover; normal endpoints remain on the existing
             # startup path until initialization has completed.
-            self._send(200, {"status": "ok" if STARTUP_READY else "starting", "service": "khdoom-api"})
+            database_status = "ok"
+            try:
+                with db() as health_connection:
+                    health_connection.execute("SELECT 1").fetchone()
+            except Exception:
+                database_status = "degraded"
+            self._send(200, {"status": "ok" if STARTUP_READY and database_status == "ok" else "degraded", "service": "khdoom-api", "services": {"api": "ok", "database": database_status, "whatsapp": "configured" if os.environ.get("WHATSAPP_ACCESS_TOKEN", "").strip() else "not_configured", "ai": "configured" if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "not_configured", "calls": "configured" if os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip() else "not_configured"}})
             return
         if path == "/webhooks/calls" and method == "POST":
             expected = os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip()
@@ -1522,7 +1694,7 @@ class Handler(BaseHTTPRequestHandler):
             data = self._body()
             # لا نثق بمعرّف المؤسسة القادم من المزود أو العميل؛ نحدد المستأجر
             # فقط من رقم الوجهة المسجل داخل خدووم.
-            phone = str(data.get("organizationPhone") or data.get("to") or "").strip()
+            phone = normalize_phone(data.get("organizationPhone") or data.get("to"))
             with db() as call_connection:
                 if not phone:
                     raise ApiError(400, "رقم المؤسسة مطلوب لتحديد جهة المكالمة")
@@ -1705,8 +1877,8 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                     return
                 rows = connection.execute(
                     """SELECT id,sender,message,created_at FROM chat_messages
-                       WHERE session_id=? AND id>? ORDER BY id ASC""",
-                    (session["id"], after),
+                       WHERE organization_id=? AND session_id=? AND id>? ORDER BY id ASC""",
+                    (organization["id"], session["id"], after),
                 ).fetchall()
             self._send(200, [dict(row) for row in rows])
             return
@@ -1749,10 +1921,12 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                            VALUES(?,?,?,?,?,?,?)""",
                         (organization["id"], supplied_session_token, "idle", "{}", now(), now(), organization["branch_id"]),
                     )
-                    session = connection.execute("SELECT * FROM chat_sessions WHERE id=?", (cursor.lastrowid,)).fetchone()
-                customer_cursor = connection.execute(
-                    "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
-                    (session["id"], "customer", message, now()),
+                    session = connection.execute(
+                        "SELECT * FROM chat_sessions WHERE id=? AND organization_id=?",
+                        (cursor.lastrowid, organization["id"]),
+                    ).fetchone()
+                customer_cursor = insert_chat_message(
+                    connection, organization["id"], session["id"], "customer", message, now()
                 )
                 reply = _appointment_chat_reply(connection, organization["id"], session, message, customer_cursor.lastrowid)
                 if reply is None:
@@ -1763,7 +1937,10 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                     if admin is None:
                         raise ApiError(503, "لا يوجد مسؤول نشط للمؤسسة")
                     training = '\n'.join(dict.fromkeys((ai_training_text(connection, organization["id"], "chat") + '\n' + ai_training_text(connection, organization["id"], "reception")).splitlines()))
-                    previous_messages = connection.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12', (session['id'],)).fetchall()
+                    previous_messages = connection.execute(
+                        'SELECT sender,message FROM chat_messages WHERE organization_id=? AND session_id=? ORDER BY id DESC LIMIT 12',
+                        (organization['id'], session['id']),
+                    ).fetchall()
                     reply = reception_actions.exact_answer(message, training)
                     if reply is None and used >= daily_limit:
                         reply = 'وصل موظف الاستقبال لحده اليومي. أقدر أساعدك بالحجز أو أسجّل طلب تواصل مع موظف بشري.'
@@ -1783,14 +1960,13 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                             "INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
                             (organization["id"], admin["id"], "public_reception_chat", now(), organization["branch_id"]),
                         )
-                bot_cursor = connection.execute(
-                    "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
-                    (session["id"], "bot", reply, now()),
+                bot_cursor = insert_chat_message(
+                    connection, organization["id"], session["id"], "bot", reply, now()
                 )
                 connection.commit()
             self._send(200, {"text": reply, "remaining": daily_limit - used - 1, "sessionToken": supplied_session_token, "lastMessageId": bot_cursor.lastrowid})
             return
-        if method == "GET" and path in ("/owner/security", "/owner/services", "/owner/package-limits", "/owner/legacy", "/owner/legacy-disabled-backup"):
+        if method == "GET" and path in ("/owner/services", "/owner/package-limits", "/owner/legacy", "/owner/legacy-disabled-backup"):
             self.send_response(302)
             self.send_header("Location", "/owner")
             self.send_header("Cache-Control", "no-store")
@@ -1909,6 +2085,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     UNION ALL SELECT organizations.name,'المواعيد' FROM maintenance_modes JOIN organizations ON organizations.id=maintenance_modes.organization_id WHERE maintenance_modes.appointments_until>?""", (current_time,current_time,current_time)).fetchall()
             with db() as connection:
                 login_attempts = connection.execute("""SELECT audit_logs.id,audit_logs.summary,audit_logs.created_at,users.name AS user_name,users.username,organizations.name AS organization_name,COUNT(1) OVER (PARTITION BY audit_logs.actor_user_id,audit_logs.summary) AS attempt_count FROM audit_logs JOIN organizations ON organizations.id=audit_logs.organization_id LEFT JOIN users ON users.id=audit_logs.actor_user_id WHERE audit_logs.action='failed_login' ORDER BY audit_logs.id DESC LIMIT 100""").fetchall()
+                organizations = connection.execute("SELECT id,name FROM organizations ORDER BY name,id").fetchall()
                 accounts = connection.execute("""SELECT users.id,users.name,users.username,users.role,users.active,organizations.id AS organization_id,organizations.name AS organization_name FROM users JOIN organizations ON organizations.id=users.organization_id ORDER BY organizations.name,users.id""").fetchall()
                 devices = connection.execute("""SELECT sessions.token_hash AS id,sessions.device_id,sessions.device_name,sessions.trusted,sessions.last_seen_at,sessions.created_at,sessions.expires_at,users.name AS user_name,users.username,users.active AS user_active,organizations.id AS organization_id,organizations.name AS organization_name FROM sessions JOIN users ON users.id=sessions.user_id JOIN organizations ON organizations.id=users.organization_id WHERE sessions.expires_at>? ORDER BY sessions.last_seen_at DESC,sessions.created_at DESC""", (current_time,)).fetchall()
                 blocked_devices = connection.execute("""SELECT blocked_devices.organization_id,blocked_devices.device_id,blocked_devices.device_name,blocked_devices.blocked_at,organizations.name AS organization_name FROM blocked_devices JOIN organizations ON organizations.id=blocked_devices.organization_id ORDER BY blocked_devices.blocked_at DESC""").fetchall()
@@ -1941,7 +2118,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 {"name": "واتساب", "status": "unverified" if whatsapp_configured else "not_connected", "detail": "إعدادات موجودة؛ تحقق من الاتصال من صفحة واتساب." if whatsapp_configured else "مرحلة لاحقة — لم يتم ربط واتساب حتى الآن."},
                 {"name": "الاتصال", "status": "ready" if calls_configured else "not_connected", "detail": "تم العثور على إعدادات الربط." if calls_configured else "مرحلة لاحقة — لم يتم ربط خدمة الاتصال حتى الآن."},
             ]
-            self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped) + sum(1 for item in emergency if item["active"]),"services": services,"integrations": integrations,"backup": backup,"events": [dict(row) for row in events],"loginAttempts": [dict(row) for row in login_attempts],"accounts": account_items,"devices": device_items,"blockedDevices": [dict(row) for row in blocked_devices]})
+            self._send(200, {"activeUsers": active_users,"failedLogins": failed_logins,"untrustedDevices": untrusted_devices,"securityAlerts": security_alerts,"stoppedServices": len(stopped) + sum(1 for item in emergency if item["active"]),"services": services,"integrations": integrations,"backup": backup,"events": [dict(row) for row in events],"loginAttempts": [dict(row) for row in login_attempts],"organizations": [dict(row) for row in organizations],"accounts": account_items,"devices": device_items,"blockedDevices": [dict(row) for row in blocked_devices]})
             return
         if path == "/owner/api/support-tickets" and method == "GET":
             self._owner()
@@ -2658,16 +2835,24 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             with db() as connection:
                 if downgrade_expired_subscriptions(connection):
                     connection.commit()
+                login_identity = str(data.get("username", "")).strip().lower()
                 user = connection.execute(
-                    "SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1",
-                    (str(data.get("username", "")).strip().lower(),),
+                    "SELECT * FROM users WHERE (username=? COLLATE NOCASE OR (email<>'' AND email=? COLLATE NOCASE))",
+                    (login_identity, login_identity),
                 ).fetchone()
                 if user is None:
                     connection.execute('INSERT INTO platform_unknown_logins(account,created_at) VALUES(?,?)',(str(data.get('username',''))[:100],now()))
+                    record_login_failure(connection, self, organization_id=None, user_id=None, username=login_identity, code=401, reason='user_not_found', data=data)
                     connection.commit()
-                    raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
+                    raise ApiError(401, "تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.")
+                if not user["active"]:
+                    record_login_failure(connection, self, organization_id=user["organization_id"], user_id=user["id"], username=user["username"], code=403, reason='account_inactive', data=data, user=user)
+                    connection.commit()
+                    raise ApiError(403, "تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.")
                 if owner_admin.suspended(connection, user["organization_id"]):
-                    raise ApiError(403, "المؤسسة موقوفة؛ تواصل مع الدعم")
+                    record_login_failure(connection, self, organization_id=user["organization_id"], user_id=user["id"], username=user["username"], code=403, reason='organization_suspended', data=data, user=user)
+                    connection.commit()
+                    raise ApiError(403, "تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.")
                 if not verify_password(str(data.get("password", "")), user["password_hash"], user["password_salt"]):
                     client_ip = self.headers.get("X-Forwarded-For", self.client_address[0]).split(",")[0].strip()
                     audit_log(connection, user["organization_id"], user["id"], "failed_login", f"محاولة دخول فاشلة من {str(data.get('deviceName', 'جهاز غير معروف')).strip()} — الاتصال: {client_ip}", "security")
@@ -2685,17 +2870,19 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                             f"تنبيه: 3 محاولات دخول فاشلة خلال 10 دقائق — الجهاز: {str(data.get('deviceName', 'جهاز غير معروف')).strip()}",
                             "security",
                         )
+                    record_login_failure(connection, self, organization_id=user["organization_id"], user_id=user["id"], username=user["username"], code=401, reason='password_verification_failed', data=data, user=user)
                     connection.commit()
-                    raise ApiError(401, "اسم المستخدم أو كلمة المرور غير صحيحة")
+                    raise ApiError(401, "تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.")
                 device_id = str(data.get("deviceId", "")).strip()
                 blocked_device = connection.execute(
                     "SELECT 1 FROM blocked_devices WHERE organization_id=? AND device_id=?",
                     (user["organization_id"], device_id),
                 ).fetchone() if device_id else None
                 if blocked_device is not None:
+                    record_login_failure(connection, self, organization_id=user["organization_id"], user_id=user["id"], username=user["username"], code=403, reason='device_blocked', data=data, user=user)
                     audit_log(connection, user["organization_id"], user["id"], "blocked_device_login", f"محاولة دخول من جهاز محظور: {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "security", device_id[:40])
                     connection.commit()
-                    raise ApiError(403, "هذا الجهاز محظور. تواصل مع مالك المؤسسة")
+                    raise ApiError(403, "تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.")
                 known_device = connection.execute(
                     """SELECT 1 FROM sessions JOIN users ON users.id=sessions.user_id
                        WHERE users.organization_id=? AND sessions.device_id=? LIMIT 1""",
@@ -2798,10 +2985,19 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 organization = connection.execute("SELECT phone,activity FROM organizations WHERE id=?", (organization_id,)).fetchone()
                 if not organization or not str(organization["phone"] or "").strip():
                     raise ApiError(400, "أضف رقم المؤسسة أولًا")
+                phone = normalize_phone(organization["phone"])
+                if not re.fullmatch(r"[1-9][0-9]{7,14}", phone):
+                    raise ApiError(400, "رقم المؤسسة غير صالح؛ أضفه مع رمز الدولة")
+                conflict = connection.execute(
+                    "SELECT organization_id FROM call_connections WHERE phone_number=? AND organization_id<>?",
+                    (phone, organization_id),
+                ).fetchone()
+                if conflict:
+                    raise ApiError(409, "رقم المؤسسة مرتبط بمؤسسة أخرى في خدوم")
                 gateway_ready = any(os.environ.get(name, "").strip() for name in ("KHDOOM_CALLS_GATEWAY_URL", "KHDOOM_CALLS_API_KEY"))
                 status = "ready" if gateway_ready else "pending_setup"
                 message = "" if gateway_ready else "قناة المكالمات تحتاج إعداد الخادم"
-                connection.execute("INSERT INTO call_connections(organization_id,phone_number,activity,enabled,status,last_error,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET phone_number=excluded.phone_number,activity=excluded.activity,enabled=excluded.enabled,status=excluded.status,last_error=excluded.last_error,updated_at=excluded.updated_at", (organization_id, organization["phone"], organization["activity"], 1, status, message, now()))
+                connection.execute("INSERT INTO call_connections(organization_id,phone_number,activity,enabled,status,last_error,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET phone_number=excluded.phone_number,activity=excluded.activity,enabled=excluded.enabled,status=excluded.status,last_error=excluded.last_error,updated_at=excluded.updated_at", (organization_id, phone, organization["activity"], 1, status, message, now()))
                 audit_log(connection, organization_id, user["id"], "calls_connected", "تم حفظ إعداد مكالمات المؤسسة", "calls", str(organization_id))
                 connection.commit()
                 self._send(200, {"connected": True, "status": status, "message": "تم ربط المكالمات بخدووم" if gateway_ready else "تم حفظ الربط، وتحتاج قناة المكالمات إعدادًا من الخادم"})
@@ -3474,9 +3670,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     if followup_through is not None:
                         connection.execute('UPDATE appointment_followups SET resolved=1 WHERE appointment_id=? AND message_id<=?',
                                            (appointment_id, followup_through))
-                    connection.execute(
-                        "INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)",
-                        (appointment["chat_session_id"], "human", reply_message, now()),
+                    insert_chat_message(
+                        connection, organization_id, appointment["chat_session_id"], "human", reply_message, now()
                     )
                     connection.execute(
                         "UPDATE chat_sessions SET state=?,updated_at=? WHERE id=?",
@@ -3677,6 +3872,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 row = connection.execute("SELECT package,starts_at,expires_at FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()
                 self._send(200, dict(row))
                 return
+            if path == "/api/usage-summary" and method == "GET":
+                self._send(200, owner_admin.customer_usage_summary(connection, organization_id, __import__("sys").modules[__name__]))
+                return
         raise ApiError(404, "المسار غير موجود")
 
     def do_OPTIONS(self) -> None:
@@ -3715,5 +3913,6 @@ if __name__ == "__main__":
     init_db()
     STARTUP_READY = True
     print(f"Database: {DB_PATH}")
+    threading.Thread(target=technical_auto_monitor, daemon=True, name="technical-auto-monitor").start()
     service_monitor.start(db, DB_PATH, bool(DATABASE_URL), PORT)
     threading.Event().wait()
