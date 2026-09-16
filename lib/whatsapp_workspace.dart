@@ -485,7 +485,13 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
       ) as Map;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result['state'] == 'accepted' ? 'تم إرسال الصورة' : 'حالة الصورة: ${result['state']}')),
+          SnackBar(
+            content: Text(
+              result['state'] == 'accepted'
+                  ? 'تم إرسال الصورة'
+                  : 'حالة الصورة: ${result['state']}',
+            ),
+          ),
         );
         await _refreshMessages(api: api);
       }
@@ -511,33 +517,50 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
       setState(() => _busy = true);
       try {
         final api = await _gateway();
-        final id = List.generate(16, (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0')).join();
-        final result = await api.call('/api/whatsapp/messages', data: {
-          'to': peer,
-          'message': '',
-          'mediaType': 'audio',
-          'mediaName': 'voice.ogg',
-          'mediaBase64': base64Encode(await file.readAsBytes()),
-          'clientMessageId': id,
-        }) as Map;
+        final id = List.generate(
+          16,
+          (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0'),
+        ).join();
+        final result = await api.call(
+          '/api/whatsapp/messages',
+          data: {
+            'to': peer,
+            'message': '',
+            'mediaType': 'audio',
+            'mediaName': 'voice.ogg',
+            'mediaBase64': base64Encode(await file.readAsBytes()),
+            'clientMessageId': id,
+          },
+        ) as Map;
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم إرسال المقطع الصوتي')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('تم إرسال المقطع الصوتي')),
+          );
           await _refreshMessages(api: api);
         }
       } catch (e) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(e.toString().replaceFirst('Exception: ', '')),
+            ),
+          );
       } finally {
         if (mounted) setState(() => _busy = false);
       }
       return;
     }
     if (!await _recorder.hasPermission()) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('اسمح لخدوم باستخدام الميكروفون أولًا')));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('اسمح لخدوم باستخدام الميكروفون أولًا')),
+        );
       return;
     }
     await _recorder.start(
       const RecordConfig(encoder: AudioEncoder.opus),
-      path: '${Directory.systemTemp.path}/khdoom_voice_${DateTime.now().millisecondsSinceEpoch}.ogg',
+      path:
+          '${Directory.systemTemp.path}/khdoom_voice_${DateTime.now().millisecondsSinceEpoch}.ogg',
     );
     if (mounted) setState(() => _recording = true);
   }
@@ -680,12 +703,12 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                             color: Colors.grey.shade400,
                           ),
                           const SizedBox(height: 12),
-                            const Text(
-                              'لا توجد محادثات بعد',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.white,
+                          const Text(
+                            'لا توجد محادثات بعد',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
                             ),
                           ),
                           const SizedBox(height: 6),
@@ -815,7 +838,11 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
             Flexible(
               child: Text(
                 message['body']?.toString() ?? 'مرفق',
-                style: const TextStyle(color: Colors.white, fontSize: 16, height: 1.35),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  height: 1.35,
+                ),
               ),
             ),
             const SizedBox(width: 8),
@@ -866,7 +893,10 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
             onPressed: widget.peer == null
                 ? null
                 : () => _pickAndSendImage(widget.peer!, ImageSource.camera),
-            icon: const Icon(Icons.camera_alt_outlined, color: Color(0xFF7DD3FC)),
+            icon: const Icon(
+              Icons.camera_alt_outlined,
+              color: Color(0xFF7DD3FC),
+            ),
             tooltip: 'تصوير وإرسال',
           ),
           Expanded(
@@ -1120,10 +1150,29 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
               if (_messageError != null)
                 Text('تعذر تحديث الرسائل: $_messageError'),
               if (_messages.isEmpty && !_busy && _messageError == null)
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text(
-                    'لا توجد رسائل محفوظة بعد. بانتظار وصول رسالة جديدة من العميل.',
+                Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'لا توجد رسائل محفوظة بعد. أضف رقم واتساب المؤسسة لبدء الربط.',
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        icon: const Icon(Icons.add_link),
+                        label: const Text('إضافة رقم واتساب وربط المؤسسة'),
+                        onPressed: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const WhatsAppWorkspace(),
+                            ),
+                          );
+                          if (mounted) await _loadInboxFast();
+                        },
+                      ),
+                    ],
                   ),
                 ),
             ],
