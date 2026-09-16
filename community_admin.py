@@ -101,7 +101,7 @@ def client(h,method,s):
    body=str(h._body().get('body','')).strip()
    if not 1<=len(body)<=3000:raise s.ApiError(400,'المنشور من 1 إلى 3000 حرف')
    item=c.execute('INSERT INTO community_posts(user_id,body,created_at) VALUES(?,?,?) RETURNING id',(user['id'],body,admin.stamp())).fetchone();result={'id':item['id']}
-  elif re.fullmatch(r'posts/\d+/like',route) and method=='POST':
+  elif re.fullmatch(r'posts/-?\d+/like',route) and method=='POST':
    ident=int(route.split('/')[1])
    if ident<0:
     if not c.execute('SELECT id FROM community_admin_posts WHERE id=? AND hidden=0',(-ident,)).fetchone(): raise s.ApiError(404,'المنشور غير موجود')
