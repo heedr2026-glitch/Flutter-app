@@ -58,7 +58,7 @@ el('login').addEventListener('submit',async event=>{
 });
 el('settings').addEventListener('submit',async event=>{
   event.preventDefault();
-  if(!confirm('تطبيق الحدود الجديدة على جميع المؤسسات في المجانية والأساسية؟ لن تُحذف البيانات الموجودة.'))return;
+  if(!confirm('تطبيق الحدود الجديدة على الباقات الظاهرة؟ لن تُحذف البيانات الموجودة.'))return;
   const payload={};
   for(const input of document.querySelectorAll('#plans input')){
     const plan=input.dataset.plan,resource=input.dataset.resource;
