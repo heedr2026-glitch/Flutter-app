@@ -1971,7 +1971,7 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                 connection.commit()
             self._send(200, {"text": reply, "remaining": daily_limit - used - 1, "sessionToken": supplied_session_token, "lastMessageId": bot_cursor.lastrowid})
             return
-        if method == "GET" and path in ("/owner/services", "/owner/package-limits", "/owner/legacy", "/owner/legacy-disabled-backup"):
+        if method == "GET" and path in ("/owner/services", "/owner/legacy", "/owner/legacy-disabled-backup"):
             self.send_response(302)
             self.send_header("Location", "/owner")
             self.send_header("Cache-Control", "no-store")
