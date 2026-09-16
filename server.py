@@ -3040,6 +3040,27 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 created = now()
                 row = connection.execute("INSERT INTO support_tickets(organization_id,user_id,category,message,status,owner_reply,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id", (organization_id,user["id"],category,message,"open","",created,created)).fetchone()
                 connection.execute("UPDATE support_tickets SET device_name=?,app_version=?,branch_id=? WHERE id=?", (str(data.get('deviceName',''))[:120],str(data.get('appVersion',''))[:40],user.get('current_branch'),row['id']))
+                # Route every new support request to the technical employee queue.
+                # This creates a diagnostic task only; it never changes production data.
+                connection.execute(
+                    """INSERT INTO technical_tasks(
+                       organization_id,branch_id,user_id,service,problem,severity,status,
+                       diagnosis,proposal,started_at,created_by
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        organization_id,
+                        str(user.get('current_branch') or '')[:120],
+                        user["id"],
+                        "support",
+                        f"طلب دعم #{row['id']}: {category} — {message}",
+                        "medium",
+                        "queued",
+                        "تم تحويل طلب الدعم إلى الموظف التقني AI لجمع مؤشرات الحساب والخدمة",
+                        "تشخيص السجلات والصلاحيات والربط دون تغيير كلمة المرور أو حذف البيانات",
+                        created,
+                        "support-router",
+                    ),
+                )
                 audit_log(connection, organization_id, user["id"], "support_request", "تم إرسال طلب دعم فني: " + category, "security", str(row["id"]))
                 connection.commit()
                 self._send(201, {"saved": True, "id": row["id"], "status": "open"})
