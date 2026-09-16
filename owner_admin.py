@@ -513,6 +513,21 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   out=paged(c,'SELECT t.*,o.name organization_name,s.package',where,args,'t.id DESC',page)
   for t in out['items']: t['notes']=rows(c,'SELECT note,actor,created_at FROM platform_notes WHERE ticket_id=? ORDER BY id DESC LIMIT 20',(t['id'],))
   return out
+ if re.fullmatch(r'support/\d+/technical-followup',r) and m=='POST':
+  ident=int(r.split('/')[1]); ticket=c.execute('SELECT organization_id,user_id,category,message FROM support_tickets WHERE id=?',(ident,)).fetchone()
+  if not ticket: raise s.ApiError(404,'طلب الدعم غير موجود')
+  existing=c.execute("SELECT id,status FROM technical_tasks WHERE service='support' AND problem LIKE ? ORDER BY id DESC LIMIT 1",(f'طلب دعم #{ident}:%',)).fetchone()
+  ts=stamp()
+  if existing:
+   c.execute("UPDATE technical_tasks SET status='diagnosing',diagnosis=?,action_taken=?,started_at=?,finished_at=NULL WHERE id=?",('تمت إعادة توجيه الطلب للمتابعة التقنية وجمع مؤشرات المشكلة','بانتظار فحص الموظف التقني AI',ts,existing['id']))
+   task_id=existing['id']
+  else:
+   cur=c.execute('INSERT INTO technical_tasks(organization_id,user_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(ticket['organization_id'],ticket['user_id'],'support',f"طلب دعم #{ident}: {ticket['category']} — {ticket['message']}",'medium','queued','تم تحويل الطلب إلى الموظف التقني AI لجمع مؤشرات الحساب والخدمة','تشخيص السجلات والصلاحيات والربط دون تغيير كلمة المرور أو حذف البيانات','بانتظار فحص الموظف التقني AI',ts,'support-followup'))
+   task_id=cur.lastrowid
+  c.execute("UPDATE support_tickets SET status='in_progress',updated_at=? WHERE id=?",(ts,ident))
+  c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,'تم إرسال الطلب للمتابعة مع الموظف التقني AI','لوحة أمن خدووم',ts))
+  audit(c,a['name'],'support_technical_followup',json.dumps({'ticket_id':ident,'task_id':task_id},ensure_ascii=False))
+  return {'saved':True,'taskId':task_id,'message':'تم إرسال الطلب للمتابعة مع الموظف التقني AI'}
  if re.fullmatch(r'support/\d+',r) and m=='DELETE':
   ident=int(r.split('/')[1])
   if not c.execute('SELECT id FROM support_tickets WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'Support request not found')
