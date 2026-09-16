@@ -312,7 +312,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='service-health' and m=='GET':
   services=[]
   whatsapp_count=scalar(c,'SELECT COUNT(*) n FROM whatsapp_connections') if table_exists(c,'whatsapp_connections',s) else 0
-  whatsapp_errors=scalar(c,"SELECT COUNT(*) n FROM whatsapp_webhooks WHERE received_at<?",((datetime.now(timezone.utc)-timedelta(hours=24)).isoformat(),)) if table_exists(c,'whatsapp_webhooks',s) else 0
+  whatsapp_errors=scalar(c,"SELECT COUNT(*) n FROM whatsapp_webhooks WHERE received_at<?",(int((datetime.now(timezone.utc)-timedelta(hours=24)).timestamp()),)) if table_exists(c,'whatsapp_webhooks',s) else 0
   services.append({'service':'whatsapp','label':'واتساب','status':'ready' if whatsapp_count and not whatsapp_errors else 'warning' if whatsapp_count else 'not_connected','affected':whatsapp_count,'lastError':'لا توجد مزامنة خلال 24 ساعة' if whatsapp_count and whatsapp_errors else ''})
   ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip())
   services.append({'service':'ai','label':'الذكاء الاصطناعي','status':'ready' if ai_ready else 'not_configured','affected':scalar(c,'SELECT COUNT(*) n FROM organizations') if not ai_ready else 0,'lastError':'' if ai_ready else 'مفتاح خدمة الذكاء غير مهيأ على الخادم'})
