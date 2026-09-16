@@ -75,9 +75,16 @@ class _CommunityPageState extends State<CommunityPage> {
     try {
       _api ??= await _client();
       final result = await _api!.likeCommunityPost(post['id']);
-      setState(
-        () => post['like_count'] = result['likeCount'] ?? post['like_count'],
-      );
+      if (!mounted) return;
+      final id = post['id']?.toString();
+      setState(() {
+        for (final item in _posts) {
+          if (item is Map && item['id']?.toString() == id) {
+            item['like_count'] = result['likeCount'] ?? item['like_count'];
+            break;
+          }
+        }
+      });
     } catch (error) {
       if (mounted)
         setState(
