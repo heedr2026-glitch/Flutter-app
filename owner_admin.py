@@ -130,6 +130,10 @@ def paged(c,select,where,args,order,page):
 def table_exists(c,name,s):
  if s.DATABASE_URL: return c.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?',(name,)).fetchone() is not None
  return c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",(name,)).fetchone() is not None
+def ensure_owner_tables(c,s,required):
+ if all(table_exists(c,name,s) for name in required): return
+ if s.DATABASE_URL: c.execute('SELECT pg_advisory_xact_lock(735421)')
+ migrate(c,postgres=bool(s.DATABASE_URL))
 SERVICE_LABELS={'whatsapp':'واتساب','ai':'الذكاء الاصطناعي','calls':'المكالمات'}
 SERVICE_COSTS={'whatsapp':0.01,'ai':0.02,'calls':0.05}
 def credits_summary(c,org,s):
@@ -271,10 +275,12 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='logout' and m=='POST':
   c.execute('DELETE FROM platform_sessions WHERE token_hash=?',(hashlib.sha256(h.headers.get('X-Admin-Session','').encode()).hexdigest(),)); return {'saved':True}
  if r=='readiness' and m=='GET':
+  ensure_owner_tables(c,s,('readiness_runs','readiness_results','readiness_test_accounts'))
   run=c.execute('SELECT * FROM readiness_runs ORDER BY id DESC LIMIT 1').fetchone()
   results=[] if run is None else rows(c,'SELECT service_key,label,status,result,error,proposal,checked_at FROM readiness_results WHERE run_id=? ORDER BY id',(run['id'],))
   return {'latestRun':dict(run) if run else None,'results':results,'testAccounts':rows(c,'SELECT account_key,package,active,created_at FROM readiness_test_accounts ORDER BY id'),'safeMode':True,'note':'الفحص للقراءة والتجربة المعزولة فقط؛ لا حذف أو دفع حقيقي أو تغيير في بيانات المشتركين.'}
  if r=='readiness/run' and m=='POST':
+  ensure_owner_tables(c,s,('readiness_runs','readiness_results','readiness_test_accounts'))
   checks=readiness_checks(c,s); started=stamp(); ready=sum(x['status']=='ready' for x in checks); review=sum(x['status'] in ('review','warning') for x in checks); failed=sum(x['status']=='not_ready' for x in checks); score=round(sum(100 if x['status']=='ready' else 60 if x['status'] in ('review','warning') else 0 for x in checks)/len(checks)) if checks else 0
   finished=stamp(); cur=c.execute('INSERT INTO readiness_runs(score,ready_count,review_count,failed_count,started_at,finished_at,mode) VALUES(?,?,?,?,?,?,?)',(score,ready,review,failed,started,finished,'safe')); run_id=cur.lastrowid
   for x in checks: c.execute('INSERT INTO readiness_results(run_id,service_key,label,status,result,error,proposal,checked_at) VALUES(?,?,?,?,?,?,?,?)',(run_id,x['service_key'],x['label'],x['status'],x['result'],x['error'],x['proposal'],finished))
@@ -346,6 +352,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   for key,label,ok,details in [('whatsapp','واتساب',table_exists(c,'whatsapp_connections',s) and bool(c.execute('SELECT 1 FROM whatsapp_connections WHERE organization_id=?',(ident,)).fetchone()),'حالة الربط الحالية'),('ai','AI',bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip()),'إعداد الخادم'),('calls','المكالمات',bool(c.execute('SELECT 1 FROM call_connections WHERE organization_id=? AND enabled=1',(ident,)).fetchone()) if table_exists(c,'call_connections',s) else False,'حالة الربط الحالية'),('database','قاعدة البيانات',True,'استعلام المؤسسة نجح'),('server','السيرفر',True,'الخدمة تستجيب')]: checks.append({'key':key,'label':label,'status':'ok' if ok else 'warning','details':details})
   warning_count=sum(x['status']=='warning' for x in checks); ts=stamp(); cur=c.execute('INSERT INTO technical_tasks(organization_id,service,problem,severity,status,diagnosis,proposal,action_taken,result,started_at,finished_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(ident,'organization','فحص شامل للمؤسسة','low','completed','فحص الحساب والخدمات والرصيد والصلاحيات','معالجة العناصر التي تظهر بتحذير بعد موافقة الإدارة','لا إجراء تلقائي','اكتمل الفحص مع '+str(warning_count)+' تحذير',ts,stamp(),'manual')); audit(c,a['name'],'technical_organization_scan',json.dumps({'organization_id':ident,'task':cur.lastrowid},ensure_ascii=False)); return {'organization':dict(org),'checks':checks,'warnings':warning_count,'taskId':cur.lastrowid}
  if r=='technical-ai' and m=='GET':
+  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   state=c.execute('SELECT * FROM technical_agent_state WHERE id=1').fetchone()
   heartbeat=state['last_heartbeat'] if state else None
   live=bool(heartbeat and (datetime.now(timezone.utc)-datetime.fromisoformat(heartbeat)).total_seconds()<=180)
@@ -365,6 +372,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='integrations' and m=='GET':
   return {'items':rows(c,'SELECT key,name,category,status,required_permission,provider_configured,notes,updated_at FROM platform_integrations ORDER BY id'),'note':'هذه الوحدات مجهزة للتوسع فقط. لا توجد خدمة مستقبلية مفعلة دون تكامل رسمي وإعداد خادم وصلاحية مناسبة.'}
  if r=='technical-ai/diagnose' and m=='POST':
+  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   service=str(d.get('service','')).strip(); services={'whatsapp':('واتساب','فشل webhook أو صلاحيات الربط','فحص رمز التحقق والتوقيع وسجل آخر webhook','تحديث الإعدادات فقط بعد نجاح اختبار مستقل'),'ai':('الذكاء الاصطناعي','الخدمة غير مهيأة أو تجاوزت الحد','مراجعة إعداد الخادم وحدود الباقة','إعادة مزامنة الحالة دون تغيير الأسرار'),'calls':('المكالمات','قناة الاتصال غير جاهزة أو بها فشل','فحص حالة قناة خدووم وسجل المكالمات','إعادة محاولة الاتصال بعد التحقق من الرصيد'),'login':('تسجيل الدخول','فشل مصادقة مستخدم أو أكثر','فحص وجود المستخدم وحالته وhash كلمة المرور وربط المؤسسة وLogin API والجلسات','اقتراح إعادة المزامنة أو إنهاء الجلسات المنتهية فقط؛ لا تغيير لكلمة المرور دون إجراء رسمي')}
   if service not in services: raise ValueError('اختر خدمة مدعومة')
   label,problem,cause,proposal=services[service]; ts=stamp(); organization_id=number(d.get('organization_id'),1,100000000,True) if d.get('organization_id') else None; user_id=number(d.get('user_id'),1,100000000,True) if d.get('user_id') else None; cur=c.execute('INSERT INTO technical_incidents(service,organization_id,problem,root_cause,proposal,severity,test_status,deployment_status,affected_organizations,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)', (service,organization_id,problem,cause,proposal,'medium','not_tested','proposed',1 if organization_id else 0,ts,ts)); c.execute('INSERT INTO technical_tasks(organization_id,user_id,service,problem,severity,status,diagnosis,proposal,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)',(organization_id,user_id,service,problem,'medium','diagnosed',cause,proposal,ts,'ai')); audit(c,a['name'],'technical_diagnosis',service); return {'id':cur.lastrowid,'service':label,'problem':problem,'rootCause':cause,'proposal':proposal,'testStatus':'not_tested','deploymentStatus':'proposed'}
@@ -514,6 +522,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   for t in out['items']: t['notes']=rows(c,'SELECT note,actor,created_at FROM platform_notes WHERE ticket_id=? ORDER BY id DESC LIMIT 20',(t['id'],))
   return out
  if re.fullmatch(r'support/\d+/technical-followup',r) and m=='POST':
+  ensure_owner_tables(c,s,('technical_tasks',))
   ident=int(r.split('/')[1]); ticket=c.execute('SELECT organization_id,user_id,category,message FROM support_tickets WHERE id=?',(ident,)).fetchone()
   if not ticket: raise s.ApiError(404,'طلب الدعم غير موجود')
   existing=c.execute("SELECT id,status FROM technical_tasks WHERE service='support' AND problem LIKE ? ORDER BY id DESC LIMIT 1",(f'طلب دعم #{ident}:%',)).fetchone()
