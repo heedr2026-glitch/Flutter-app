@@ -534,6 +534,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    cur=c.execute('INSERT INTO technical_tasks(organization_id,user_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(ticket['organization_id'],ticket['user_id'],'support',f"طلب دعم #{ident}: {ticket['category']} — {ticket['message']}",'medium','queued','تم تحويل الطلب إلى الموظف التقني AI لجمع مؤشرات الحساب والخدمة','تشخيص السجلات والصلاحيات والربط دون تغيير كلمة المرور أو حذف البيانات','بانتظار فحص الموظف التقني AI',ts,'support-followup'))
    task_id=cur.fetchone()['id']
   c.execute("UPDATE support_tickets SET status='in_progress',updated_at=? WHERE id=?",(ts,ident))
+  c.execute("UPDATE support_tickets SET owner_reply=? WHERE id=?",('تم استلام طلبك وتحويله إلى الموظف التقني AI. جاري فحص المشكلة، وسيتم إبلاغك بالنتيجة بعد اكتمال المتابعة.',ident))
   c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,'تم إرسال الطلب للمتابعة مع الموظف التقني AI','لوحة أمن خدووم',ts))
   audit(c,a['name'],'support_technical_followup',json.dumps({'ticket_id':ident,'task_id':task_id},ensure_ascii=False))
   return {'saved':True,'taskId':task_id,'message':'تم إرسال الطلب للمتابعة مع الموظف التقني AI'}
