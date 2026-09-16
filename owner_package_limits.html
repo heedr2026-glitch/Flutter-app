@@ -37,7 +37,7 @@
 const el=id=>document.getElementById(id);
 const headers=()=>({'Content-Type':'application/json','X-Owner-Key':el('ownerKey').value.trim()});
 function render(data){
-  const labels={users:'عدد المستخدمين',employees:'عدد الموظفين (توافق قديم)',vehicles:'عدد المركبات',branches:'عدد الفروع',organization_notifications:'تنبيهات المؤسسة',employee_notifications:'تنبيهات الموظفين'};
+  const labels={users:'عدد المستخدمين',vehicles:'عدد المركبات',branches:'عدد الفروع',organization_notifications:'تنبيهات المؤسسة',employee_notifications:'تنبيهات الموظفين'};
   el('plans').innerHTML=Object.entries(data).map(([plan,values])=>`<section class="card"><h2>${plan==='free'?'المجانية':plan==='basic'?'الأساسية':plan==='vip'?'VIP':plan}</h2>${Object.entries(labels).map(([key,label])=>`<label>${label}<input data-plan="${plan}" data-resource="${key}" type="number" min="0" max="100000" step="1" value="${values[key]??''}" placeholder="دون حد"></label>`).join('')}</section>`).join('');
 }
 async function request(options){
