@@ -26,25 +26,9 @@
   </form>
   <div id="status" role="status" aria-live="polite"></div>
   <form id="settings" hidden>
-    <div class="grid">
-      <section class="card">
-        <h2>الباقة المجانية</h2>
-        <label for="free-employees">عدد الموظفين</label>
-        <input id="free-employees" type="number" min="0" max="100000" step="1" required>
-        <label for="free-vehicles">عدد المركبات</label>
-        <input id="free-vehicles" type="number" min="0" max="100000" step="1" required>
-      </section>
-      <section class="card">
-        <h2>الباقة الأساسية</h2>
-        <label for="basic-employees">عدد الموظفين</label>
-        <input id="basic-employees" type="number" min="0" max="100000" step="1" required>
-        <label for="basic-vehicles">عدد المركبات</label>
-        <input id="basic-vehicles" type="number" min="0" max="100000" step="1" required>
-      </section>
-    </div>
+    <div id="plans" class="grid"></div>
     <section class="card">
-      <p>VIP: موظفون ومركبات دون حد — لم تتغير.</p>
-      <p class="note">الصفر يمنع الإضافات الجديدة. تخفيض الحدود لا يحذف الموظفين أو المركبات الموجودة. عدد الموظفين لا يشمل حساب المالك.</p>
+      <p class="note">الصفر يمنع الإضافات الجديدة. تخفيض الحدود لا يحذف البيانات الموجودة. القيم الفارغة في الباقات المستقبلية تعني دون حد.</p>
       <button id="save" type="submit">حفظ حدود الباقات</button>
     </section>
   </form>
@@ -53,8 +37,8 @@
 const el=id=>document.getElementById(id);
 const headers=()=>({'Content-Type':'application/json','X-Owner-Key':el('ownerKey').value.trim()});
 function render(data){
-  for(const plan of ['free','basic'])for(const resource of ['employees','vehicles'])
-    el(plan+'-'+resource).value=data[plan][resource];
+  const labels={users:'عدد المستخدمين',employees:'عدد الموظفين (توافق قديم)',vehicles:'عدد المركبات',branches:'عدد الفروع',organization_notifications:'تنبيهات المؤسسة',employee_notifications:'تنبيهات الموظفين'};
+  el('plans').innerHTML=Object.entries(data).map(([plan,values])=>`<section class="card"><h2>${plan==='free'?'المجانية':plan==='basic'?'الأساسية':plan==='vip'?'VIP':plan}</h2>${Object.entries(labels).map(([key,label])=>`<label>${label}<input data-plan="${plan}" data-resource="${key}" type="number" min="0" max="100000" step="1" value="${values[key]??''}" placeholder="دون حد"></label>`).join('')}</section>`).join('');
 }
 async function request(options){
   const response=await fetch('/owner/api/package-limits',options);
@@ -76,9 +60,9 @@ el('settings').addEventListener('submit',async event=>{
   event.preventDefault();
   if(!confirm('تطبيق الحدود الجديدة على جميع المؤسسات في المجانية والأساسية؟ لن تُحذف البيانات الموجودة.'))return;
   const payload={};
-  for(const plan of ['free','basic']){
-    payload[plan]={};
-    for(const resource of ['employees','vehicles'])payload[plan][resource]=Number(el(plan+'-'+resource).value);
+  for(const input of document.querySelectorAll('#plans input')){
+    const plan=input.dataset.plan,resource=input.dataset.resource;
+    payload[plan]??={}; payload[plan][resource]=input.value===''?null:Number(input.value);
   }
   el('save').disabled=true;el('status').textContent='جارٍ الحفظ...';
   try{

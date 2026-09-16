@@ -1467,7 +1467,12 @@ def downgrade_expired_subscriptions(connection: Any) -> int:
 def package_resource_limit(package: str, resource: str, connection=None) -> int | None:
     """Return the server-enforced resource cap; None means unlimited."""
     limits = package_limits.read_limits(connection) if connection is not None else package_limits.DEFAULT_LIMITS
-    return limits.get(package, {}).get(resource, 0)
+    values = limits.get(package, {})
+    if resource == "employees":
+        return values.get("employees", values.get("users", 0))
+    if resource == "users":
+        return values.get("users", values.get("employees", 0))
+    return values.get(resource, 0)
 
 def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
     salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
@@ -2307,6 +2312,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         result = package_limits.save_limits(connection, payload)
                     except ValueError as error:
                         raise ApiError(400, str(error))
+                    owner_admin.audit(connection, self.platform_actor['name'], 'package_limits', 'تحديث حدود الباقات')
                     connection.commit()
                 else:
                     result = package_limits.read_limits(connection)

@@ -7,6 +7,7 @@ import secrets
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 import owner_admin as admin
+import package_limits
 
 POLICY_FIELDS = ('included_organizations','free_branches','allow_branches','branch_monthly','branch_yearly','max_branches','allow_organizations','organization_monthly','organization_yearly','organization_discount','independent_package','max_organizations','verify_branches')
 
@@ -126,6 +127,9 @@ def quote_branch(c,org,period='monthly',claim=False):
     p=policy(c,org)
     if not p['allow_branches']:raise ValueError('هذه الباقة لا تسمح بإضافة فروع')
     count=admin.scalar(c,"SELECT COUNT(*) n FROM organization_branches WHERE organization_id=? AND id<>'main' AND status<>'rejected'",(org,))
+    configured_limit=package_limits.limit(c,p['package'],'branches')
+    if configured_limit is not None and count>=configured_limit:
+        raise ValueError('تم بلوغ حد الفروع المحدد لهذه الباقة')
     if p['max_branches'] is not None and count>=p['max_branches']:raise ValueError('تم بلوغ الحد الأقصى للفروع')
     member=c.execute('SELECT account_id FROM account_organizations WHERE organization_id=?',(org,)).fetchone()
     benefit=benefits(c,member['account_id'] if member else None,p['package'],claim)
