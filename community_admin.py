@@ -93,7 +93,8 @@ def client(h,method,s):
   if route=='posts' and method=='GET':
    try: page=max(1,int(parse_qs(urlparse(h.path).query).get('page',['1'])[0]))
    except ValueError:raise s.ApiError(400,'رقم الصفحة غير صحيح')
-   result=admin.paged(c,'SELECT p.id,p.body,p.created_at,u.name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id) like_count','FROM community_posts p JOIN users u ON u.id=p.user_id WHERE p.hidden=0 AND u.organization_id=?',[user['organization_id']],'p.id DESC',page)
+   # Public community identity is the organization, never the subscriber account.
+   result=admin.paged(c,'SELECT p.id,p.body,p.created_at,o.name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id) like_count','FROM community_posts p JOIN users u ON u.id=p.user_id JOIN organizations o ON o.id=u.organization_id WHERE p.hidden=0 AND u.organization_id=?',[user['organization_id']],'p.id DESC',page)
    admin_posts=admin.rows(c,"SELECT -p.id id,p.body,p.created_at,'إدارة خدوم' name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=-p.id) like_count FROM community_admin_posts p WHERE p.hidden=0 ORDER BY p.id DESC LIMIT 100")
    result['items']=admin_posts+result['items']; result['items'].sort(key=lambda item: (item.get('created_at') or '', int(item.get('id') or 0)), reverse=True); result['total']+=len(admin_posts)
   elif route=='posts' and method=='POST':
@@ -125,7 +126,7 @@ def client(h,method,s):
   elif re.fullmatch(r'posts/\d+/(comments|reports)',route):
    _,ident,kind=route.split('/');ident=int(ident)
    if not c.execute('SELECT p.id FROM community_posts p JOIN users u ON u.id=p.user_id WHERE p.id=? AND p.hidden=0 AND u.organization_id=?',(ident,user['organization_id'])).fetchone():raise s.ApiError(404,'المنشور غير موجود')
-   if kind=='comments' and method=='GET':result=admin.rows(c,'SELECT c.id,c.body,c.created_at,u.name FROM community_comments c JOIN users u ON u.id=c.user_id WHERE c.post_id=? AND c.hidden=0 ORDER BY c.id DESC LIMIT 100',(ident,))
+   if kind=='comments' and method=='GET':result=admin.rows(c,'SELECT c.id,c.body,c.created_at,o.name FROM community_comments c JOIN users u ON u.id=c.user_id JOIN organizations o ON o.id=u.organization_id WHERE c.post_id=? AND c.hidden=0 ORDER BY c.id DESC LIMIT 100',(ident,))
    elif method=='POST':
     key='body' if kind=='comments' else 'reason';text=str(h._body().get(key,'')).strip()
     if not 1<=len(text)<=1500:raise s.ApiError(400,'اكتب نصًا من 1 إلى 1500 حرف')
