@@ -9,6 +9,20 @@ DEFAULT_LIMITS = {
 RESOURCES = ("employees", "vehicles", "users", "branches", "organization_notifications", "employee_notifications")
 
 
+def _row_value(row, name, index=None):
+    try:
+        return row[name]
+    except (KeyError, IndexError, TypeError):
+        return row[index] if index is not None else None
+
+
+def _row_has(row, name):
+    try:
+        return name in row.keys()
+    except AttributeError:
+        return False
+
+
 def initialize(connection):
     postgres = hasattr(connection, "_connection")
     connection.execute("""CREATE TABLE IF NOT EXISTS package_resource_limits (
@@ -20,7 +34,7 @@ def initialize(connection):
         "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=?",
         ("package_resource_limits",),
     ).fetchall()} if postgres else {
-        str(row["name"]) for row in connection.execute("PRAGMA table_info(package_resource_limits)").fetchall()
+        str(row[1]) for row in connection.execute("PRAGMA table_info(package_resource_limits)").fetchall()
     })
     # SQLite and PostgreSQL both accept these additive migrations; no data is removed.
     definitions = {
@@ -38,20 +52,24 @@ def read_limits(connection):
     result = {name: dict(values) for name, values in DEFAULT_LIMITS.items()}
     try:
         for row in connection.execute("SELECT package FROM platform_packages").fetchall():
-            result.setdefault(row["package"], dict(DEFAULT_LIMITS["vip"]))
+            result.setdefault(_row_value(row, "package", 0), dict(DEFAULT_LIMITS["vip"]))
     except Exception:
         # The limits table is initialized before the main schema on fresh installs.
         pass
     for row in connection.execute("SELECT * FROM package_resource_limits").fetchall():
-        if row["package"] not in result:
-            result[row["package"]] = dict(DEFAULT_LIMITS["vip"])
-        values = result[row["package"]]
+        package = _row_value(row, "package", 0)
+        if package not in result:
+            result[package] = dict(DEFAULT_LIMITS["vip"])
+        values = result[package]
         for resource in RESOURCES:
-            if resource in row.keys() and row[resource] is not None:
-                values[resource] = row[resource]
+            index = {"employees": 1, "vehicles": 2, "users": 3, "branches": 4,
+                     "organization_notifications": 5, "employee_notifications": 6}[resource]
+            raw = _row_value(row, resource, index)
+            if (_row_has(row, resource) or not hasattr(row, "keys")) and raw is not None:
+                values[resource] = raw
         values["users"] = values.get("users", values.get("employees"))
         values["employees"] = values.get("employees", values.get("users"))
-        if row["package"] == "vip":
+        if package == "vip":
             # Legacy employees/vehicles columns are NOT NULL; 100000 is the
             # storage sentinel for the unlimited VIP setting.
             if values.get("employees") == 100000:
@@ -86,9 +104,10 @@ def save_limits(connection, payload):
         existing = connection.execute("SELECT * FROM package_resource_limits WHERE package=?", (package,)).fetchone()
         users = values.get("users", values.get("employees"))
         employees = values.get("employees", users)
-        branches = values.get("branches", existing["branches"] if existing and "branches" in existing.keys() else DEFAULT_LIMITS.get(package, DEFAULT_LIMITS["vip"]).get("branches"))
-        org_notifications = values.get("organization_notifications", existing["organization_notifications"] if existing and "organization_notifications" in existing.keys() else DEFAULT_LIMITS.get(package, DEFAULT_LIMITS["vip"]).get("organization_notifications"))
-        employee_notifications = values.get("employee_notifications", existing["employee_notifications"] if existing and "employee_notifications" in existing.keys() else DEFAULT_LIMITS.get(package, DEFAULT_LIMITS["vip"]).get("employee_notifications"))
+        defaults = DEFAULT_LIMITS.get(package, DEFAULT_LIMITS["vip"])
+        branches = values.get("branches", _row_value(existing, "branches", 4) if existing else defaults.get("branches"))
+        org_notifications = values.get("organization_notifications", _row_value(existing, "organization_notifications", 5) if existing else defaults.get("organization_notifications"))
+        employee_notifications = values.get("employee_notifications", _row_value(existing, "employee_notifications", 6) if existing else defaults.get("employee_notifications"))
         stored_employees = 100000 if employees is None else employees
         stored_vehicles = 100000 if values["vehicles"] is None else values["vehicles"]
         connection.execute(
