@@ -80,6 +80,16 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def whatsapp_is_configured() -> bool:
+    """Report configuration using the same credential source as the bridge."""
+    if os.environ.get("WHATSAPP_ACCESS_TOKEN", "").strip():
+        return True
+    try:
+        return bool(whatsapp_bridge.configs())
+    except Exception:
+        return False
+
+
 def normalize_phone(value: object) -> str:
     """Canonical E.164-like digits used for tenant routing (without '+')."""
     phone = re.sub(r"[^0-9]", "", str(value or ""))
@@ -1689,7 +1699,7 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                     health_connection.execute("SELECT 1").fetchone()
             except Exception:
                 database_status = "degraded"
-            self._send(200, {"status": "ok" if STARTUP_READY and database_status == "ok" else "degraded", "service": "khdoom-api", "services": {"api": "ok", "database": database_status, "whatsapp": "configured" if os.environ.get("WHATSAPP_ACCESS_TOKEN", "").strip() else "not_configured", "ai": "configured" if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "not_configured", "calls": "configured" if os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip() else "not_configured"}})
+            self._send(200, {"status": "ok" if STARTUP_READY and database_status == "ok" else "degraded", "service": "khdoom-api", "services": {"api": "ok", "database": database_status, "whatsapp": "configured" if whatsapp_is_configured() else "not_configured", "ai": "configured" if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "not_configured", "calls": "configured" if os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip() else "not_configured"}})
             return
         if path == "/webhooks/calls" and method == "POST":
             expected = os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip()
