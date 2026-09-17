@@ -33,6 +33,12 @@ def configs(db_conn=None):
         token_override = os.environ.get("KHDOOM_WHATSAPP_TOKEN_OVERRIDE", "").strip()
         if token_override:
             items = [dict(c, token=token_override) for c in items]
+        # Allow rotating the webhook-signing secret independently from the
+        # WhatsApp access token/config JSON. This avoids replacing a secret
+        # bundle just to match Meta's current app secret.
+        app_secret_override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "").strip()
+        if app_secret_override:
+            items = [dict(c, app_secret=app_secret_override) for c in items]
         if db_conn is not None and hasattr(db_conn, "execute") and items:
             template = items[0]
             rows = db_conn.execute("SELECT organization_id,phone_number,phone_number_id,waba_id FROM whatsapp_connections").fetchall()
