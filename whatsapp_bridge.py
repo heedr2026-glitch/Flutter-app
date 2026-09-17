@@ -38,14 +38,34 @@ def configs(db_conn=None):
             rows = db_conn.execute("SELECT organization_id,phone_number,phone_number_id,waba_id FROM whatsapp_connections").fetchall()
             for row in rows:
                 dynamic = dict(template)
+                organization_id = int(row["organization_id"])
                 dynamic.update({
-                    "organization_id": int(row["organization_id"]),
+                    "organization_id": organization_id,
                     "phone_number": str(row["phone_number"]),
                     "phone_number_id": str(row["phone_number_id"]),
                     "waba_id": str(row["waba_id"]),
                 })
-                if not any(x["organization_id"] == dynamic["organization_id"] for x in items):
+                configured = next((x for x in items if x["organization_id"] == organization_id), None)
+                if configured is None:
                     items.append(dynamic)
+                else:
+                    # A saved institution connection is authoritative for its own
+                    # phone/WABA IDs. The environment entry still supplies that
+                    # institution's credentials, but must not pin it to the old
+                    # default phone ID (which causes signed webhooks to be ignored).
+                    configured.update({
+                        "phone_number": dynamic["phone_number"],
+                        "phone_number_id": dynamic["phone_number_id"],
+                        "waba_id": dynamic["waba_id"],
+                    })
+        # Check the merged result as well as the environment template: a saved
+        # tenant mapping must never make one Meta phone ID serve two institutions.
+        merged_orgs, merged_phones = set(), set()
+        for item in items:
+            if item["organization_id"] in merged_orgs or item["phone_number_id"] in merged_phones:
+                raise ValueError()
+            merged_orgs.add(item["organization_id"])
+            merged_phones.add(item["phone_number_id"])
         return items
     except (ValueError, KeyError, TypeError):
         raise Error(503, "إعدادات واتساب على الخادم غير صحيحة")
