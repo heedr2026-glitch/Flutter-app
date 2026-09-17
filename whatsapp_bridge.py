@@ -36,7 +36,8 @@ def configs(db_conn=None):
         # Allow rotating the webhook-signing secret independently from the
         # WhatsApp access token/config JSON. This avoids replacing a secret
         # bundle just to match Meta's current app secret.
-        app_secret_override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "").strip()
+        # The secret is HMAC key material; preserve its bytes exactly as stored.
+        app_secret_override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
         if app_secret_override:
             items = [dict(c, app_secret=app_secret_override) for c in items]
         if db_conn is not None and hasattr(db_conn, "execute") and items:
@@ -253,7 +254,7 @@ def signature_diagnostic(raw, cfgs):
 
 def verify_webhook_signature(raw, signature, cfgs):
     """Verify Meta's signature against untouched request bytes, without logging secrets or signatures."""
-    override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "").strip()
+    override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
     secret_source = "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE" if override else "KHDOOM_WHATSAPP_CONFIG"
     format_valid = bool(re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature or ""))
     supplied = (signature or "").partition("=")[2] if format_valid else ""
@@ -264,7 +265,13 @@ def verify_webhook_signature(raw, signature, cfgs):
         expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
         matched = format_valid and hmac.compare_digest(expected, supplied)
         if fingerprint not in seen:
-            candidates.append({"secret_sha256": fingerprint, "signature_match": bool(matched)})
+            candidates.append({
+                "secret_sha256": fingerprint,
+                "secret_length": len(secret),
+                "signature_match": bool(matched),
+                "expected_signature_edges": [expected[:8], expected[-8:]],
+                "supplied_signature_edges": [supplied[:8], supplied[-8:]] if format_valid else [],
+            })
             seen.add(fingerprint)
         if matched: verified.append(cfg)
     diagnostic = {
@@ -272,6 +279,7 @@ def verify_webhook_signature(raw, signature, cfgs):
         "signature_header_present": bool(signature),
         "signature_length": len(signature or ""),
         "raw_body_length": len(raw),
+        "raw_body_sha256": hashlib.sha256(raw).hexdigest(),
         "secret_env_name": secret_source,
         "signature_encoding_valid": format_valid,
         "candidates": candidates,
@@ -371,11 +379,13 @@ def handle(h, method, db, on_inbound=None):
             except ValueError: raise Error(400,"حجم غير صحيح")
             if not 0 < length <= 1048576 or h.headers.get("Transfer-Encoding"): raise Error(413,"حجم غير مقبول")
             raw = h.rfile.read(length)
+            if len(raw) != length: raise Error(400,"جسم الطلب غير مكتمل")
             signature = h.headers.get("X-Hub-Signature-256","")
             valid, signature_info = verify_webhook_signature(raw, signature, cfgs)
-            print("WhatsApp webhook signature diagnostic " + signature_info, flush=True)
+            details = json.loads(signature_info)
+            details["content_type"] = h.headers.get("Content-Type", "")
+            print("WhatsApp webhook signature diagnostic " + json.dumps(details, separators=(",", ":"), sort_keys=True), flush=True)
             if not valid:
-                print("WhatsApp webhook signature mismatch " + signature_diagnostic(raw, cfgs), flush=True)
                 raise Error(403,"توقيع غير صحيح")
             try:
                 payload = json.loads(raw)
