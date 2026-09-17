@@ -251,6 +251,33 @@ def signature_diagnostic(raw, cfgs):
             sorted({str(c.get("waba_id", ""))[:32] for c in cfgs if c.get("waba_id")}),
             sorted({str(c.get("phone_number_id", ""))[:32] for c in cfgs if c.get("phone_number_id")}))
 
+def verify_webhook_signature(raw, signature, cfgs):
+    """Verify Meta's signature against untouched request bytes, without logging secrets or signatures."""
+    override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "").strip()
+    secret_source = "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE" if override else "KHDOOM_WHATSAPP_CONFIG"
+    format_valid = bool(re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature or ""))
+    supplied = (signature or "").partition("=")[2] if format_valid else ""
+    verified, candidates, seen = [], [], set()
+    for cfg in cfgs:
+        secret = str(cfg.get("app_secret", "")).encode("utf-8")
+        fingerprint = hashlib.sha256(secret).hexdigest()
+        expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
+        matched = format_valid and hmac.compare_digest(expected, supplied)
+        if fingerprint not in seen:
+            candidates.append({"secret_sha256": fingerprint, "signature_match": bool(matched)})
+            seen.add(fingerprint)
+        if matched: verified.append(cfg)
+    diagnostic = {
+        "signature_header": "X-Hub-Signature-256",
+        "signature_header_present": bool(signature),
+        "signature_length": len(signature or ""),
+        "raw_body_length": len(raw),
+        "secret_env_name": secret_source,
+        "signature_encoding_valid": format_valid,
+        "candidates": candidates,
+    }
+    return verified, json.dumps(diagnostic, separators=(",", ":"), sort_keys=True)
+
 def send(c, org, data):
     cfg = config(org, c)
     if not cfg: raise Error(409,"واتساب غير مهيأ لهذه المؤسسة")
@@ -345,8 +372,8 @@ def handle(h, method, db, on_inbound=None):
             if not 0 < length <= 1048576 or h.headers.get("Transfer-Encoding"): raise Error(413,"حجم غير مقبول")
             raw = h.rfile.read(length)
             signature = h.headers.get("X-Hub-Signature-256","")
-            valid = [c for c in cfgs if hmac.compare_digest(signature,
-              "sha256="+hmac.new(c["app_secret"].encode(),raw,hashlib.sha256).hexdigest())]
+            valid, signature_info = verify_webhook_signature(raw, signature, cfgs)
+            print("WhatsApp webhook signature diagnostic " + signature_info, flush=True)
             if not valid:
                 print("WhatsApp webhook signature mismatch " + signature_diagnostic(raw, cfgs), flush=True)
                 raise Error(403,"توقيع غير صحيح")
