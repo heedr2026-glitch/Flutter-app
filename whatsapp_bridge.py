@@ -224,6 +224,33 @@ def ingest(c, cfg, payload, on_inbound=None):
     print(f"WhatsApp ingest matched_changes={matched} inserted_messages={inserted} outcome={'processed' if matched else 'ignored_account_or_phone'}", flush=True)
     return {"matched_changes": matched, "inserted_messages": inserted}
 
+def signature_diagnostic(raw, cfgs):
+    """Return routing identifiers only; never log message contents or sender numbers."""
+    try:
+        payload = json.loads(raw)
+        entries = payload.get("entry", []) if isinstance(payload, dict) else []
+        entry_ids, phone_ids, fields = set(), set(), set()
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict): continue
+            if entry.get("id") is not None: entry_ids.add(str(entry["id"])[:32])
+            changes = entry.get("changes", [])
+            for change in changes if isinstance(changes, list) else []:
+                if not isinstance(change, dict): continue
+                field = change.get("field")
+                if isinstance(field, str) and re.fullmatch(r"[a-zA-Z0-9_]{1,50}", field): fields.add(field)
+                value = change.get("value", {})
+                metadata = value.get("metadata", {}) if isinstance(value, dict) else {}
+                phone_id = metadata.get("phone_number_id") if isinstance(metadata, dict) else None
+                if phone_id is not None: phone_ids.add(str(phone_id)[:32])
+        expected_wabas = sorted({str(c.get("waba_id", ""))[:32] for c in cfgs if c.get("waba_id")})
+        expected_phones = sorted({str(c.get("phone_number_id", ""))[:32] for c in cfgs if c.get("phone_number_id")})
+        return "payload_waba_ids=%s payload_phone_ids=%s fields=%s configured_waba_ids=%s configured_phone_ids=%s" % (
+            sorted(entry_ids), sorted(phone_ids), sorted(fields), expected_wabas, expected_phones)
+    except (ValueError, TypeError, AttributeError):
+        return "payload_identifiers=unavailable configured_waba_ids=%s configured_phone_ids=%s" % (
+            sorted({str(c.get("waba_id", ""))[:32] for c in cfgs if c.get("waba_id")}),
+            sorted({str(c.get("phone_number_id", ""))[:32] for c in cfgs if c.get("phone_number_id")}))
+
 def send(c, org, data):
     cfg = config(org, c)
     if not cfg: raise Error(409,"واتساب غير مهيأ لهذه المؤسسة")
@@ -320,7 +347,9 @@ def handle(h, method, db, on_inbound=None):
             signature = h.headers.get("X-Hub-Signature-256","")
             valid = [c for c in cfgs if hmac.compare_digest(signature,
               "sha256="+hmac.new(c["app_secret"].encode(),raw,hashlib.sha256).hexdigest())]
-            if not valid: raise Error(403,"توقيع غير صحيح")
+            if not valid:
+                print("WhatsApp webhook signature mismatch " + signature_diagnostic(raw, cfgs), flush=True)
+                raise Error(403,"توقيع غير صحيح")
             try:
                 payload = json.loads(raw)
                 with db() as c:
