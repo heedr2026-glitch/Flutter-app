@@ -260,7 +260,10 @@ def verify_webhook_signature(raw, signature, cfgs):
     supplied = (signature or "").partition("=")[2] if format_valid else ""
     verified, candidates, seen = [], [], set()
     for cfg in cfgs:
-        secret = str(cfg.get("app_secret", "")).encode("utf-8")
+        # Select the same source reported in diagnostics; preserve the exact
+        # environment value because whitespace is part of the HMAC key.
+        secret_value = override if override else cfg.get("app_secret", "")
+        secret = str(secret_value).encode("utf-8")
         fingerprint = hashlib.sha256(secret).hexdigest()
         expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
         matched = format_valid and hmac.compare_digest(expected, supplied)

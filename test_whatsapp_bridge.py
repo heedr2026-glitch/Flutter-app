@@ -92,12 +92,24 @@ def _override_secret_test(secret):
             "KHDOOM_WHATSAPP_CONFIG": json.dumps([BASE_CONFIG]),
             "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE": secret,
         }
+        signature = signed(raw, secret)
+        real_hmac_new = hmac.new
+        used_keys = []
+        def capture_hmac_key(key, *args, **kwargs):
+            used_keys.append(key)
+            return real_hmac_new(key, *args, **kwargs)
         with patch.dict(os.environ, env):
             configured = bridge.configs()
-            verified, diagnostic = bridge.verify_webhook_signature(raw, signed(raw, secret), configured)
-        self.assertEqual(verified, configured)
+            with patch("whatsapp_bridge.hmac.new", side_effect=capture_hmac_key):
+                verified, diagnostic = bridge.verify_webhook_signature(raw, signature, [BASE_CONFIG])
+        self.assertEqual(verified, [BASE_CONFIG])
         self.assertEqual(configured[0]["app_secret"], secret)
-        self.assertEqual(json.loads(diagnostic)["candidates"][0]["secret_length"], len(secret.encode("utf-8")))
+        details = json.loads(diagnostic)
+        self.assertEqual(details["secret_env_name"], "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE")
+        self.assertEqual(details["candidates"][0]["secret_length"], len(secret.encode("utf-8")))
+        self.assertEqual(details["candidates"][0]["secret_sha256"], hashlib.sha256(used_keys[0]).hexdigest())
+        self.assertTrue(details["candidates"][0]["signature_match"])
+        self.assertEqual(used_keys, [secret.encode("utf-8")])
 
     return test
 
@@ -105,6 +117,27 @@ def _override_secret_test(secret):
 _secrets = ["leading space", "trailing space ", " both ", "line\nfeed", "مفتاح-اختبار"]
 for _index, _secret in enumerate(_secrets):
     setattr(SignatureTests, f"test_uses_override_secret_verbatim_{_index:02d}", _override_secret_test(_secret))
+
+
+class SecretSourceTests(unittest.TestCase):
+    def test_falls_back_to_config_secret_when_override_is_absent(self):
+        raw = b'{"fallback":true}'
+        real_hmac_new = hmac.new
+        used_keys = []
+        def capture_hmac_key(key, *args, **kwargs):
+            used_keys.append(key)
+            return real_hmac_new(key, *args, **kwargs)
+        env = {"KHDOOM_WHATSAPP_CONFIG": json.dumps([BASE_CONFIG])}
+        signature = signed(raw, BASE_CONFIG["app_secret"])
+        with patch.dict(os.environ, env, clear=True):
+            with patch("whatsapp_bridge.hmac.new", side_effect=capture_hmac_key):
+                verified, diagnostic = bridge.verify_webhook_signature(
+                    raw, signature, [BASE_CONFIG])
+        details = json.loads(diagnostic)
+        self.assertEqual(verified, [BASE_CONFIG])
+        self.assertEqual(details["secret_env_name"], "KHDOOM_WHATSAPP_CONFIG")
+        self.assertEqual(details["candidates"][0]["secret_sha256"], hashlib.sha256(used_keys[0]).hexdigest())
+        self.assertEqual(used_keys, [BASE_CONFIG["app_secret"].encode("utf-8")])
 
 
 class RawHttpBodyTests(unittest.TestCase):
