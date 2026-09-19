@@ -135,10 +135,17 @@ def _log_graph_message_response(cfg, path, status, raw):
         body = json.loads(raw.decode("utf-8", "replace"))
     except (UnicodeDecodeError, ValueError, TypeError):
         body = {"raw": raw[:2000].decode("utf-8", "replace")}
+    error = body.get("error") if isinstance(body, dict) else None
+    error_details = {}
+    if isinstance(error, dict):
+        for key in ("message", "type", "code", "error_subcode", "fbtrace_id"):
+            if key in error:
+                error_details[key] = _safe_graph_response(error[key], key)
     diagnostic = {
         "phone_number_id": str(cfg.get("phone_number_id", "")),
         "http_status": int(status),
         "response": _safe_graph_response(body),
+        "meta_error": error_details,
     }
     print("WhatsApp Graph API send diagnostic " + json.dumps(
         diagnostic, ensure_ascii=False, separators=(",", ":")
