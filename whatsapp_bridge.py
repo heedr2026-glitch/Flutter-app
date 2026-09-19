@@ -252,6 +252,43 @@ def signature_diagnostic(raw, cfgs):
             sorted({str(c.get("waba_id", ""))[:32] for c in cfgs if c.get("waba_id")}),
             sorted({str(c.get("phone_number_id", ""))[:32] for c in cfgs if c.get("phone_number_id")}))
 
+def invalid_signature_payload_diagnostic(raw):
+    """Extract only routing metadata for a rejected webhook; never process it."""
+    result = {"object": None, "entry_ids": [], "fields": [], "phone_number_ids": []}
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return result
+        obj = payload.get("object")
+        result["object"] = str(obj)[:80] if isinstance(obj, str) else None
+        entry_ids, fields, phone_ids = set(), set(), set()
+        entries = payload.get("entry", [])
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = entry.get("id")
+            if entry_id is not None:
+                entry_ids.add(str(entry_id)[:32])
+            changes = entry.get("changes", [])
+            for change in changes if isinstance(changes, list) else []:
+                if not isinstance(change, dict):
+                    continue
+                field = change.get("field")
+                if isinstance(field, str) and re.fullmatch(r"[a-zA-Z0-9_]{1,50}", field):
+                    fields.add(field)
+                value = change.get("value", {})
+                metadata = value.get("metadata", {}) if isinstance(value, dict) else {}
+                phone_id = metadata.get("phone_number_id") if isinstance(metadata, dict) else None
+                if phone_id is not None:
+                    phone_ids.add(str(phone_id)[:32])
+        result.update({"entry_ids": sorted(entry_ids), "fields": sorted(fields), "phone_number_ids": sorted(phone_ids)})
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return result
+
+def safe_header(value, limit=200):
+    return re.sub(r"[\x00-\x1f\x7f]", "", str(value or ""))[:limit]
+
 def verify_webhook_signature(raw, signature, cfgs):
     """Verify Meta's signature against untouched request bytes, without logging secrets or signatures."""
     override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
@@ -386,9 +423,20 @@ def handle(h, method, db, on_inbound=None):
             signature = h.headers.get("X-Hub-Signature-256","")
             valid, signature_info = verify_webhook_signature(raw, signature, cfgs)
             details = json.loads(signature_info)
-            details["content_type"] = h.headers.get("Content-Type", "")
+            details["content_type"] = safe_header(h.headers.get("Content-Type", ""))
+            details["content_encoding"] = safe_header(h.headers.get("Content-Encoding", ""))
+            details["content_length"] = length
+            details["user_agent"] = safe_header(h.headers.get("User-Agent", ""))
             print("WhatsApp webhook signature diagnostic " + json.dumps(details, separators=(",", ":"), sort_keys=True), flush=True)
             if not valid:
+                rejected_payload = invalid_signature_payload_diagnostic(raw)
+                rejected_payload.update({
+                    "content_type": safe_header(h.headers.get("Content-Type", "")),
+                    "content_encoding": safe_header(h.headers.get("Content-Encoding", "")),
+                    "content_length": length,
+                    "user_agent": safe_header(h.headers.get("User-Agent", "")),
+                })
+                print("WhatsApp rejected webhook payload diagnostic " + json.dumps(rejected_payload, separators=(",", ":"), sort_keys=True), flush=True)
                 raise Error(403,"توقيع غير صحيح")
             try:
                 payload = json.loads(raw)
