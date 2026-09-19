@@ -112,18 +112,53 @@ def initialize(c):
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs): return None
 
+_GRAPH_SENSITIVE_RESPONSE_KEYS = {
+    "access_token", "authorization", "token", "phone", "phone_number",
+    "display_phone_number", "wa_id", "input", "to", "from", "body", "text",
+}
+
+def _safe_graph_response(value, key=""):
+    if key.lower() in _GRAPH_SENSITIVE_RESPONSE_KEYS:
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {str(k): _safe_graph_response(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_safe_graph_response(v, key) for v in value]
+    if isinstance(value, str):
+        return value[:2000]
+    return value
+
+def _log_graph_message_response(cfg, path, status, raw):
+    if not (path.endswith("/messages") and raw is not None):
+        return
+    try:
+        body = json.loads(raw.decode("utf-8", "replace"))
+    except (UnicodeDecodeError, ValueError, TypeError):
+        body = {"raw": raw[:2000].decode("utf-8", "replace")}
+    diagnostic = {
+        "phone_number_id": str(cfg.get("phone_number_id", "")),
+        "http_status": int(status),
+        "response": _safe_graph_response(body),
+    }
+    print("WhatsApp Graph API send diagnostic " + json.dumps(
+        diagnostic, ensure_ascii=False, separators=(",", ":")
+    ), flush=True)
+
 def graph(cfg, path, body=None):
     request = Request("https://graph.facebook.com/" + cfg["api_version"] + "/" + path,
       data=None if body is None else json.dumps(body).encode(),
       headers={"Authorization": "Bearer " + cfg["token"], "Content-Type": "application/json"})
     try:
         with build_opener(NoRedirect()).open(request, timeout=15) as response:
-            return json.load(response)
+            raw = response.read()
+            _log_graph_message_response(cfg, path, response.status, raw)
+            return json.loads(raw.decode("utf-8", "replace"))
     except HTTPError as e:
         code = e.code
         detail = ""
         try:
             raw = e.read(4096)
+            _log_graph_message_response(cfg, path, code, raw)
             payload = json.loads(raw.decode("utf-8", "replace"))
             error = payload.get("error", {}) if isinstance(payload, dict) else {}
             if isinstance(error, dict):
