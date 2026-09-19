@@ -170,7 +170,7 @@ def _log_graph_message_response(cfg, path, status, raw):
         "response": _safe_graph_response(body),
         "meta_error": error_details,
     }
-    print("WhatsApp Graph API send_diagnostic " + json.dumps(
+    print("WhatsApp Graph API send diagnostic " + json.dumps(
         diagnostic, ensure_ascii=False, separators=(",", ":")
     ), flush=True)
 
