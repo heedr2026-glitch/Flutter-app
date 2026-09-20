@@ -103,10 +103,12 @@ class WhatsAppWorkspace extends StatefulWidget {
     super.key,
     this.inbox = false,
     this.peer,
+    this.conversationId,
     this.gatewayFactory,
   });
   final bool inbox;
   final String? peer;
+  final String? conversationId;
   final WhatsAppGateway Function(String)? gatewayFactory;
   @override
   State<WhatsAppWorkspace> createState() => _WhatsAppWorkspaceState();
@@ -168,14 +170,12 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
     _phone.text = prefs.getString('whatsapp_business_phone') ?? '';
     _id.text = _defaultPhoneNumberId;
     setState(() => _busy = false);
-    if (savedUrl != null && savedUrl.isNotEmpty) {
-      // The inbox must not wait for the slower Meta health check. Load the
-      // conversations first, then update the connection badge in background.
-      if (widget.inbox) {
-        unawaited(_loadInboxFast());
-      } else {
-        await _check();
-      }
+    // The inbox must always fetch the current messages when it opens; it
+    // should not depend on a previously saved settings-page URL.
+    if (widget.inbox) {
+      unawaited(_loadInboxFast());
+    } else if (savedUrl != null && savedUrl.isNotEmpty) {
+      await _check();
     }
   }
 
@@ -727,17 +727,20 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                     itemBuilder: (_, index) {
                       final entry = entries[index];
                       final message = entry.value;
+                      final peer = message['peer']?.toString() ?? '';
+                      final conversationId = message['conversation_id']
+                          ?.toString();
                       return ListTile(
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 5,
                         ),
-                        leading: _avatar(entry.key),
+                        leading: _avatar(peer),
                         title: Row(
                           children: [
                             Expanded(
                               child: Text(
-                                entry.key,
+                                peer,
                                 style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
@@ -781,7 +784,8 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                           MaterialPageRoute(
                             builder: (_) => WhatsAppWorkspace(
                               inbox: true,
-                              peer: entry.key,
+                              peer: peer,
+                              conversationId: conversationId,
                               gatewayFactory: widget.gatewayFactory,
                             ),
                           ),
@@ -985,12 +989,19 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
     final query = _search.text.trim();
     final messages = _messages.where(
       (m) =>
-          (widget.peer == null || m['peer'] == widget.peer) &&
+          (widget.peer == null ||
+              (widget.conversationId != null &&
+                  m['conversation_id']?.toString() == widget.conversationId) ||
+              (m['conversation_id'] == null && m['peer'] == widget.peer)) &&
           (query.isEmpty || '${m['peer']} ${m['body']}'.contains(query)),
     );
     final peers = <String, Map<String, dynamic>>{};
     for (final m in messages) {
-      peers.putIfAbsent(m['peer'].toString(), () => m);
+      final conversationId = m['conversation_id']?.toString();
+      final key = conversationId == null || conversationId.isEmpty
+          ? 'peer:${m['peer']}'
+          : 'conversation:$conversationId';
+      peers.putIfAbsent(key, () => m);
     }
     if (widget.inbox) {
       if (widget.peer != null)
