@@ -109,6 +109,10 @@ def initialize(c):
         for column, definition in optional_columns:
             if column not in existing:
                 c.execute('ALTER TABLE whatsapp_messages ADD COLUMN %s %s' % (column, definition))
+    for row in c.execute("""SELECT id,organization_id,peer FROM whatsapp_messages
+      WHERE direction='inbound' AND (conversation_id IS NULL OR conversation_id='')""").fetchall():
+        conversation_id = whatsapp_conversation_id(c, row["organization_id"], row["peer"])
+        c.execute("UPDATE whatsapp_messages SET conversation_id=? WHERE id=?", (conversation_id, row["id"]))
     c.execute("""CREATE TABLE IF NOT EXISTS whatsapp_webhooks(
       phone_number_id TEXT PRIMARY KEY, received_at BIGINT NOT NULL)""")
 
