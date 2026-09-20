@@ -340,6 +340,7 @@ def verify_webhook_signature(raw, signature, cfgs):
         secret_value = override if override else cfg.get("app_secret", "")
         secret = str(secret_value).encode("utf-8")
         fingerprint = hashlib.sha256(secret).hexdigest()
+        print("live_webhook_secret_fingerprint=" + fingerprint[:12], flush=True)
         expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
         matched = format_valid and hmac.compare_digest(expected, supplied)
         if fingerprint not in seen:
