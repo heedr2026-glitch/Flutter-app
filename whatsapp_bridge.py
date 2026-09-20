@@ -4,6 +4,8 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, parse_qs
 
+_signature_debug_pending = True
+
 class Error(Exception):
     def __init__(self, status, message):
         self.status, self.message = status, message
@@ -329,6 +331,7 @@ def safe_header(value, limit=200):
 
 def verify_webhook_signature(raw, signature, cfgs):
     """Verify Meta's signature against untouched request bytes, without logging secrets or signatures."""
+    global _signature_debug_pending
     override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
     secret_source = "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE" if override else "KHDOOM_WHATSAPP_CONFIG"
     format_valid = bool(re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature or ""))
@@ -343,6 +346,11 @@ def verify_webhook_signature(raw, signature, cfgs):
         print("live_webhook_secret_fingerprint=" + fingerprint[:12], flush=True)
         expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
         matched = format_valid and hmac.compare_digest(expected, supplied)
+        if _signature_debug_pending:
+            print("received_hmac_first12=" + (supplied[:12] if format_valid else ""), flush=True)
+            print("computed_hmac_first12=" + expected[:12], flush=True)
+            print("equal=" + str(bool(matched)).lower(), flush=True)
+            _signature_debug_pending = False
         if fingerprint not in seen:
             candidates.append({
                 "secret_sha256": fingerprint,
