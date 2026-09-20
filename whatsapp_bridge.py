@@ -358,8 +358,9 @@ def verify_webhook_signature(raw, signature, cfgs):
     """Verify Meta's signature against untouched request bytes, without logging secrets or signatures."""
     override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
     secret_source = "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE" if override else "KHDOOM_WHATSAPP_CONFIG"
-    format_valid = bool(re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature or ""))
-    supplied = (signature or "").partition("=")[2] if format_valid else ""
+    signature = (signature or "").strip()
+    format_valid = bool(re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature))
+    supplied = signature.partition("=")[2] if format_valid else ""
     verified, candidates, seen = [], [], set()
     for cfg in cfgs:
         # Select the same source reported in diagnostics; preserve the exact
