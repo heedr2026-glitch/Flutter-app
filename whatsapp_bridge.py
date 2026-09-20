@@ -451,6 +451,7 @@ def handle(h, method, db, on_inbound=None):
                 q = parse_qs(urlparse(h.path).query)
                 token = q.get("hub.verify_token",[""])[0]
                 if q.get("hub.mode") != ["subscribe"] or not any(hmac.compare_digest(token.encode("utf-8"),c["verify_token"].encode("utf-8")) for c in cfgs):
+                    print("actual_403_source=whatsapp_bridge.py:handle:455", flush=True)
                     raise Error(403,"تعذر التحقق")
                 body = q.get("hub.challenge",[""])[0].encode()
                 h.send_response(200); h.send_header("Content-Type","text/plain")
@@ -463,6 +464,7 @@ def handle(h, method, db, on_inbound=None):
             raw = h.rfile.read(length)
             if len(raw) != length: raise Error(400,"جسم الطلب غير مكتمل")
             signature = h.headers.get("X-Hub-Signature-256","")
+            print("signature_check_called=true", flush=True)
             valid, signature_info = verify_webhook_signature(raw, signature, cfgs)
             details = json.loads(signature_info)
             details["content_type"] = safe_header(h.headers.get("Content-Type", ""))
@@ -490,6 +492,7 @@ def handle(h, method, db, on_inbound=None):
                     print("computed_hmac_first12=" + computed[:12], flush=True)
                     print("equal=" + str(hmac.compare_digest(computed, received)).lower(), flush=True)
                     _hmac_logging_pending = False
+                print("actual_403_source=whatsapp_bridge.py:handle:496", flush=True)
                 raise Error(403,"توقيع غير صحيح")
             try:
                 payload = json.loads(raw)

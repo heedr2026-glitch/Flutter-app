@@ -1683,6 +1683,8 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
         REQUEST_SCOPE.set(None)
         self.platform_actor = None
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/webhooks/whatsapp" and method == "POST":
+            print("route_entry_hit=true", flush=True)
         if self._rate_limited(path):
             self._send(429, {"error": "طلبات كثيرة حاليًا. حاول مرة أخرى بعد قليل."})
             return
@@ -1731,6 +1733,8 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
             return
         if community_admin.client(self, method, __import__('sys').modules[__name__]):
             return
+        if path == "/webhooks/whatsapp" and method == "POST":
+            print("middleware_403_hit=false", flush=True)
         if whatsapp_bridge.handle(self, method, db, on_inbound=whatsapp_auto_reply):
             return
         with db() as subscription_connection:
