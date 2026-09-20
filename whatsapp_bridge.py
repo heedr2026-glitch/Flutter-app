@@ -85,7 +85,11 @@ def initialize(c):
       peer TEXT NOT NULL, direction TEXT NOT NULL, body TEXT NOT NULL, branch_id TEXT,
       timestamp BIGINT NOT NULL, state TEXT NOT NULL, meta_id TEXT, client_id TEXT,
       UNIQUE(organization_id,phone_number_id,meta_id), UNIQUE(organization_id,client_id))""")
-    optional_columns = (("media_type", "TEXT"), ("media_name", "TEXT"), ("media_id", "TEXT"))
+    c.execute("""CREATE TABLE IF NOT EXISTS whatsapp_conversations(
+      id TEXT PRIMARY KEY, organization_id BIGINT NOT NULL, sender_phone TEXT NOT NULL,
+      created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL,
+      UNIQUE(organization_id,sender_phone))""")
+    optional_columns = (("media_type", "TEXT"), ("media_name", "TEXT"), ("media_id", "TEXT"), ("conversation_id", "TEXT"))
     if hasattr(c, '_connection'):
         # Do not catch a PostgreSQL ALTER error: a failed statement aborts the
         # whole transaction. Check the catalog before changing the schema.
@@ -107,6 +111,22 @@ def initialize(c):
                 c.execute('ALTER TABLE whatsapp_messages ADD COLUMN %s %s' % (column, definition))
     c.execute("""CREATE TABLE IF NOT EXISTS whatsapp_webhooks(
       phone_number_id TEXT PRIMARY KEY, received_at BIGINT NOT NULL)""")
+
+def whatsapp_conversation_id(c, organization_id, sender_phone):
+    row = c.execute("""SELECT id FROM whatsapp_conversations
+      WHERE organization_id=? AND sender_phone=?""", (organization_id, sender_phone)).fetchone()
+    now = int(time.time())
+    if row:
+        c.execute("UPDATE whatsapp_conversations SET updated_at=? WHERE id=?", (now, row["id"]))
+        return str(row["id"])
+    conversation_id = uuid.uuid4().hex
+    c.execute("""INSERT INTO whatsapp_conversations
+      (id,organization_id,sender_phone,created_at,updated_at)
+      VALUES(?,?,?,?,?) ON CONFLICT(organization_id,sender_phone) DO NOTHING""",
+      (conversation_id, organization_id, sender_phone, now, now))
+    row = c.execute("""SELECT id FROM whatsapp_conversations
+      WHERE organization_id=? AND sender_phone=?""", (organization_id, sender_phone)).fetchone()
+    return str(row["id"]) if row else conversation_id
 
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs): return None
@@ -239,10 +259,11 @@ def ingest(c, cfg, payload, on_inbound=None):
                 try: stamp = min(int(m.get("timestamp", 0)), int(time.time()))
                 except (ValueError, TypeError): continue
                 body = str(m.get("text", {}).get("body", "")) if m.get("type") == "text" else "[رسالة غير نصية: " + str(m.get("type", ""))[:30] + "]"
+                conversation_id = whatsapp_conversation_id(c, cfg["organization_id"], peer)
                 cursor = c.execute("""INSERT INTO whatsapp_messages
-                  (id,organization_id,phone_number_id,peer,direction,body,timestamp,state,meta_id,branch_id)
-                  VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                  (uuid.uuid4().hex,cfg["organization_id"],cfg["phone_number_id"],peer,"inbound",body[:10000],stamp,"received",mid,cfg.get("branch_id")))
+                  (id,organization_id,phone_number_id,peer,direction,body,timestamp,state,meta_id,branch_id,conversation_id)
+                  VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                  (uuid.uuid4().hex,cfg["organization_id"],cfg["phone_number_id"],peer,"inbound",body[:10000],stamp,"received",mid,cfg.get("branch_id"),conversation_id))
                 if cursor.rowcount:
                     inserted += 1
                     if on_inbound is not None:

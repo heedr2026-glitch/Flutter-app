@@ -174,6 +174,9 @@ class RawHttpBodyTests(unittest.TestCase):
                 self.assertTrue(bridge.handle(handler, "POST", db))
             self.assertEqual(handler.response[0], 200)
             self.assertEqual(connection.execute("SELECT count(*) FROM whatsapp_messages").fetchone()[0], 1)
+            row = connection.execute("SELECT conversation_id FROM whatsapp_messages").fetchone()
+            self.assertTrue(row[0])
+            self.assertEqual(connection.execute("SELECT count(*) FROM whatsapp_conversations").fetchone()[0], 1)
         finally:
             connection.close()
 
