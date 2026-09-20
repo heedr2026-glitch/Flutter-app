@@ -4,7 +4,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, parse_qs
 
-_signature_debug_pending = True
+_hmac_logging_pending = True
 
 class Error(Exception):
     def __init__(self, status, message):
@@ -331,7 +331,6 @@ def safe_header(value, limit=200):
 
 def verify_webhook_signature(raw, signature, cfgs):
     """Verify Meta's signature against untouched request bytes, without logging secrets or signatures."""
-    global _signature_debug_pending
     override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
     secret_source = "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE" if override else "KHDOOM_WHATSAPP_CONFIG"
     format_valid = bool(re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature or ""))
@@ -346,11 +345,6 @@ def verify_webhook_signature(raw, signature, cfgs):
         print("live_webhook_secret_fingerprint=" + fingerprint[:12], flush=True)
         expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
         matched = format_valid and hmac.compare_digest(expected, supplied)
-        if _signature_debug_pending:
-            print("received_hmac_first12=" + (supplied[:12] if format_valid else ""), flush=True)
-            print("computed_hmac_first12=" + expected[:12], flush=True)
-            print("equal=" + str(bool(matched)).lower(), flush=True)
-            _signature_debug_pending = False
         if fingerprint not in seen:
             candidates.append({
                 "secret_sha256": fingerprint,
@@ -445,6 +439,7 @@ def send(c, org, data):
     return dict(c.execute("SELECT * FROM whatsapp_messages WHERE id=?",(mid,)).fetchone())
 
 def handle(h, method, db, on_inbound=None):
+    global _hmac_logging_pending
     path = urlparse(h.path).path.rstrip("/")
     if path != "/webhooks/whatsapp" and not path.startswith("/api/whatsapp/"): return False
     try:
@@ -484,6 +479,17 @@ def handle(h, method, db, on_inbound=None):
                     "user_agent": safe_header(h.headers.get("User-Agent", "")),
                 })
                 print("WhatsApp rejected webhook payload diagnostic " + json.dumps(rejected_payload, separators=(",", ":"), sort_keys=True), flush=True)
+                if _hmac_logging_pending:
+                    override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
+                    secret_value = override if override else (cfgs[0].get("app_secret", "") if cfgs else "")
+                    secret = str(secret_value).encode("utf-8")
+                    received = signature.partition("=")[2] if re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature or "") else ""
+                    computed = hmac.new(secret, raw, hashlib.sha256).hexdigest()
+                    print("hmac_logging_path_hit=true", flush=True)
+                    print("received_hmac_first12=" + received[:12], flush=True)
+                    print("computed_hmac_first12=" + computed[:12], flush=True)
+                    print("equal=" + str(hmac.compare_digest(computed, received)).lower(), flush=True)
+                    _hmac_logging_pending = False
                 raise Error(403,"توقيع غير صحيح")
             try:
                 payload = json.loads(raw)
