@@ -38,6 +38,11 @@ def configs(db_conn=None):
         token_override = os.environ.get("KHDOOM_WHATSAPP_TOKEN_OVERRIDE", "").strip()
         if token_override:
             items = [dict(c, token=token_override) for c in items]
+        # Keep Meta callback verification independently rotatable without
+        # exposing or rewriting the credential JSON bundle in Render.
+        verify_token_override = os.environ.get("KHDOOM_WHATSAPP_VERIFY_TOKEN_OVERRIDE", "")
+        if verify_token_override:
+            items = [dict(c, verify_token=verify_token_override) for c in items]
         if db_conn is not None and hasattr(db_conn, "execute") and items:
             template = items[0]
             rows = db_conn.execute("SELECT organization_id,phone_number,phone_number_id,waba_id FROM whatsapp_connections").fetchall()
