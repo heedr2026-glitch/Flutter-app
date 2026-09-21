@@ -90,7 +90,7 @@ class AdRulesTest(unittest.TestCase):
                 self.assertEqual(req('/api/my-ads')[0]['review_note'],'Please revise')
                 server.init_db()
                 self.assertEqual(req('/api/my-ads')[0]['requested_days'],7)
-                with urlopen('http://127.0.0.1:'+str(httpd.server_port)+'/owner',timeout=5) as r:
+                with urlopen('http://127.0.0.1:'+str(httpd.server_port)+'/owner/legacy',timeout=5) as r:
                     self.assertIn('ad-unlimited-',r.read().decode())
             finally:
                 httpd.shutdown(); httpd.server_close(); thread.join(timeout=5)

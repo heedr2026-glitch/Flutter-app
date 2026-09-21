@@ -33,7 +33,7 @@ def snapshot(c, org, uid, branch):
         request=c.execute("""SELECT status FROM appointment_requests WHERE id=? AND organization_id=?
             AND branch_id=? AND chat_session_id=?""",(state['request_id'],org,branch,session['id'])).fetchone()
         state['status']=('waiting_for_manager' if request['status'] in ('pending','accepted') else request['status']) if request else 'unavailable'
-    rows=c.execute('SELECT id,sender,message,created_at FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 100',(session['id'],)).fetchall()
+    rows=c.execute('SELECT id,sender,message,created_at FROM chat_messages WHERE organization_id=? AND session_id=? ORDER BY id DESC LIMIT 100',(org,session['id'])).fetchall()
     return {'conversationId':session['id'],'messages':[dict(r) for r in reversed(rows)],'request':state}
 
 
@@ -125,12 +125,12 @@ def send(c, org, uid, branch, message, client_id, clock, generate, error, postgr
         if prior['message']!=message: raise error(409,'معرف الرسالة مستخدم لرسالة أخرى')
         return snapshot(c,org,uid,branch)
     c.execute('INSERT INTO reception_turns(session_id,client_id,message) VALUES(?,?,?)',(session['id'],client_id,message))
-    history=c.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12',(session['id'],)).fetchall()
-    cursor=c.execute('INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)',(session['id'],'customer',message,clock()))
+    history=c.execute('SELECT sender,message FROM chat_messages WHERE organization_id=? AND session_id=? ORDER BY id DESC LIMIT 12',(org,session['id'])).fetchall()
+    cursor=c.execute('INSERT INTO chat_messages(organization_id,session_id,sender,message,created_at) VALUES(?,?,?,?,?)',(org,session['id'],'customer',message,clock()))
     reply=manager_reply(c,org,session,message,cursor.lastrowid,clock)
     if reply is None:
         fresh=session_for(c,org,uid,branch)
         reply=generate(fresh,[{'role':r['sender'],'text':r['message']} for r in reversed(history)],json.loads(fresh['context_json'] or '{}'))
-    c.execute('INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)',(session['id'],'bot',reply,clock()))
+    c.execute('INSERT INTO chat_messages(organization_id,session_id,sender,message,created_at) VALUES(?,?,?,?,?)',(org,session['id'],'bot',reply,clock()))
     c.execute('UPDATE chat_sessions SET updated_at=? WHERE id=?',(clock(),session['id']))
     return snapshot(c,org,uid,branch)

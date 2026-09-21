@@ -103,13 +103,15 @@ def _override_secret_test(secret):
             with patch("whatsapp_bridge.hmac.new", side_effect=capture_hmac_key):
                 verified, diagnostic = bridge.verify_webhook_signature(raw, signature, [BASE_CONFIG])
         self.assertEqual(verified, [BASE_CONFIG])
-        self.assertEqual(configured[0]["app_secret"], secret)
+        # The configured secret remains available during rotation so retries
+        # signed with either secret stay verifiable.
+        self.assertEqual(configured[0]["app_secret"], BASE_CONFIG["app_secret"])
         details = json.loads(diagnostic)
-        self.assertEqual(details["secret_env_name"], "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE")
+        self.assertEqual(details["secret_env_name"], "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE+KHDOOM_WHATSAPP_CONFIG")
         self.assertEqual(details["candidates"][0]["secret_length"], len(secret.encode("utf-8")))
         self.assertEqual(details["candidates"][0]["secret_sha256"], hashlib.sha256(used_keys[0]).hexdigest())
         self.assertTrue(details["candidates"][0]["signature_match"])
-        self.assertEqual(used_keys, [secret.encode("utf-8")])
+        self.assertEqual(used_keys, [secret.encode("utf-8"), BASE_CONFIG["app_secret"].encode("utf-8")])
 
     return test
 

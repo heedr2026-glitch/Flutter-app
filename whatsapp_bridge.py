@@ -562,12 +562,11 @@ def handle(h, method, db, on_inbound=None):
             if (path == "/api/whatsapp/connect" or method == "POST" and path != "/api/whatsapp/messages") and not is_admin:
                 raise Error(403,"ربط واتساب متاح لمسؤول المؤسسة فقط")
             initialize(c); org = user["organization_id"]
-            package_row = c.execute("SELECT package FROM subscriptions WHERE organization_id=?", (org,)).fetchone()
-            # Older installations may not have a subscription row yet; keep
-            # their existing WhatsApp inbox working while explicitly blocking
-            # accounts that are subscribed to a non-VIP package.
-            if package_row and str(package_row["package"]).lower() != "vip":
-                raise Error(403, "خدمة واتساب متاحة في باقة VIP فقط")
+            # WhatsApp is available to every active package.  Package-specific
+            # resource limits remain enforced by their own services; they must
+            # not prevent a subscribed institution from connecting its number
+            # or receiving customer messages.
+            c.execute("SELECT package FROM subscriptions WHERE organization_id=?", (org,)).fetchone()
             if path == "/api/whatsapp/connect" and method == "POST":
                 data = h._body()
                 raw_phone = str(data.get("phone", "")).strip()

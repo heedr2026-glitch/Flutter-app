@@ -1,3 +1,5 @@
+
+
 import 'dart:convert';
 
 import 'cloud_api_platform_io.dart'
@@ -41,6 +43,7 @@ class KhdoomCloudApi {
     String password, {
     String deviceId = '',
     String deviceName = 'جهاز غير معروف',
+    String appVersion = '1.0.0+4',
   }) async {
     final result = await _request(
       'POST',
@@ -50,6 +53,7 @@ class KhdoomCloudApi {
         'password': password,
         'deviceId': deviceId,
         'deviceName': deviceName,
+        'appVersion': appVersion,
       },
     ) as Map<String, dynamic>;
     token = result['token'] as String?;
@@ -496,6 +500,11 @@ class KhdoomCloudApi {
     return Map<String, dynamic>.from(result as Map);
   }
 
+  Future<Map<String, dynamic>> usageSummary() async {
+    final result = await _request('GET', '/api/usage-summary');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   Future<Map<String, dynamic>> branchQuote({String period = 'monthly'}) async =>
       Map<String, dynamic>.from(
         await _request('GET', '/api/addons/quote?period=$period') as Map,
@@ -521,23 +530,48 @@ class KhdoomCloudApi {
     String path, {
     Map<String, dynamic>? body,
   }) async {
-    final headers = <String, String>{'Content-Type': 'application/json'};
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'X-App-Version': '1.0.0+4',
+    };
     if (token != null) {
       headers['Authorization'] = 'Bearer $token';
       headers['X-Branch-Id'] = path.startsWith('/api/addons/')
           ? 'main'
           : (await _branchScope).branchId;
     }
-    final response = await _client.send(
-      method,
-      baseUri.resolve(path),
-      headers: headers,
-      body: body == null ? null : jsonEncode(body),
-    );
+    late final CloudHttpResponse response;
+    try {
+      response = await _client.send(
+        method,
+        baseUri.resolve(path),
+        headers: headers,
+        body: body == null ? null : jsonEncode(body),
+      );
+    } catch (_) {
+      throw const CloudApiException(
+        503,
+        'تعذر الاتصال بخدووم حاليًا. جاري إعادة المحاولة…',
+      );
+    }
     final text = response.body;
-    final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+    dynamic decoded;
+    try {
+      decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+    } catch (_) {
+      throw const CloudApiException(
+        502,
+        'تعذر الاتصال بخدووم حاليًا. جاري إعادة المحاولة…',
+      );
+    }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final message = decoded is Map ? decoded['error']?.toString() : null;
+      if (response.statusCode >= 500) {
+        throw const CloudApiException(
+          503,
+          'تعذر الاتصال بخدووم حاليًا. جاري إعادة المحاولة…',
+        );
+      }
       throw CloudApiException(
         response.statusCode,
         message ?? 'تعذر الاتصال بالخادم',
@@ -567,10 +601,10 @@ class KhdoomCloudApi {
   }
 
   Future<Map<String, dynamic>> sendCommunityChat(String body) async {
-    return Map<String, dynamic>.from(await _request(
-      'POST', '/api/community/chat',
-      body: {'body': body},
-    ) as Map);
+    return Map<String, dynamic>.from(
+      await _request('POST', '/api/community/chat', body: {'body': body})
+          as Map,
+    );
   }
 
   Future<Map<String, dynamic>> callsConfig() async {

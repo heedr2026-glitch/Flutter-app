@@ -25,6 +25,7 @@ import 'question_answer_training.dart';
 import 'my_advertisements.dart';
 import 'page_refresh_button.dart';
 import 'ai_employee_training_page.dart';
+import 'usage_balance_page.dart';
 
 import 'package:url_launcher/url_launcher.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
@@ -969,6 +970,7 @@ class _LoginPageState extends State<LoginPage> {
       baseUrl:
           prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
     );
+    String? cloudFailureMessage;
     try {
       final device = await khdoomDeviceIdentity();
       final loginResult = await cloudApi.login(
@@ -1028,15 +1030,22 @@ class _LoginPageState extends State<LoginPage> {
         (_) => false,
       );
       return;
+    } on CloudApiException catch (error) {
+      cloudFailureMessage = error.statusCode >= 500 || error.statusCode == 503
+          ? 'توجد مشكلة مؤقتة في خدمة تسجيل الدخول. حاول بعد قليل.'
+          : 'تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.';
     } catch (_) {
-      // تعرض رسالة الدخول المعتادة إذا لم ينجح الدخول المحلي أو السحابي.
+      cloudFailureMessage =
+          'توجد مشكلة مؤقتة في خدمة تسجيل الدخول. حاول بعد قليل.';
     } finally {
       cloudApi.close();
     }
     if (!mounted) return;
     setState(() {
       _loading = false;
-      _error = 'اسم المستخدم أو كلمة المرور غير صحيحة';
+      _error =
+          cloudFailureMessage ??
+          'تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.';
     });
   }
 
@@ -2036,11 +2045,13 @@ class _DashboardPageState extends State<DashboardPage> {
   int _activeReminderCount = 0;
   int _securityAlertCount = 0;
   bool _alertsSynced = false;
+  Map<String, dynamic>? _usageSummary;
 
   @override
   void initState() {
     super.initState();
     _loadBusinessName();
+    unawaited(_loadUsageSummary());
     _requestRefreshTimer = Timer.periodic(
       const Duration(minutes: 1),
       (_) => _loadBusinessName(),
@@ -2394,6 +2405,96 @@ class _DashboardPageState extends State<DashboardPage> {
       _assistantLockMessage = assistantLockMessage;
     });
     _startAdvertisementRotation();
+  }
+
+  Future<void> _loadUsageSummary() async {
+    final prefs = await _branchPrefs;
+    final token = await const FlutterSecureStorage().read(
+      key: 'cloud_session_token',
+    );
+    if (token == null || token.isEmpty) return;
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
+    try {
+      final data = await api.usageSummary();
+      if (mounted) setState(() => _usageSummary = data);
+    } catch (_) {
+      // The dashboard remains usable when the optional usage endpoint is unavailable.
+    } finally {
+      api.close();
+    }
+  }
+
+  Widget _buildUsageIndicator() {
+    final percent =
+        (_usageSummary?['usagePercent'] as num?)?.toInt().clamp(0, 100) ?? 0;
+    return InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: () async {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const UsageBalancePage()),
+        );
+        await _loadUsageSummary();
+      },
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF172554),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xFF2563EB)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.account_balance_wallet_outlined,
+                  color: Color(0xFF67E8F9),
+                ),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'استخدامي / الرصيد',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                Text(
+                  '$percent%',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'استهلاك باقتك هذا الشهر: $percent%',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 7),
+            LinearProgressIndicator(
+              value: percent / 100,
+              minHeight: 7,
+              borderRadius: BorderRadius.circular(8),
+              backgroundColor: Colors.white12,
+              color: percent >= 80
+                  ? Colors.orangeAccent
+                  : const Color(0xFF38BDF8),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _startAdvertisementRotation() {
@@ -3039,6 +3140,18 @@ class _DashboardPageState extends State<DashboardPage> {
       // Extra height prevents Arabic text from overflowing on short phones and with larger system text.
       childAspectRatio: 0.62,
       children: [
+        DashboardCard(
+          icon: Icons.account_balance_wallet_outlined,
+          title: 'استخدامي / الرصيد',
+          subtitle: 'الرصيد والاستهلاك',
+          onTap: () async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const UsageBalancePage()),
+            );
+            await _loadUsageSummary();
+          },
+        ),
         if (_isAdmin)
           DashboardCard(
             icon: Icons.today_outlined,
@@ -3401,6 +3514,8 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(height: 16),
                 _buildOrganizationAssistant(),
+                const SizedBox(height: 16),
+                _buildUsageIndicator(),
                 const SizedBox(height: 16),
 
                 if (_subscriptionPackage != 'vip' &&
@@ -5747,12 +5862,22 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                 final color = Color(package['color'] as int);
                 final features = List<String>.from(package['features'] as List);
                 final packageId = package['id'] as String;
-                if (packageId != 'vip') {
-                  features[0] =
-                      'حتى ${_resourceLimits.limit(packageId, 'employees')} موظفين';
-                  features[1] =
-                      'حتى ${_resourceLimits.limit(packageId, 'vehicles')} مركبات';
+                String limitLabel(String resource, String unit) {
+                  final value = _resourceLimits.limit(packageId, resource);
+                  return value == null ? 'دون حد' : 'حتى $value $unit';
                 }
+
+                final dynamicFeatures = [
+                  '${limitLabel('employees', 'موظفين')}',
+                  '${limitLabel('vehicles', 'مركبات')}',
+                  '${limitLabel('branches', 'فروع')}',
+                  '${limitLabel('organization_notifications', 'تنبيهات المؤسسة')}',
+                  '${limitLabel('employee_notifications', 'تنبيهات الموظفين')}',
+                ];
+                final displayedFeatures = [
+                  ...dynamicFeatures,
+                  ...features.skip(2),
+                ];
                 return Container(
                   padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
@@ -5809,7 +5934,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                         ),
                       ),
                       const SizedBox(height: 12),
-                      ...features.map(
+                      ...displayedFeatures.map(
                         (feature) => Padding(
                           padding: const EdgeInsets.only(bottom: 8),
                           child: Row(
@@ -6229,6 +6354,41 @@ class _SecurityAlertsPageState extends State<SecurityAlertsPage> {
       ? Icons.phonelink_lock_outlined
       : Icons.admin_panel_settings_outlined;
 
+  Future<void> _showAlertDetails(Map<String, dynamic> alert) async {
+    if (!mounted) return;
+    final action = alert['action']?.toString() ?? '';
+    final title = action == 'failed_login'
+        ? 'محاولة دخول فاشلة'
+        : action == 'suspicious_login'
+        ? 'محاولة دخول مشبوهة'
+        : 'تفاصيل التنبيه الأمني';
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(_icon(action), color: const Color(0xFFFBBF24)),
+            const SizedBox(width: 8),
+            Expanded(child: Text(title)),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: SelectableText(
+            '${alert['summary'] ?? 'لا توجد تفاصيل إضافية'}\n\n'
+            'الحساب: ${alert['actor_name'] ?? alert['actor_username'] ?? 'غير معروف'}\n'
+            'الوقت: ${(alert['created_at'] ?? 'غير معروف').toString().replaceFirst('T', ' ').split('.').first}',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('إغلاق'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Directionality(
     textDirection: TextDirection.rtl,
@@ -6271,59 +6431,63 @@ class _SecurityAlertsPageState extends State<SecurityAlertsPage> {
                     'suspicious_login',
                     'blocked_device_login',
                   }.contains(alert['action']);
-                  return Container(
-                    padding: const EdgeInsets.all(15),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF172554),
-                      borderRadius: BorderRadius.circular(15),
-                      border: Border.all(
-                        color: danger
-                            ? const Color(0xFFF59E0B)
-                            : const Color(0xFF2563EB),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          _icon(alert['action']?.toString() ?? ''),
+                  return InkWell(
+                    onTap: () => _showAlertDetails(alert),
+                    borderRadius: BorderRadius.circular(15),
+                    child: Container(
+                      padding: const EdgeInsets.all(15),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF172554),
+                        borderRadius: BorderRadius.circular(15),
+                        border: Border.all(
                           color: danger
-                              ? const Color(0xFFFBBF24)
-                              : const Color(0xFF7DD3FC),
-                          size: 30,
+                              ? const Color(0xFFF59E0B)
+                              : const Color(0xFF2563EB),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                (alert['summary'] ?? 'تنبيه أمني').toString(),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                'بواسطة: ${(alert['actor_name'] ?? alert['actor_username'] ?? 'النظام')}',
-                                style: const TextStyle(color: Colors.white60),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                (alert['created_at'] ?? '')
-                                    .toString()
-                                    .replaceFirst('T', ' ')
-                                    .split('.')
-                                    .first,
-                                style: const TextStyle(
-                                  color: Colors.white38,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _icon(alert['action']?.toString() ?? ''),
+                            color: danger
+                                ? const Color(0xFFFBBF24)
+                                : const Color(0xFF7DD3FC),
+                            size: 30,
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  (alert['summary'] ?? 'تنبيه أمني').toString(),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  'بواسطة: ${(alert['actor_name'] ?? alert['actor_username'] ?? 'النظام')}',
+                                  style: const TextStyle(color: Colors.white60),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  (alert['created_at'] ?? '')
+                                      .toString()
+                                      .replaceFirst('T', ' ')
+                                      .split('.')
+                                      .first,
+                                  style: const TextStyle(
+                                    color: Colors.white38,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   );
                 },
@@ -6821,6 +6985,48 @@ class _TrustedDevicesPageState extends State<TrustedDevicesPage> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                if (_sessions.isEmpty)
+                  Container(
+                    padding: const EdgeInsets.all(18),
+                    margin: const EdgeInsets.only(bottom: 14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF172554),
+                      borderRadius: BorderRadius.circular(15),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Column(
+                      children: [
+                        const Icon(
+                          Icons.devices_other_outlined,
+                          color: Color(0xFF7DD3FC),
+                          size: 34,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'لا توجد أجهزة أو جلسات دخول فعّالة حاليًا',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'محاولات الدخول الفاشلة تظهر في التنبيهات الأمنية، ولا تُضاف كجهاز إلا بعد نجاح الدخول.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white60),
+                        ),
+                        const SizedBox(height: 10),
+                        TextButton.icon(
+                          onPressed: () => Navigator.push<void>(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const SecurityAlertsPage(),
+                            ),
+                          ),
+                          icon: const Icon(Icons.security_outlined),
+                          label: const Text('فتح التنبيهات الأمنية'),
+                        ),
+                      ],
+                    ),
+                  ),
                 FilledButton.icon(
                   onPressed: _sessions.length > 1 ? _disconnectOthers : null,
                   icon: const Icon(Icons.logout),
