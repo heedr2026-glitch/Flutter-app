@@ -679,6 +679,37 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
       child: Column(
         children: [
           Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 2),
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF7DD3FC),
+                side: const BorderSide(color: Color(0xFF38BDF8)),
+                minimumSize: const Size.fromHeight(46),
+              ),
+              icon: const Icon(Icons.settings_outlined),
+              label: const Text('إعداد أو تغيير رقم واتساب المؤسسة'),
+              onPressed: _busy
+                  ? null
+                  : () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const WhatsAppWorkspace(),
+                        ),
+                      );
+                      if (mounted) await _loadInboxFast();
+                    },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 4, 18, 2),
+            child: Text(
+              _detail,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+            ),
+          ),
+          Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
             child: TextField(
               controller: _search,
