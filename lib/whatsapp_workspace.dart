@@ -609,6 +609,14 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
     ),
   );
 
+  Future<void> _openBusinessWhatsAppSetup() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const WhatsAppWorkspace()),
+    );
+    if (mounted) await _loadInboxFast();
+  }
+
   PreferredSizeWidget _whatsAppAppBar({required bool conversation}) => AppBar(
     backgroundColor: const Color(0xFF111B35),
     foregroundColor: Colors.white,
@@ -648,9 +656,9 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
               tooltip: 'مكالمة صوتية',
             ),
             IconButton(
-              onPressed: () {},
+              onPressed: _busy ? null : _openBusinessWhatsAppSetup,
               icon: const Icon(Icons.more_vert),
-              tooltip: 'المزيد',
+              tooltip: 'إعداد أو تغيير رقم واتساب المؤسسة',
             ),
           ]
         : [
@@ -665,9 +673,9 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
               tooltip: 'بحث',
             ),
             IconButton(
-              onPressed: () {},
+              onPressed: _busy ? null : _openBusinessWhatsAppSetup,
               icon: const Icon(Icons.more_vert),
-              tooltip: 'المزيد',
+              tooltip: 'إعداد أو تغيير رقم واتساب المؤسسة',
             ),
           ],
   );
@@ -688,17 +696,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
               ),
               icon: const Icon(Icons.settings_outlined),
               label: const Text('إعداد أو تغيير رقم واتساب المؤسسة'),
-              onPressed: _busy
-                  ? null
-                  : () async {
-                      await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const WhatsAppWorkspace(),
-                        ),
-                      );
-                      if (mounted) await _loadInboxFast();
-                    },
+              onPressed: _busy ? null : _openBusinessWhatsAppSetup,
             ),
           ),
           Padding(
