@@ -115,11 +115,8 @@ class WhatsAppWorkspace extends StatefulWidget {
 
 class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
   static const _defaultBackendUrl = 'https://khdoom-api.onrender.com';
-  static const _defaultBusinessPhone = '+966542027855';
-  static const _defaultPhoneNumberId = '1280919991773785';
   final _url = TextEditingController();
   final _phone = TextEditingController();
-  final _id = TextEditingController();
   final _search = TextEditingController();
   final _input = TextEditingController();
   final _recorder = AudioRecorder();
@@ -159,7 +156,6 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
     _input.dispose();
     _url.dispose();
     _phone.dispose();
-    _id.dispose();
     _search.dispose();
     _recorder.dispose();
     super.dispose();
@@ -177,7 +173,6 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
     // Meta checks to the wrong server.
     _url.text = _defaultBackendUrl;
     _phone.text = prefs.getString('whatsapp_business_phone') ?? '';
-    _id.text = _defaultPhoneNumberId;
     setState(() => _busy = false);
     // The inbox must always fetch the current messages when it opens; it
     // should not depend on a previously saved settings-page URL.
@@ -244,7 +239,6 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
         final prefs = await _scope;
         await prefs.setString('whatsapp_backend_url', api.base.origin);
         await prefs.setString('whatsapp_business_phone', _phone.text.trim());
-        await prefs.setString('whatsapp_phone_number_id', _id.text.trim());
         await api.call(
           '/api/whatsapp/connect',
           data: {'phone': _phone.text.trim()},
@@ -586,15 +580,6 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
       ),
     ),
   );
-
-  void _useReadyConnection() {
-    setState(() {
-      _url.text = _defaultBackendUrl;
-      _phone.text = _defaultBusinessPhone;
-      _id.text = _defaultPhoneNumberId;
-      _detail = 'تمت تعبئة بيانات الربط الجاهزة. اضغط حفظ وفحص الربط.';
-    });
-  }
 
   Widget _avatar(String label, {double size = 48}) => CircleAvatar(
     radius: size / 2,
@@ -1129,7 +1114,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            'إضافة رقم المؤسسة',
+                            'ربط واتساب المؤسسة',
                             style: Theme.of(context).textTheme.titleMedium
                                 ?.copyWith(fontWeight: FontWeight.bold),
                           ),
@@ -1137,10 +1122,15 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        _connected ? 'تم حفظ الرقم والربط جاهز.' : 'أدخل رقم واتساب المؤسسة مع رمز الدولة. إعدادات الربط محفوظة بأمان ولا تظهر للمشترك.',
+                        _connected
+                            ? 'تم ربط رقم المؤسسة. الرسائل والردود تظهر في تطبيق خدووم وموظف AI.'
+                            : 'أدخل رقم المؤسسة الموثّق في Meta مرة واحدة. لا تستخدم رقم خدووم أو رقم اختبار.',
                       ),
                       const SizedBox(height: 12),
-                      _field(_phone, 'رقم واتساب المؤسسة مع رمز الدولة'),
+                      _field(
+                        _phone,
+                        'رقم المؤسسة الموثّق في Meta مع رمز الدولة',
+                      ),
                       const SizedBox(height: 4),
                       SizedBox(
                         width: double.infinity,
