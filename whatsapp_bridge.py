@@ -21,12 +21,13 @@ def configs(db_conn=None):
         waba_override = os.environ.get("KHDOOM_WHATSAPP_WABA_ID", "").strip()
         phone_override = os.environ.get("KHDOOM_WHATSAPP_PHONE_NUMBER_ID", "").strip()
         # The environment override is the final source for the signing secret.
-        app_secret_override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
         orgs, phones = set(), set()
         for item in items:
             if waba_override: item["waba_id"] = waba_override
             if phone_override: item["phone_number_id"] = phone_override
-            if app_secret_override: item["app_secret"] = app_secret_override
+            # Keep the configured secret intact.  The optional override is
+            # evaluated by verify_webhook_signature alongside this value so
+            # that key rotation remains secure and retries can be verified.
             item["organization_id"] = int(item["organization_id"])
             if item["organization_id"] <= 0 or item["organization_id"] in orgs: raise ValueError()
             for k in ("token", "app_secret", "verify_token", "phone_number_id", "waba_id", "api_version"):
