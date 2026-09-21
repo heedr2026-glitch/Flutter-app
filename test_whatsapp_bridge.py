@@ -142,6 +142,14 @@ class SecretSourceTests(unittest.TestCase):
         self.assertEqual(used_keys, [BASE_CONFIG["app_secret"].encode("utf-8")])
 
 
+class DiscoveryWabaTests(unittest.TestCase):
+    def test_uses_primary_and_configured_onboarding_wabas_without_duplicates(self):
+        with patch.dict(os.environ, {
+            "KHDOOM_WHATSAPP_DISCOVERY_WABA_IDS": "67890, 112233,not-an-id,112233"
+        }, clear=True):
+            self.assertEqual(bridge.discovery_waba_ids(BASE_CONFIG), ["67890", "112233"])
+
+
 class RawHttpBodyTests(unittest.TestCase):
     def test_http_handler_verifies_raw_request_bytes_before_json_parse(self):
         event = {

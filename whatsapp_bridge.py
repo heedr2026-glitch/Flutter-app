@@ -11,6 +11,24 @@ class Error(Exception):
         self.status, self.message = status, message
         super().__init__(message)
 
+
+def discovery_waba_ids(base):
+    """Return WABAs that the configured Meta credential may use for onboarding.
+
+    The active connection always keeps its own WABA ID in the database.  This
+    separate, non-secret allow-list is only used while locating an institution
+    number before that connection exists.  It prevents the Khdoom support
+    number's WABA from being treated as the only possible institution account.
+    """
+    values = [str(base.get("waba_id", "")).strip()]
+    values.extend(part.strip() for part in os.environ.get(
+        "KHDOOM_WHATSAPP_DISCOVERY_WABA_IDS", "").split(","))
+    result = []
+    for value in values:
+        if value and value.isdigit() and value not in result:
+            result.append(value)
+    return result
+
 def configs(db_conn=None):
     try:
         items = json.loads(os.environ.get("KHDOOM_WHATSAPP_CONFIG", "[]"))
@@ -576,18 +594,28 @@ def handle(h, method, db, on_inbound=None):
                 if phone.startswith("00"): phone = phone[2:]
                 if not re.fullmatch(r"[1-9][0-9]{7,14}", phone):
                     raise Error(400, "أدخل رقم المؤسسة مع رمز الدولة")
-                base = configs()[0] if configs() else None
-                if not base: raise Error(503, "ربط واتساب الأساسي غير مهيأ على الخادم")
-                rows = graph(base, base["waba_id"] + "/phone_numbers?fields=id,display_phone_number,verified_name&limit=200")
-                numbers = rows.get("data", []) if isinstance(rows, dict) else []
-                match = next((item for item in numbers if re.sub(r"[^0-9]", "", str(item.get("display_phone_number", ""))) == phone), None)
+                bases = configs()
+                if not bases: raise Error(503, "ربط واتساب الأساسي غير مهيأ على الخادم")
+                match, match_base = None, None
+                discovered_numbers = []
+                for base in bases:
+                    for waba_id in discovery_waba_ids(base):
+                        candidate = dict(base, waba_id=waba_id)
+                        rows = graph(candidate, waba_id + "/phone_numbers?fields=id,display_phone_number,verified_name&limit=200")
+                        numbers = rows.get("data", []) if isinstance(rows, dict) else []
+                        discovered_numbers.extend(item for item in numbers if isinstance(item, dict))
+                        found = next((item for item in numbers if re.sub(r"[^0-9]", "", str(item.get("display_phone_number", ""))) == phone), None)
+                        if found and str(found.get("id", "")).isdigit():
+                            match, match_base = found, candidate
+                            break
+                    if match: break
                 if not match or not str(match.get("id", "")).isdigit():
                     labels = " ".join(
                         "%s %s" % (item.get("verified_name", ""), item.get("display_phone_number", ""))
-                        for item in numbers if isinstance(item, dict)
+                        for item in discovered_numbers
                     ).casefold()
-                    if len(numbers) == 1 and ("test" in labels or "1555" in re.sub(r"[^0-9]", "", labels)):
-                        raise Error(409, "حساب Meta الحالي حساب اختبار (Test WhatsApp Business Account) ورقمه ثابت. اختر أو أنشئ حساب واتساب خدووم الحقيقي ثم أضف رقم المؤسسة وتحقق منه.")
+                    if len(discovered_numbers) == 1 and ("test" in labels or "1555" in re.sub(r"[^0-9]", "", labels)):
+                        raise Error(409, "حساب Meta الحالي حساب اختبار ورقمه ثابت. فعّل حساب WhatsApp Business Platform للإنتاج ثم أضف رقم المؤسسة وتحقق منه.")
                     raise Error(409, "أضف رقم المؤسسة في Meta وتحقق منه أولًا، ثم أعد الفحص")
                 owner = c.execute("SELECT organization_id FROM whatsapp_connections WHERE phone_number_id=? AND organization_id<>?", (str(match["id"]), org)).fetchone()
                 if owner: raise Error(409, "هذا الرقم مرتبط بمؤسسة أخرى في خدوم")
@@ -595,7 +623,7 @@ def handle(h, method, db, on_inbound=None):
                 c.execute("""INSERT INTO whatsapp_connections(organization_id,phone_number,phone_number_id,waba_id,created_at,updated_at)
                   VALUES(?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET phone_number=excluded.phone_number,
                   phone_number_id=excluded.phone_number_id,waba_id=excluded.waba_id,updated_at=excluded.updated_at""",
-                  (org, phone, str(match["id"]), base["waba_id"], now, now))
+                  (org, phone, str(match["id"]), match_base["waba_id"], now, now))
                 result = {"connected": True, "phone": phone}
             elif path == "/api/whatsapp/status" and method == "GET": result = status(c,org)
             elif path == "/api/whatsapp/messages" and method == "GET":
