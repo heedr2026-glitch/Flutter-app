@@ -362,30 +362,42 @@ def safe_header(value, limit=200):
 def verify_webhook_signature(raw, signature, cfgs):
     """Verify Meta's signature against untouched request bytes, without logging secrets or signatures."""
     override = os.environ.get("KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE", "")
-    secret_source = "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE" if override else "KHDOOM_WHATSAPP_CONFIG"
+    # Meta can deliver a retried event that was signed by the previously
+    # configured app while a replacement secret is being rolled out.  Keep
+    # HMAC verification strict, but accept a signature from either secret
+    # explicitly configured for this integration.  This also makes secret
+    # rotation safe without ever accepting unsigned requests.
+    secret_source = "KHDOOM_WHATSAPP_APP_SECRET_OVERRIDE+KHDOOM_WHATSAPP_CONFIG" if override else "KHDOOM_WHATSAPP_CONFIG"
     signature = (signature or "").strip()
     format_valid = bool(re.fullmatch(r"sha256=[0-9a-fA-F]{64}", signature))
     supplied = signature.partition("=")[2] if format_valid else ""
     verified, candidates, seen = [], [], set()
     for cfg in cfgs:
-        # Select the same source reported in diagnostics; preserve the exact
-        # environment value because whitespace is part of the HMAC key.
-        secret_value = override if override else cfg.get("app_secret", "")
-        secret = str(secret_value).encode("utf-8")
-        fingerprint = hashlib.sha256(secret).hexdigest()
-        print("live_webhook_secret_fingerprint=" + fingerprint[:12], flush=True)
-        expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
-        matched = format_valid and hmac.compare_digest(expected, supplied)
-        if fingerprint not in seen:
-            candidates.append({
-                "secret_sha256": fingerprint,
-                "secret_length": len(secret),
-                "signature_match": bool(matched),
-                "expected_signature_edges": [expected[:8], expected[-8:]],
-                "supplied_signature_edges": [supplied[:8], supplied[-8:]] if format_valid else [],
-            })
-            seen.add(fingerprint)
-        if matched: verified.append(cfg)
+        secrets = []
+        if override:
+            secrets.append(override)
+        configured_secret = cfg.get("app_secret", "")
+        if configured_secret:
+            secrets.append(configured_secret)
+        for secret_value in secrets:
+            # Preserve the exact configured value because whitespace is part
+            # of the HMAC key.
+            secret = str(secret_value).encode("utf-8")
+            fingerprint = hashlib.sha256(secret).hexdigest()
+            print("live_webhook_secret_fingerprint=" + fingerprint[:12], flush=True)
+            expected = hmac.new(secret, raw, hashlib.sha256).hexdigest()
+            matched = format_valid and hmac.compare_digest(expected, supplied)
+            if fingerprint not in seen:
+                candidates.append({
+                    "secret_sha256": fingerprint,
+                    "secret_length": len(secret),
+                    "signature_match": bool(matched),
+                    "expected_signature_edges": [expected[:8], expected[-8:]],
+                    "supplied_signature_edges": [supplied[:8], supplied[-8:]] if format_valid else [],
+                })
+                seen.add(fingerprint)
+            if matched and cfg not in verified:
+                verified.append(cfg)
     diagnostic = {
         "signature_header": "X-Hub-Signature-256",
         "signature_header_present": bool(signature),
