@@ -582,6 +582,12 @@ def handle(h, method, db, on_inbound=None):
                 numbers = rows.get("data", []) if isinstance(rows, dict) else []
                 match = next((item for item in numbers if re.sub(r"[^0-9]", "", str(item.get("display_phone_number", ""))) == phone), None)
                 if not match or not str(match.get("id", "")).isdigit():
+                    labels = " ".join(
+                        "%s %s" % (item.get("verified_name", ""), item.get("display_phone_number", ""))
+                        for item in numbers if isinstance(item, dict)
+                    ).casefold()
+                    if len(numbers) == 1 and ("test" in labels or "1555" in re.sub(r"[^0-9]", "", labels)):
+                        raise Error(409, "حساب Meta الحالي حساب اختبار (Test WhatsApp Business Account) ورقمه ثابت. اختر أو أنشئ حساب واتساب خدووم الحقيقي ثم أضف رقم المؤسسة وتحقق منه.")
                     raise Error(409, "أضف رقم المؤسسة في Meta وتحقق منه أولًا، ثم أعد الفحص")
                 owner = c.execute("SELECT organization_id FROM whatsapp_connections WHERE phone_number_id=? AND organization_id<>?", (str(match["id"]), org)).fetchone()
                 if owner: raise Error(409, "هذا الرقم مرتبط بمؤسسة أخرى في خدوم")
