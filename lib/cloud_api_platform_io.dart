@@ -24,26 +24,32 @@ class CloudHttpClient {
     required Map<String, String> headers,
     String? body,
   }) async {
-    Object? lastError;
-    for (var attempt = 0; attempt < (method == 'GET' ? 3 : 1); attempt++) {
-      try {
-        return await _sendOnce(
-          method,
-          url,
-          headers: headers,
-          body: body,
-        ).timeout(const Duration(seconds: 30));
-      } on SocketException catch (error) {
-        lastError = error;
-      } on TimeoutException catch (error) {
-        lastError = error;
-      }
-      if (attempt < 2) {
-        await Future<void>.delayed(Duration(seconds: attempt + 1));
-      }
+    try {
+      return await _sendOnce(
+        method,
+        url,
+        headers: headers,
+        body: body,
+      ).timeout(const Duration(seconds: 60));
+    } on SocketException catch (_) {
+      if (method != 'GET') rethrow;
+      await Future<void>.delayed(const Duration(seconds: 2));
+      return _sendOnce(
+        method,
+        url,
+        headers: headers,
+        body: body,
+      ).timeout(const Duration(seconds: 60));
+    } on TimeoutException {
+      if (method != 'GET') rethrow;
+      await Future<void>.delayed(const Duration(seconds: 2));
+      return _sendOnce(
+        method,
+        url,
+        headers: headers,
+        body: body,
+      ).timeout(const Duration(seconds: 60));
     }
-    if (lastError != null) throw lastError;
-    throw const SocketException('request failed');
   }
 
   Future<CloudHttpResponse> _sendOnce(

@@ -3,29 +3,6 @@ import re
 from appointment_context import normalize
 
 
-def _insert_message(c, org, session_id, text, created_at):
-    try:
-        scoped = bool(c.execute(
-            "SELECT 1 FROM information_schema.columns WHERE table_name=? AND column_name=?",
-            ("chat_messages", "organization_id"),
-        ).fetchone())
-    except Exception:
-        scoped = any(row[1] == 'organization_id' for row in c.execute('PRAGMA table_info(chat_messages)'))
-    if scoped:
-        return c.execute("INSERT INTO chat_messages(organization_id,session_id,sender,message,created_at) VALUES(?,?,'human',?,?)", (org,session_id,text,created_at))
-    return c.execute("INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,'human',?,?)", (session_id,text,created_at))
-
-
-def _has_scope(c):
-    try:
-        return bool(c.execute(
-            "SELECT 1 FROM information_schema.columns WHERE table_name=? AND column_name=?",
-            ("chat_messages", "organization_id"),
-        ).fetchone())
-    except Exception:
-        return any(row[1] == 'organization_id' for row in c.execute('PRAGMA table_info(chat_messages)'))
-
-
 def migrate(c):
     c.execute('''CREATE TABLE IF NOT EXISTS appointment_followups (
         message_id BIGINT PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
@@ -63,12 +40,8 @@ def receive(c, org, session, context, message, message_id):
         matched = rows
     if not matched:
         return 'عندك أكثر من موعد. اكتب بلاغك مع رقم الموعد، مثل: الموظف تأخر عن موعدي رقم 2. لم يتم إرسال البلاغ بعد.'
-    if _has_scope(c):
-        source = c.execute("SELECT id FROM chat_messages WHERE organization_id=? AND id=? AND session_id=? AND sender='customer' AND message=?",
-                           (org, message_id, session['id'], message)).fetchone()
-    else:
-        source = c.execute("SELECT id FROM chat_messages WHERE id=? AND session_id=? AND sender='customer' AND message=?",
-                           (message_id, session['id'], message)).fetchone()
+    source = c.execute("SELECT id FROM chat_messages WHERE id=? AND session_id=? AND sender='customer' AND message=?",
+                       (message_id, session['id'], message)).fetchone()
     if source is None:
         return 'تعذر تسجيل المتابعة الآن؛ حاول إرسال رسالتك مرة أخرى.'
     appointment_id = matched[0]['id']
@@ -79,10 +52,9 @@ def receive(c, org, session, context, message, message_id):
 
 def enrich(c, org, branch, rows):
     items = {r['id']: {**dict(r), 'followups': [], 'followup_count': 0, 'followup_latest_id': 0} for r in rows}
-    message_scope = ' AND m.organization_id=a.organization_id' if _has_scope(c) else ''
-    pending = c.execute(f'''SELECT f.appointment_id,f.message_id,m.message,m.created_at
+    pending = c.execute('''SELECT f.appointment_id,f.message_id,m.message,m.created_at
         FROM appointment_followups f JOIN appointment_requests a ON a.id=f.appointment_id
-        JOIN chat_messages m ON m.id=f.message_id{message_scope}
+        JOIN chat_messages m ON m.id=f.message_id
         WHERE a.organization_id=? AND a.branch_id=? AND f.resolved=0 ORDER BY f.message_id DESC''', (org, branch)).fetchall()
     for row in pending:
         item = items.get(row['appointment_id'])
@@ -102,14 +74,11 @@ def reply(c, org, branch, appointment_id, body, now, error):
     row = c.execute('SELECT chat_session_id FROM appointment_requests WHERE id=? AND organization_id=? AND branch_id=?',
                     (appointment_id,org,branch)).fetchone()
     if row is None: raise error(404, 'الموعد غير موجود في هذا الفرع')
-    selected = c.execute('''SELECT f.message_id FROM appointment_followups f
-        JOIN appointment_requests a ON a.id=f.appointment_id
-        WHERE f.appointment_id=? AND f.message_id=? AND a.organization_id=? AND a.branch_id=?''',
-        (appointment_id, through, org, branch)).fetchone()
+    selected = c.execute('SELECT message_id FROM appointment_followups WHERE appointment_id=? AND message_id=?', (appointment_id,through)).fetchone()
     if selected is None: raise error(404, 'المتابعة غير موجودة')
     cursor = c.execute('UPDATE appointment_followups SET resolved=1 WHERE appointment_id=? AND message_id<=? AND resolved=0', (appointment_id,through))
     if cursor.rowcount == 0: return {'sent':False,'alreadyReplied':True}
-    _insert_message(c, org, row['chat_session_id'], text, now())
+    c.execute("INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,'human',?,?)", (row['chat_session_id'],text,now()))
     c.execute("""UPDATE appointment_requests SET status='completed',updated_at=?
         WHERE id=? AND organization_id=? AND branch_id=? AND source='human_handoff'
         AND NOT EXISTS(SELECT 1 FROM appointment_followups WHERE appointment_id=? AND resolved=0)""",

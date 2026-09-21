@@ -55,17 +55,8 @@ def handoff(c, org, session, message, message_id, now):
         if booking is not None:
             return None
     # While waiting, new messages become durable inbox followups, not fake booking fields.
-    # A few embedded/legacy clients still expose the pre-tenant chat_messages
-    # shape.  Keep the tenant predicate whenever the column exists, while
-    # retaining compatibility with those databases (the session is already
-    # validated by the caller in that legacy shape).
-    scoped_messages = any(row[1] == 'organization_id' for row in c.execute('PRAGMA table_info(chat_messages)'))
-    if scoped_messages:
-        source = c.execute("SELECT id FROM chat_messages WHERE organization_id=? AND id=? AND session_id=? AND sender='customer' AND message=?",
-                           (org, message_id, session['id'], message)).fetchone()
-    else:
-        source = c.execute("SELECT id FROM chat_messages WHERE id=? AND session_id=? AND sender='customer' AND message=?",
-                           (message_id, session['id'], message)).fetchone()
+    source = c.execute("SELECT id FROM chat_messages WHERE id=? AND session_id=? AND sender='customer' AND message=?",
+                       (message_id, session['id'], message)).fetchone()
     if source is None:
         return 'تعذر تسجيل طلب التواصل الآن. أعد إرسال الرسالة؛ لم أرسل طلبًا بعد.'
     prior = c.execute('SELECT appointment_id FROM appointment_followups WHERE message_id=?', (message_id,)).fetchone()
@@ -76,10 +67,7 @@ def handoff(c, org, session, message, message_id, now):
     else:
         try: context=json.loads(session['context_json'] or '{}')
         except (TypeError,ValueError): context={}
-        if scoped_messages:
-            messages=c.execute('SELECT sender,message FROM chat_messages WHERE organization_id=? AND session_id=? ORDER BY id DESC LIMIT 8', (org, session['id'])).fetchall()
-        else:
-            messages=c.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 8', (session['id'],)).fetchall()
+        messages=c.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 8', (session['id'],)).fetchall()
         notes='\n'.join(str(row['sender'])+': '+str(row['message']) for row in reversed(messages))[-3500:]
         cursor=c.execute('''INSERT INTO appointment_requests(organization_id,chat_session_id,branch_id,
             request_type,title,customer_name,phone,notes,scheduled_at,status,source,created_at,updated_at)
