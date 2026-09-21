@@ -115,8 +115,11 @@ def initialize(c):
         for column, definition in optional_columns:
             if column not in existing:
                 c.execute('ALTER TABLE whatsapp_messages ADD COLUMN %s %s' % (column, definition))
+    # Backfill both customer and staff messages so one customer always has
+    # one conversation. Older outbound AI replies did not carry this ID and
+    # appeared in a separate thread in the mobile inbox.
     for row in c.execute("""SELECT id,organization_id,peer FROM whatsapp_messages
-      WHERE direction='inbound' AND (conversation_id IS NULL OR conversation_id='')""").fetchall():
+      WHERE conversation_id IS NULL OR conversation_id=''""").fetchall():
         conversation_id = whatsapp_conversation_id(c, row["organization_id"], row["peer"])
         c.execute("UPDATE whatsapp_messages SET conversation_id=? WHERE id=?", (conversation_id, row["id"]))
     c.execute("""CREATE TABLE IF NOT EXISTS whatsapp_webhooks(
@@ -444,10 +447,11 @@ def send(c, org, data):
       (org,cfg["phone_number_id"],peer,int(time.time())-86400)).fetchone()
     if not recent: raise Error(409,"يلزم وصول رسالة من العميل خلال آخر 24 ساعة للرد النصي؛ القوالب غير مدعومة هنا بعد")
     mid = uuid.uuid4().hex
+    conversation_id = whatsapp_conversation_id(c, org, peer)
     cursor = c.execute("""INSERT INTO whatsapp_messages
-      (id,organization_id,phone_number_id,peer,direction,body,timestamp,state,client_id,branch_id)
-      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-      (mid,org,cfg["phone_number_id"],peer,"outbound",text,int(time.time()),"sending",cid,cfg.get("branch_id")))
+      (id,organization_id,phone_number_id,peer,direction,body,timestamp,state,client_id,branch_id,conversation_id)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+      (mid,org,cfg["phone_number_id"],peer,"outbound",text,int(time.time()),"sending",cid,cfg.get("branch_id"),conversation_id))
     c.commit()
     if cursor.rowcount != 1: raise Error(409,"المحاولة قيد التنفيذ؛ حدّث المحادثة")
     try:
@@ -562,11 +566,9 @@ def handle(h, method, db, on_inbound=None):
             if (path == "/api/whatsapp/connect" or method == "POST" and path != "/api/whatsapp/messages") and not is_admin:
                 raise Error(403,"ربط واتساب متاح لمسؤول المؤسسة فقط")
             initialize(c); org = user["organization_id"]
-            # WhatsApp is available to every active package.  Package-specific
-            # resource limits remain enforced by their own services; they must
-            # not prevent a subscribed institution from connecting its number
-            # or receiving customer messages.
-            c.execute("SELECT package FROM subscriptions WHERE organization_id=?", (org,)).fetchone()
+            package_row = c.execute("SELECT package FROM subscriptions WHERE organization_id=?", (org,)).fetchone()
+            if package_row and str(package_row["package"]).lower() != "vip":
+                raise Error(403, "خدمة واتساب متاحة في باقة VIP فقط")
             if path == "/api/whatsapp/connect" and method == "POST":
                 data = h._body()
                 raw_phone = str(data.get("phone", "")).strip()
