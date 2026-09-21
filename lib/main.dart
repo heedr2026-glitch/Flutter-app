@@ -10501,6 +10501,8 @@ class AiEmployeesPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final includesAllEmployees = subscriptionPackage == 'vip';
+    // Other AI employee entitlements remain package-specific. WhatsApp itself
+    // is available to each institution with a verified Meta number.
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
@@ -10546,25 +10548,16 @@ class AiEmployeesPage extends StatelessWidget {
               AiEmployeeCard(
                 icon: Icons.chat,
                 title: 'موظف واتساب',
-                subtitle: includesAllEmployees
-                    ? 'الرد على الرسائل ومتابعة العملاء'
-                    : 'متاح في باقة VIP',
-                locked: !includesAllEmployees,
-                onTap: includesAllEmployees
-                    ? () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                const WhatsAppWorkspace(inbox: true),
-                          ),
-                        );
-                      }
-                    : () => _showUpgradeDialog(
-                        context,
-                        'موظف واتساب',
-                        'باقة VIP',
-                      ),
+                subtitle: 'ربط رقم المؤسسة واستقبال محادثات العملاء',
+                locked: false,
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const WhatsAppWorkspace(inbox: true),
+                    ),
+                  );
+                },
               ),
               const SizedBox(height: 12),
               AiEmployeeCard(
