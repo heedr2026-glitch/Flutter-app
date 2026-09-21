@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
@@ -116,8 +115,8 @@ class WhatsAppWorkspace extends StatefulWidget {
 
 class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
   static const _defaultBackendUrl = 'https://khdoom-api.onrender.com';
-  static const _defaultBusinessPhone = '+966135870969';
-  static const _defaultPhoneNumberId = '1372955935890152';
+  static const _defaultBusinessPhone = '+966542027855';
+  static const _defaultPhoneNumberId = '1280919991773785';
   final _url = TextEditingController();
   final _phone = TextEditingController();
   final _id = TextEditingController();
@@ -133,6 +132,16 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
   bool _connected = false;
   String _detail = 'لم يتم فحص الاتصال بعد';
   List<Map<String, dynamic>> _messages = [];
+
+  String _statusDetail(Map result) {
+    final detail = result['detail']?.toString().trim();
+    final phone = result['display_phone_number']?.toString().trim();
+    if (phone == null || phone.isEmpty) {
+      return detail?.isNotEmpty == true ? detail! : 'لم يكتمل الربط';
+    }
+    return '${detail?.isNotEmpty == true ? detail : 'تم فحص الربط'}\nالرقم المرتبط في Meta: $phone';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -189,7 +198,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
         if (!mounted) return;
         setState(() {
           _connected = result['connected'] == true;
-          _detail = result['detail']?.toString() ?? 'لم يكتمل الربط';
+          _detail = _statusDetail(result);
         });
       } catch (_) {
         // Messages remain visible even when Meta status is temporarily slow.
@@ -247,7 +256,7 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
       if (!mounted) return;
       setState(() {
         _connected = connected;
-        _detail = result['detail']?.toString() ?? 'لم يكتمل الربط';
+        _detail = _statusDetail(result);
       });
     } catch (e) {
       if (mounted) {
@@ -730,63 +739,70 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                       final peer = message['peer']?.toString() ?? '';
                       final conversationId = message['conversation_id']
                           ?.toString();
-                      return ListTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 5,
-                        ),
-                        leading: _avatar(peer),
-                        title: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                peer,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.white,
+                      // ListTile paints its ink on the nearest Material.  The
+                      // inbox surface is a coloured Container, so give every
+                      // row a local Material to prevent Flutter's red debug
+                      // assertion when messages are rendered.
+                      return Material(
+                        color: Colors.transparent,
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 5,
+                          ),
+                          leading: _avatar(peer),
+                          title: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  peer,
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white,
+                                  ),
                                 ),
                               ),
-                            ),
-                            Text(
-                              _messageTime(message),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Color(0xFF94A3B8),
+                              Text(
+                                _messageTime(message),
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFF94A3B8),
+                                ),
                               ),
-                            ),
-                          ],
-                        ),
-                        subtitle: Row(
-                          children: [
-                            if (message['direction'] == 'outbound') ...[
-                              const Icon(
-                                Icons.done_all,
-                                size: 16,
-                                color: Color(0xFF53BDEB),
-                              ),
-                              const SizedBox(width: 3),
                             ],
-                            Expanded(
-                              child: Text(
-                                message['body']?.toString() ?? 'مرفق',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Color(0xFFCBD5E1),
+                          ),
+                          subtitle: Row(
+                            children: [
+                              if (message['direction'] == 'outbound') ...[
+                                const Icon(
+                                  Icons.done_all,
+                                  size: 16,
+                                  color: Color(0xFF53BDEB),
+                                ),
+                                const SizedBox(width: 3),
+                              ],
+                              Expanded(
+                                child: Text(
+                                  message['body']?.toString() ?? 'مرفق',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Color(0xFFCBD5E1),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
-                        ),
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => WhatsAppWorkspace(
-                              inbox: true,
-                              peer: peer,
-                              conversationId: conversationId,
-                              gatewayFactory: widget.gatewayFactory,
+                            ],
+                          ),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => WhatsAppWorkspace(
+                                inbox: true,
+                                peer: peer,
+                                conversationId: conversationId,
+                                gatewayFactory: widget.gatewayFactory,
+                              ),
                             ),
                           ),
                         ),
@@ -1109,33 +1125,10 @@ class _WhatsAppWorkspaceState extends State<WhatsAppWorkspace> {
                   ),
                 ),
               ),
-              // Keep the controllers available for the gateway and backwards
-              // compatibility with existing tests, but never render internal
-              // server/Meta configuration to subscribers.
-              SizedBox(
-                width: 1,
-                height: 1,
-                child: ClipRect(
-                  child: IgnorePointer(
-                    child: Opacity(
-                      opacity: 0,
-                      child: _field(_url, 'عنوان خادم خدوم HTTPS'),
-                    ),
-                  ),
-                ),
-              ),
-              SizedBox(
-                width: 1,
-                height: 1,
-                child: ClipRect(
-                  child: IgnorePointer(
-                    child: Opacity(
-                      opacity: 0,
-                      child: _field(_id, 'معرّف رقم الهاتف في Meta'),
-                    ),
-                  ),
-                ),
-              ),
+              // The gateway controllers remain internal state.  Do not build
+              // hidden editable fields for them: Flutter still treats those
+              // fields as focusable input widgets, which can destabilise the
+              // form and expose a red framework error on some Android builds.
               const Text(
                 'مفاتيح الربط وإعدادات Meta محمية ولا تظهر للمؤسسة أو للمشترك.',
               ),
