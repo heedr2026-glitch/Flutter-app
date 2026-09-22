@@ -1021,6 +1021,18 @@ def init_db() -> None:
                     "UPDATE organizations SET public_chat_token=? WHERE id=?",
                     (secrets.token_urlsafe(18), organization["id"]),
                 )
+            connection.execute("""CREATE TABLE IF NOT EXISTS account_deletion_requests (
+              request_id TEXT PRIMARY KEY,
+              organization_id BIGINT,
+              user_id BIGINT,
+              contact_hash TEXT NOT NULL,
+              contact_hint TEXT NOT NULL DEFAULT '',
+              status TEXT NOT NULL DEFAULT 'pending_verification',
+              created_at TEXT NOT NULL,
+              verified_at TEXT,
+              completed_at TEXT,
+              retention_note TEXT NOT NULL DEFAULT ''
+            )""")
             branch_appointments.migrate(connection, postgres=True)
             signup_offer.migrate(connection)
             customer_push.migrate(connection, postgres=True)
@@ -1383,6 +1395,18 @@ def init_db() -> None:
             connection.execute(
                 "ALTER TABLE activation_codes ADD COLUMN discount_percent INTEGER NOT NULL DEFAULT 0"
             )
+        connection.execute("""CREATE TABLE IF NOT EXISTS account_deletion_requests (
+          request_id TEXT PRIMARY KEY,
+          organization_id INTEGER,
+          user_id INTEGER,
+          contact_hash TEXT NOT NULL,
+          contact_hint TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'pending_verification',
+          created_at TEXT NOT NULL,
+          verified_at TEXT,
+          completed_at TEXT,
+          retention_note TEXT NOT NULL DEFAULT ''
+        )""")
         branch_appointments.migrate(connection)
         signup_offer.migrate(connection)
         appointment_followups.migrate(connection)
@@ -1547,6 +1571,64 @@ class ApiError(Exception):
         self.message = message
 
 
+def _deletion_contact(identifier: object) -> tuple[str, str, str]:
+    value = str(identifier or "").strip()
+    if not value:
+        raise ApiError(400, "أدخل البريد الإلكتروني أو رقم الجوال المسجل في خدووم")
+    if "@" in value:
+        email = value.lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ApiError(400, "أدخل بريدًا إلكترونيًا صحيحًا")
+        return "email", email, email[:2] + "…"
+    phone = normalize_phone(value)
+    if len(phone) < 8 or len(phone) > 18:
+        raise ApiError(400, "أدخل رقم جوال صحيحًا مع رمز الدولة")
+    return "phone", phone, "…" + phone[-4:]
+
+
+def create_account_deletion_request(connection: Any, identifier: object) -> None:
+    """Queue an account-deletion request without revealing whether an account exists."""
+    kind, contact, hint = _deletion_contact(identifier)
+    matched_user = None
+    for user in connection.execute("SELECT id,organization_id,email,phone FROM users").fetchall():
+        candidate = str(user["email"] or "").strip().lower() if kind == "email" else normalize_phone(user["phone"])
+        if hmac.compare_digest(candidate, contact):
+            matched_user = user
+            break
+    organization_id = matched_user["organization_id"] if matched_user else None
+    if organization_id is None and kind == "phone":
+        for organization in connection.execute("SELECT id,phone FROM organizations").fetchall():
+            if hmac.compare_digest(normalize_phone(organization["phone"]), contact):
+                organization_id = organization["id"]
+                break
+    contact_hash = hashlib.sha256((kind + ":" + contact).encode("utf-8")).hexdigest()
+    existing = connection.execute(
+        "SELECT request_id FROM account_deletion_requests WHERE contact_hash=? AND status IN ('pending_verification','verified') ORDER BY created_at DESC LIMIT 1",
+        (contact_hash,),
+    ).fetchone()
+    if existing is None:
+        connection.execute(
+            """INSERT INTO account_deletion_requests
+               (request_id,organization_id,user_id,contact_hash,contact_hint,status,created_at,retention_note)
+               VALUES(?,?,?,?,?,'pending_verification',?,?)""",
+            (secrets.token_urlsafe(24), organization_id,
+             matched_user["id"] if matched_user else None, contact_hash, hint, now(),
+             "نحتفظ بسجل طلب الحذف فقط لإثبات المعالجة والالتزامات النظامية أو المالية عند الاقتضاء."),
+        )
+
+
+def deletion_request_page() -> str:
+    return """<!doctype html>
+<html lang=\"ar\" dir=\"rtl\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<title>طلب حذف الحساب - خدووم</title><style>
+body{margin:0;background:#071126;color:#eef6ff;font-family:Tahoma,Arial;line-height:1.8}main{max-width:760px;margin:auto;padding:24px}section{background:#111f42;border:1px solid #1d4f7a;border-radius:18px;padding:22px;margin-bottom:14px}h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc;font-size:20px}label,input,button{display:block;width:100%;box-sizing:border-box}input{margin:8px 0 14px;padding:13px;border-radius:10px;border:1px solid #3b82f6;background:#071126;color:#fff;font-size:16px}button{border:0;border-radius:10px;padding:13px;background:#0ea5e9;color:#06111f;font-weight:bold;font-size:16px;cursor:pointer}.note{color:#cbd5e1}.ok{color:#86efac}.error{color:#fca5a5}</style></head><body><main>
+<section><h1>طلب حذف حساب خدووم</h1><p>يمكنك طلب حذف حسابك والبيانات المرتبطة به من خدووم. لا يُحذف أي حساب مباشرة؛ نتحقق من ملكية الحساب أولًا.</p></section>
+<section><h2>التحقق من الحساب</h2><form id=\"deletion-form\"><label for=\"identifier\">البريد الإلكتروني أو رقم الجوال المستخدم في خدووم</label><input id=\"identifier\" name=\"identifier\" required autocomplete=\"email\" inputmode=\"email\" placeholder=\"name@example.com أو 9665xxxxxxxx\"><button type=\"submit\">إرسال طلب الحذف</button></form><p id=\"result\" class=\"note\" role=\"status\"></p></section>
+<section><h2>ما الذي يُحذف</h2><p>بعد التحقق والتنفيذ نحذف بيانات الحساب، والجلسات، وبيانات المؤسسة والفروع والموظفين والمواعيد والمحادثات والبيانات التشغيلية المرتبطة بها.</p><p class=\"note\">قد نحتفظ بالحد الأدنى من السجلات المطلوبة للالتزامات النظامية أو المالية، مثل سجلات الفواتير أو المعاملات، للمدة التي يفرضها النظام.</p></section>
+<script>document.getElementById('deletion-form').addEventListener('submit',async(e)=>{e.preventDefault();const result=document.getElementById('result');result.className='note';result.textContent='جارٍ إرسال الطلب…';try{const r=await fetch('/delete-account',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identifier:document.getElementById('identifier').value})});const d=await r.json();if(!r.ok)throw new Error(d.error||'تعذر إرسال الطلب');result.className='ok';result.textContent=d.message}catch(error){result.className='error';result.textContent=error.message||'تعذر إرسال الطلب'}});</script>
+</main></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "KhdoomAPI/1.0"
 
@@ -1577,7 +1659,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _rate_limited(self, path: str) -> bool:
-        if not path.startswith("/api/") and not path.startswith("/owner/api/"):
+        if not path.startswith("/api/") and not path.startswith("/owner/api/") and path != "/delete-account":
             return False
         key = f"{self.client_address[0]}:{'owner' if path.startswith('/owner/api/') else 'api'}"
         now_monotonic = time.monotonic()
@@ -1724,6 +1806,47 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                 call_connection.commit()
             self._send(201, {"saved": True, "id": cursor.lastrowid})
             return
+        if path == "/delete-account":
+            if method == "GET":
+                self._send_html(deletion_request_page())
+                return
+            if method == "POST":
+                data = self._body()
+                with db() as deletion_connection:
+                    create_account_deletion_request(deletion_connection, data.get("identifier"))
+                    deletion_connection.commit()
+                # A generic response prevents account enumeration through this public page.
+                self._send(202, {"status": "pending_verification", "message": "تم استلام طلب الحذف. سنتحقق من ملكية الحساب قبل تنفيذ الحذف."})
+                return
+            raise ApiError(405, "الطريقة غير مدعومة")
+        if path.startswith("/owner/api/account-deletion-requests/"):
+            self._owner()
+            request_id = path.rsplit("/", 1)[-1]
+            if not re.fullmatch(r"[A-Za-z0-9_-]{20,80}", request_id):
+                raise ApiError(404, "طلب الحذف غير موجود")
+            if method != "PUT":
+                raise ApiError(405, "استخدم PUT لمعالجة طلب الحذف")
+            action = str(self._body().get("action") or "").strip()
+            with db() as deletion_connection:
+                request = deletion_connection.execute("SELECT * FROM account_deletion_requests WHERE request_id=?", (request_id,)).fetchone()
+                if request is None:
+                    raise ApiError(404, "طلب الحذف غير موجود")
+                if action == "verify":
+                    deletion_connection.execute("UPDATE account_deletion_requests SET status='verified',verified_at=? WHERE request_id=? AND status='pending_verification'", (now(), request_id))
+                    deletion_connection.commit()
+                    self.platform_actor = None
+                    self._send(200, {"status": "verified", "requestId": request_id})
+                    return
+                if action == "complete":
+                    if request["status"] != "verified" or not request["organization_id"]:
+                        raise ApiError(409, "يجب التحقق من الطلب وربطه بحساب قبل تنفيذ الحذف")
+                    deletion_connection.execute("DELETE FROM organizations WHERE id=?", (request["organization_id"],))
+                    deletion_connection.execute("UPDATE account_deletion_requests SET status='completed',completed_at=? WHERE request_id=?", (now(), request_id))
+                    deletion_connection.commit()
+                    self.platform_actor = None
+                    self._send(200, {"status": "completed", "requestId": request_id})
+                    return
+                raise ApiError(400, "الإجراء يجب أن يكون verify أو complete")
         if urlparse(self.path).path.startswith('/owner/api/v2/'):
             with db() as admin_connection:
                 downgrade_expired_subscriptions(admin_connection)

@@ -39,6 +39,8 @@ import 'commercial_research/commercial_research_models.dart';
 import 'commercial_research/commercial_whatsapp.dart';
 import 'commercial_research/commercial_research_report.dart';
 
+const accountDeletionUrl = 'https://khdoom-api.onrender.com/delete-account';
+
 Map<String, Widget Function(BuildContext, DailyWorkItem)>
 get dailyWorkDestinations => {
   'employees': (_, item) => EmployeeManagementPage(
@@ -4214,6 +4216,18 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _canViewAuditLog = true;
   String? _profileImagePath;
 
+  Future<void> _openAccountDeletionPage() async {
+    final opened = await launchUrl(
+      Uri.parse(accountDeletionUrl),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تعذر فتح صفحة طلب حذف الحساب.')),
+      );
+    }
+  }
+
   Future<void> _openTechnicalSupport() async {
     final prefs = await BranchPreferences.getInstance();
     const storage = FlutterSecureStorage();
@@ -4981,6 +4995,15 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                     const SizedBox(height: 10),
                   ],
+                  _sectionTitle('الحساب'),
+                  const SizedBox(height: 10),
+                  _settingsInfoTile(
+                    icon: Icons.delete_forever_outlined,
+                    title: 'حذف الحساب',
+                    subtitle: 'فتح صفحة طلب حذف حساب خدووم وبياناته المرتبطة',
+                    onTap: _openAccountDeletionPage,
+                  ),
+                  const SizedBox(height: 10),
                   _settingsInfoTile(
                     icon: Icons.support_agent_outlined,
                     title: 'الدعم الفني',
