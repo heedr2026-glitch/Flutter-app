@@ -519,10 +519,22 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   return {'saved':True}
  if re.fullmatch(r'offers/\d+',r) and m=='PUT': c.execute('UPDATE package_offers SET active=? WHERE id=?',(int(bool(d.get('active'))),int(r.split('/')[1]))); return {'saved':True}
  if r=='support' and m=='GET':
+  # Every support request must have a visible, organization-scoped AI follow-up.
+  # Older requests are repaired here as well, without altering their complaint.
+  ensure_owner_tables(c,s,('technical_tasks','technical_agent_state'))
   args=[]; where='FROM support_tickets t JOIN organizations o ON o.id=t.organization_id LEFT JOIN subscriptions s ON s.organization_id=o.id WHERE 1=1'
   if q.get('status'): where+=' AND t.status=?'; args.append(q['status'])
   out=paged(c,'SELECT t.*,o.name organization_name,s.package',where,args,'t.id DESC',page)
-  for t in out['items']: t['notes']=rows(c,'SELECT note,actor,created_at FROM platform_notes WHERE ticket_id=? ORDER BY id DESC LIMIT 20',(t['id'],))
+  for t in out['items']:
+   task=c.execute("SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE service='support' AND problem LIKE ? ORDER BY id DESC LIMIT 1",(f"طلب دعم #{t['id']}:%",)).fetchone()
+   if not task:
+    ts=stamp()
+    cur=c.execute('INSERT INTO technical_tasks(organization_id,branch_id,user_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(t['organization_id'],str(t.get('branch_id') or '')[:120],t.get('user_id'),'support',f"طلب دعم #{t['id']}: {t['category']} — {t['message']}",'medium','queued','تم استلام الشكوى وتحويلها إلى موظف AI للتشخيص الآمن','فحص السجلات والصلاحيات والربط المرتبطة بالمؤسسة، دون تغيير بيانات الإنتاج','بانتظار بدء الفحص',ts,'support-repair'))
+    task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(cur.fetchone()['id'],)).fetchone()
+   t['technical_task']=dict(task)
+   t['technical_task_id']=task['id']
+   t['technical_status']=task['status']
+   t['notes']=rows(c,'SELECT note,actor,created_at FROM platform_notes WHERE ticket_id=? ORDER BY id DESC LIMIT 20',(t['id'],))
   return out
  if re.fullmatch(r'support/\d+/technical-followup',r) and m=='POST':
   ensure_owner_tables(c,s,('technical_tasks',))

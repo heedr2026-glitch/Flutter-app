@@ -3224,6 +3224,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 if len(message) < 5:
                     raise ApiError(400, "اكتب تفاصيل المشكلة")
                 created = now()
+                # Support requests can arrive before an administrator opens the
+                # dashboard. Ensure the isolated AI follow-up tables exist first.
+                owner_admin.ensure_owner_tables(connection, __import__('sys').modules[__name__], ('technical_tasks', 'technical_agent_state'))
                 row = connection.execute("INSERT INTO support_tickets(organization_id,user_id,category,message,status,owner_reply,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id", (organization_id,user["id"],category,message,"open","",created,created)).fetchone()
                 connection.execute("UPDATE support_tickets SET device_name=?,app_version=?,branch_id=? WHERE id=?", (str(data.get('deviceName',''))[:120],str(data.get('appVersion',''))[:40],user.get('current_branch'),row['id']))
                 # Route every new support request to the technical employee queue.
