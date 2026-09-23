@@ -93,9 +93,11 @@ def client(h,method,s):
   if route=='posts' and method=='GET':
    try: page=max(1,int(parse_qs(urlparse(h.path).query).get('page',['1'])[0]))
    except ValueError:raise s.ApiError(400,'رقم الصفحة غير صحيح')
-   # Public community identity is the organization, never the subscriber account.
-   result=admin.paged(c,'SELECT p.id,p.body,p.created_at,o.name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id) like_count','FROM community_posts p JOIN users u ON u.id=p.user_id JOIN organizations o ON o.id=u.organization_id WHERE p.hidden=0 AND u.organization_id=?',[user['organization_id']],'p.id DESC',page)
-   admin_posts=admin.rows(c,"SELECT -p.id id,p.body,p.created_at,'إدارة خدوم' name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=-p.id) like_count FROM community_admin_posts p WHERE p.hidden=0 ORDER BY p.id DESC LIMIT 100")
+   # Community posts are intentionally shared across all organizations. Only
+   # public organization identity and post content are exposed here.
+   viewer_id=int(user['id'])
+   result=admin.paged(c,f'SELECT p.id,p.body,p.created_at,o.name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id) like_count,EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id={viewer_id}) liked_by_me','FROM community_posts p JOIN users u ON u.id=p.user_id JOIN organizations o ON o.id=u.organization_id WHERE p.hidden=0',[],'p.id DESC',page)
+   admin_posts=admin.rows(c,"SELECT -p.id id,p.body,p.created_at,'إدارة خدوم' name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=-p.id) like_count,EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=-p.id AND l.user_id=?) liked_by_me FROM community_admin_posts p WHERE p.hidden=0 ORDER BY p.id DESC LIMIT 100",(user['id'],))
    result['items']=admin_posts+result['items']; result['items'].sort(key=lambda item: (item.get('created_at') or '', int(item.get('id') or 0)), reverse=True); result['total']+=len(admin_posts)
   elif route=='posts' and method=='POST':
    body=str(h._body().get('body','')).strip()
@@ -105,15 +107,21 @@ def client(h,method,s):
    ident=int(route.split('/')[1])
    if ident<0:
     if not c.execute('SELECT id FROM community_admin_posts WHERE id=? AND hidden=0',(-ident,)).fetchone(): raise s.ApiError(404,'المنشور غير موجود')
-    c.execute('INSERT INTO community_likes(post_id,user_id,created_at) VALUES(?,?,?) ON CONFLICT(post_id,user_id) DO NOTHING',(ident,user['id'],admin.stamp()))
-    count=c.execute('SELECT COUNT(*) total FROM community_likes WHERE post_id=?',(ident,)).fetchone()['total']; result={'liked':True,'likeCount':count,'rewardEligible':False}
-   elif not c.execute('SELECT p.id FROM community_posts p JOIN users u ON u.id=p.user_id WHERE p.id=? AND p.hidden=0 AND u.organization_id=?',(ident,user['organization_id'])).fetchone(): raise s.ApiError(404,'المنشور غير موجود')
+   elif not c.execute('SELECT id FROM community_posts WHERE id=? AND hidden=0',(ident,)).fetchone():
+    raise s.ApiError(404,'المنشور غير موجود')
+   # A second tap removes the same user's like. The primary key prevents a
+   # duplicate like even when two devices send requests at the same time.
+   existing=c.execute('SELECT 1 FROM community_likes WHERE post_id=? AND user_id=?',(ident,user['id'])).fetchone()
+   if existing:
+    c.execute('DELETE FROM community_likes WHERE post_id=? AND user_id=?',(ident,user['id']))
+    liked=False
    else:
-    c.execute('INSERT INTO community_likes(post_id,user_id,created_at) VALUES(?,?,?) ON CONFLICT(post_id,user_id) DO NOTHING',(ident,user['id'],admin.stamp()))
-    count=c.execute('SELECT COUNT(*) total FROM community_likes WHERE post_id=?',(ident,)).fetchone()['total']
-    if count == 10:
-     c.execute("INSERT INTO community_rewards(post_id,user_id,like_threshold,months,created_at) SELECT ?,user_id,10,1,? FROM community_posts WHERE id=? ON CONFLICT(post_id) DO NOTHING",(ident,admin.stamp(),ident))
-    result={'liked':True,'likeCount':count,'rewardEligible':count>=10}
+    c.execute('INSERT INTO community_likes(post_id,user_id,created_at) VALUES(?,?,?)',(ident,user['id'],admin.stamp()))
+    liked=True
+   count=c.execute('SELECT COUNT(*) total FROM community_likes WHERE post_id=?',(ident,)).fetchone()['total']
+   if liked and ident>0 and count == 10:
+    c.execute("INSERT INTO community_rewards(post_id,user_id,like_threshold,months,created_at) SELECT ?,user_id,10,1,? FROM community_posts WHERE id=? ON CONFLICT(post_id) DO NOTHING",(ident,admin.stamp(),ident))
+   result={'liked':liked,'likeCount':count,'rewardEligible':liked and ident>0 and count>=10}
   elif route=='chat' and method=='GET':
    try: after=max(0,int(parse_qs(urlparse(h.path).query).get('after',['0'])[0]))
    except ValueError: raise s.ApiError(400,'رقم الرسالة غير صحيح')
@@ -125,7 +133,7 @@ def client(h,method,s):
    item=c.execute('INSERT INTO community_messages(user_id,sender,body,created_at,read) VALUES(?,?,?,?,0) RETURNING id',(user['id'],'user',body,admin.stamp())).fetchone();result={'id':item['id']}
   elif re.fullmatch(r'posts/\d+/(comments|reports)',route):
    _,ident,kind=route.split('/');ident=int(ident)
-   if not c.execute('SELECT p.id FROM community_posts p JOIN users u ON u.id=p.user_id WHERE p.id=? AND p.hidden=0 AND u.organization_id=?',(ident,user['organization_id'])).fetchone():raise s.ApiError(404,'المنشور غير موجود')
+   if not c.execute('SELECT id FROM community_posts WHERE id=? AND hidden=0',(ident,)).fetchone():raise s.ApiError(404,'المنشور غير موجود')
    if kind=='comments' and method=='GET':result=admin.rows(c,'SELECT c.id,c.body,c.created_at,o.name FROM community_comments c JOIN users u ON u.id=c.user_id JOIN organizations o ON o.id=u.organization_id WHERE c.post_id=? AND c.hidden=0 ORDER BY c.id DESC LIMIT 100',(ident,))
    elif method=='POST':
     key='body' if kind=='comments' else 'reason';text=str(h._body().get(key,'')).strip()

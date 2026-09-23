@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -18,12 +20,18 @@ class _CommunityPageState extends State<CommunityPage> {
   List<dynamic> _posts = [];
   bool _loading = true;
   bool _sending = false;
+  bool _refreshing = false;
   String? _error;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _refreshSilently(),
+    );
   }
 
   Future<KhdoomCloudApi> _client() async {
@@ -42,13 +50,33 @@ class _CommunityPageState extends State<CommunityPage> {
       _loading = true;
       _error = null;
     });
+    await _fetchPosts(showErrors: true);
+    if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _refreshSilently() async {
+    if (!mounted || _refreshing || _sending) return;
+    _refreshing = true;
+    await _fetchPosts(showErrors: false);
+    _refreshing = false;
+  }
+
+  Future<void> _fetchPosts({required bool showErrors}) async {
     try {
       _api ??= await _client();
-      _posts = await _api!.communityPosts();
+      final posts = await _api!.communityPosts();
+      if (mounted) {
+        setState(() {
+          _posts = posts;
+          _error = null;
+        });
+      }
     } catch (error) {
-      _error = error.toString().replaceFirst('Exception: ', '');
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      if (showErrors && mounted) {
+        setState(
+          () => _error = error.toString().replaceFirst('Exception: ', ''),
+        );
+      }
     }
   }
 
@@ -62,10 +90,11 @@ class _CommunityPageState extends State<CommunityPage> {
       _composer.clear();
       await _load();
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(
           () => _error = error.toString().replaceFirst('Exception: ', ''),
         );
+      }
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -81,20 +110,23 @@ class _CommunityPageState extends State<CommunityPage> {
         for (final item in _posts) {
           if (item is Map && item['id']?.toString() == id) {
             item['like_count'] = result['likeCount'] ?? item['like_count'];
+            item['liked_by_me'] = result['liked'] ?? item['liked_by_me'];
             break;
           }
         }
       });
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(
           () => _error = error.toString().replaceFirst('Exception: ', ''),
         );
+      }
     }
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _composer.dispose();
     _api?.close();
     super.dispose();
@@ -186,6 +218,9 @@ class _CommunityPageState extends State<CommunityPage> {
                             final post = Map<String, dynamic>.from(
                               _posts[index] as Map,
                             );
+                            final liked =
+                                post['liked_by_me'] == true ||
+                                post['liked_by_me'] == 1;
                             return Card(
                               color: const Color(0xFF111B35),
                               margin: const EdgeInsets.only(bottom: 10),
@@ -214,9 +249,13 @@ class _CommunityPageState extends State<CommunityPage> {
                                       children: [
                                         IconButton(
                                           onPressed: () => _like(post),
-                                          icon: const Icon(
-                                            Icons.favorite_border,
-                                            color: Colors.pinkAccent,
+                                          icon: Icon(
+                                            liked
+                                                ? Icons.favorite
+                                                : Icons.favorite_border,
+                                            color: liked
+                                                ? Colors.redAccent
+                                                : Colors.pinkAccent,
                                           ),
                                         ),
                                         Text(
@@ -256,7 +295,9 @@ class _CommunityChatPageState extends State<CommunityChatPage> {
   List<dynamic> _messages = [];
   bool _loading = true;
   bool _sending = false;
+  bool _refreshing = false;
   String? _error;
+  Timer? _refreshTimer;
 
   Future<KhdoomCloudApi> _client() async {
     final scope = await BranchPreferences.getInstance();
@@ -274,12 +315,34 @@ class _CommunityChatPageState extends State<CommunityChatPage> {
   Future<void> _load() async {
     try {
       _api ??= await _client();
-      _messages = await _api!.communityChat();
-      if (mounted) setState(() => _error = null);
+      final messages = await _api!.communityChat();
+      if (mounted) {
+        setState(() {
+          _messages = messages;
+          _error = null;
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _refreshSilently() async {
+    if (!mounted || _refreshing || _sending) return;
+    _refreshing = true;
+    try {
+      _api ??= await _client();
+      final lastId = _messages.isEmpty
+          ? 0
+          : int.tryParse(_messages.last['id'].toString()) ?? 0;
+      final messages = await _api!.communityChat(after: lastId);
+      if (messages.isNotEmpty && mounted) {
+        setState(() => _messages = [..._messages, ...messages]);
+      }
+    } finally {
+      _refreshing = false;
     }
   }
 
@@ -303,10 +366,15 @@ class _CommunityChatPageState extends State<CommunityChatPage> {
   void initState() {
     super.initState();
     _load();
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 4),
+      (_) => _refreshSilently(),
+    );
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _input.dispose();
     _api?.close();
     super.dispose();
