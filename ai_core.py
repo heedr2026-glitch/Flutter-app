@@ -159,10 +159,21 @@ class CompanyTools:
         self.now = now
 
     def _knowledge(self) -> list[str]:
-        rows = self.connection.execute(
-            "SELECT content FROM ai_training WHERE organization_id=? AND employee_type IN ('shared','chat','reception','commercial_research')",
-            (self.context.company_id,),
-        ).fetchall()
+        # Only organization-scoped, durable approved instructions reach the model.
+        types = ("shared", self.context.role)
+        rows = list(self.connection.execute(
+            "SELECT content FROM ai_training WHERE organization_id=? AND employee_type IN (?,?)",
+            (self.context.company_id, *types),
+        ).fetchall())
+        try:
+            rows += list(self.connection.execute(
+                """SELECT content FROM ai_training_instructions
+                   WHERE organization_id=? AND employee_type IN (?,?) AND status='approved'
+                   ORDER BY id ASC""",
+                (self.context.company_id, *types),
+            ).fetchall())
+        except Exception:
+            pass
         return [line.strip() for row in rows for line in str(row["content"]).splitlines() if line.strip()]
 
     def _profile(self) -> dict[str, Any]:

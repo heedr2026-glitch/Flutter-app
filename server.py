@@ -398,16 +398,31 @@ def ai_allowance(
     return package, daily_limit, used
 
 def ai_training_text(connection: Any, organization_id: int, employee_type: str) -> str:
+    """Return only durable, approved organization-scoped AI instructions.
+
+    Legacy ai_training content stays supported so existing deployments retain their
+    behavior. New instruction records are deliberately included only when approved.
+    """
     rows = connection.execute(
         "SELECT employee_type,content FROM ai_training WHERE organization_id=? AND employee_type IN (?,?)",
         (organization_id, "shared", employee_type),
     ).fetchall()
+    try:
+        rows = list(rows) + list(connection.execute(
+            """SELECT employee_type,content FROM ai_training_instructions
+               WHERE organization_id=? AND employee_type IN (?,?) AND status='approved'
+               ORDER BY id ASC""",
+            (organization_id, "shared", employee_type),
+        ).fetchall())
+    except Exception:
+        # Keeps compatibility while an older database is being migrated.
+        pass
     unique_lines: list[str] = []
     seen: set[str] = set()
     for row in rows:
         for line in str(row["content"]).splitlines():
             cleaned = line.strip()
-            key = re.sub(r"^[أ¢â‚¬آ¢\-]\s*", "", cleaned).strip().lower()
+            key = re.sub(r"^[•\-]\s*", "", cleaned).strip().lower()
             if not key or key in seen:
                 continue
             seen.add(key)
@@ -986,6 +1001,17 @@ def init_db() -> None:
           message TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS ai_training_instructions (
+          id BIGSERIAL PRIMARY KEY,
+          organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+          employee_type TEXT NOT NULL,
+          content TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','approved','disabled')),
+          created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_training_instructions_org_type_status ON ai_training_instructions(organization_id,employee_type,status);
         CREATE INDEX IF NOT EXISTS idx_users_org ON users(organization_id);
         CREATE INDEX IF NOT EXISTS idx_vehicles_org ON vehicles(organization_id);
         CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id,created_at);
@@ -1288,6 +1314,17 @@ def init_db() -> None:
               message TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS ai_training_instructions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+              employee_type TEXT NOT NULL,
+              content TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','approved','disabled')),
+              created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_training_instructions_org_type_status ON ai_training_instructions(organization_id,employee_type,status);
             CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(active, approved);
             """
@@ -3304,16 +3341,77 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 ).fetchall()
                 self._send(200, [dict(row) for row in rows])
                 return
+            if path == "/api/ai-training/instructions" and method == "GET":
+                rows = connection.execute(
+                    """SELECT id,employee_type,content,status,created_at,updated_at
+                       FROM ai_training_instructions WHERE organization_id=?
+                       ORDER BY id DESC LIMIT 300""",
+                    (organization_id,),
+                ).fetchall()
+                self._send(200, [dict(row) for row in rows])
+                return
+            if path == "/api/ai-training/instructions" and method == "POST":
+                require_permission(user, "manageSettings")
+                data = self._body()
+                employee_type = str(data.get("employeeType", "assistant")).strip()
+                content = str(data.get("content", "")).strip()[:4000]
+                status = str(data.get("status", "draft")).strip()
+                allowed_types = {"shared", "assistant", "chat", "reception", "whatsapp", "calls", "commercial_research"}
+                if employee_type not in allowed_types or not content or status not in {"draft", "approved", "disabled"}:
+                    raise ApiError(400, "تعليم موظف AI غير صحيح")
+                cursor = connection.execute(
+                    """INSERT INTO ai_training_instructions(organization_id,employee_type,content,status,created_by,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (organization_id, employee_type, content, status, user["id"], now(), now()),
+                )
+                audit_log(connection, organization_id, user["id"], "ai_instruction_created", "ai_training_instruction", str(cursor.lastrowid), "إضافة تعليم لموظف AI")
+                connection.commit()
+                self._send(201, {"saved": True, "id": cursor.lastrowid})
+                return
+            if path.startswith("/api/ai-training/instructions/") and method in ("PUT", "DELETE"):
+                require_permission(user, "manageSettings")
+                try:
+                    instruction_id = int(path.rsplit("/", 1)[1])
+                except ValueError:
+                    raise ApiError(404, "تعليم غير موجود")
+                existing = connection.execute(
+                    "SELECT id FROM ai_training_instructions WHERE id=? AND organization_id=?",
+                    (instruction_id, organization_id),
+                ).fetchone()
+                if existing is None:
+                    raise ApiError(404, "تعليم غير موجود")
+                if method == "DELETE":
+                    connection.execute("DELETE FROM ai_training_instructions WHERE id=? AND organization_id=?", (instruction_id, organization_id))
+                    audit_log(connection, organization_id, user["id"], "ai_instruction_deleted", "ai_training_instruction", str(instruction_id), "حذف تعليم موظف AI")
+                    connection.commit()
+                    self._send(200, {"deleted": True})
+                    return
+                data = self._body()
+                content = str(data.get("content", "")).strip()[:4000]
+                status = str(data.get("status", "draft")).strip()
+                if not content or status not in {"draft", "approved", "disabled"}:
+                    raise ApiError(400, "تعليم موظف AI غير صحيح")
+                connection.execute(
+                    "UPDATE ai_training_instructions SET content=?,status=?,updated_at=? WHERE id=? AND organization_id=?",
+                    (content, status, now(), instruction_id, organization_id),
+                )
+                audit_log(connection, organization_id, user["id"], "ai_instruction_updated", "ai_training_instruction", str(instruction_id), "تعديل تعليم موظف AI")
+                connection.commit()
+                self._send(200, {"saved": True})
+                return
             if path == "/api/ai-profile" and method == "GET":
                 row = connection.execute(
                     "SELECT * FROM ai_company_profiles WHERE organization_id=?",
                     (organization_id,),
                 ).fetchone()
                 if row is None:
-                    org = connection.execute("SELECT activity FROM organizations WHERE id=?", (organization_id,)).fetchone()
-                    self._send(200, {"organization_id": organization_id, "activity": org["activity"] if org else ""})
+                    org = connection.execute("SELECT name,activity FROM organizations WHERE id=?", (organization_id,)).fetchone()
+                    self._send(200, {"organization_id": organization_id, "organizationName": org["name"] if org else "", "activity": org["activity"] if org else ""})
                 else:
-                    self._send(200, dict(row))
+                    payload = dict(row)
+                    name_row = connection.execute("SELECT name FROM organizations WHERE id=?", (organization_id,)).fetchone()
+                    payload["organizationName"] = name_row["name"] if name_row else ""
+                    self._send(200, payload)
                 return
             if path == "/api/ai-profile" and method == "PUT":
                 require_permission(user, "manageSettings")
