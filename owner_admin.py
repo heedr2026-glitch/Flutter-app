@@ -622,7 +622,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   except Exception: pass
   category=q.get('type','login')
   if category=='audit': return paged(c,'SELECT *','FROM platform_audit',[],'id DESC',page)
-  if category=='devices': return paged(c,'SELECT se.device_name,se.device_id,se.last_seen_at,se.trusted,u.name,u.organization_id','FROM sessions se JOIN users u ON u.id=se.user_id WHERE se.expires_at>?',[stamp()],'se.created_at DESC',page)
+  if category=='devices': return paged(c,'SELECT se.device_name,se.device_id,se.token_hash session_id,se.last_seen_at,se.trusted,u.name,u.organization_id','FROM sessions se JOIN users u ON u.id=se.user_id WHERE se.expires_at>?',[stamp()],'se.created_at DESC',page)
   if category=='password':
    return paged(c,'SELECT *',"FROM (SELECT summary,created_at,'customer_account' action FROM audit_logs WHERE action='password_reset' UNION ALL SELECT target summary,created_at,'admin_account' action FROM platform_audit WHERE action='password_reset') resets",[],'created_at DESC',page)
 
