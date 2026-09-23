@@ -2307,6 +2307,7 @@ class _DashboardPageState extends State<DashboardPage> {
         '';
     final sessionType = prefs.getString('session_user_type') ?? 'admin';
     var subscriptionPackage = prefs.getString('subscription_package') ?? 'free';
+    final isEmployeeSession = sessionType == 'employee';
     // Only server-approved, unexpired advertisements may be displayed.
     var advertisements = <Map<String, String>>[];
     var welcomeName = savedName;
@@ -2355,7 +2356,11 @@ class _DashboardPageState extends State<DashboardPage> {
         activeReminderCount = 0;
       }
     }
-    if (subscriptionPackage != 'vip' && advertisements.isEmpty) {
+    if (showPublicAdvertisementBanner(
+          subscriptionPackage: subscriptionPackage,
+          isEmployee: isEmployeeSession,
+        ) &&
+        advertisements.isEmpty) {
       advertisements = [
         const <String, String>{
           'title': 'أعلن معنا مجانًا',
@@ -2373,7 +2378,12 @@ class _DashboardPageState extends State<DashboardPage> {
       _isAdmin = sessionType == 'admin';
       _permissions = permissions;
       _subscriptionPackage = subscriptionPackage;
-      _vipAdvertisements = subscriptionPackage == 'vip' ? [] : advertisements;
+      _vipAdvertisements = showPublicAdvertisementBanner(
+        subscriptionPackage: subscriptionPackage,
+        isEmployee: isEmployeeSession,
+      )
+          ? advertisements
+          : [];
       _currentAdIndex = 0;
       _activeReminderCount = activeReminderCount;
     });
@@ -2409,7 +2419,10 @@ class _DashboardPageState extends State<DashboardPage> {
               subscriptionPackage = cloudPackage!;
               await prefs.setString('subscription_package', cloudPackage);
             }
-            if (subscriptionPackage != 'vip') {
+            if (showPublicAdvertisementBanner(
+              subscriptionPackage: subscriptionPackage,
+              isEmployee: isEmployeeSession,
+            )) {
               final ads = await api.advertisements();
               final cloudAdvertisements = ads
                   .map((item) {
@@ -2430,7 +2443,11 @@ class _DashboardPageState extends State<DashboardPage> {
                   .toList();
               advertisements = cloudAdvertisements;
             }
-            if (subscriptionPackage != 'vip' && advertisements.isEmpty) {
+            if (showPublicAdvertisementBanner(
+                  subscriptionPackage: subscriptionPackage,
+                  isEmployee: isEmployeeSession,
+                ) &&
+                advertisements.isEmpty) {
               advertisements = [
                 const <String, String>{
                   'title': 'أعلن معنا مجانًا',
@@ -2443,9 +2460,12 @@ class _DashboardPageState extends State<DashboardPage> {
             if (!mounted) return;
             setState(() {
               _subscriptionPackage = subscriptionPackage;
-              _vipAdvertisements = subscriptionPackage == 'vip'
-                  ? []
-                  : advertisements;
+              _vipAdvertisements = showPublicAdvertisementBanner(
+                subscriptionPackage: subscriptionPackage,
+                isEmployee: isEmployeeSession,
+              )
+                  ? advertisements
+                  : [];
               _currentAdIndex = 0;
             });
             _startAdvertisementRotation();
@@ -2554,7 +2574,11 @@ class _DashboardPageState extends State<DashboardPage> {
         api.close();
       }
     }
-    if (subscriptionPackage != 'vip' && advertisements.isEmpty) {
+    if (showPublicAdvertisementBanner(
+          subscriptionPackage: subscriptionPackage,
+          isEmployee: isEmployeeSession,
+        ) &&
+        advertisements.isEmpty) {
       advertisements = [
         const <String, String>{
           'title': 'أعلن معنا مجانًا',
@@ -2572,7 +2596,12 @@ class _DashboardPageState extends State<DashboardPage> {
       _isAdmin = sessionType == 'admin';
       _permissions = permissions;
       _subscriptionPackage = subscriptionPackage;
-      _vipAdvertisements = subscriptionPackage == 'vip' ? [] : advertisements;
+      _vipAdvertisements = showPublicAdvertisementBanner(
+        subscriptionPackage: subscriptionPackage,
+        isEmployee: isEmployeeSession,
+      )
+          ? advertisements
+          : [];
       _currentAdIndex = 0;
       _activeReminderCount = activeReminderCount + pendingCloudRequestCount;
       _securityAlertCount = securityAlertCount;
@@ -3648,8 +3677,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 _buildOrganizationAssistant(),
                 const SizedBox(height: 16),
 
-                if (_subscriptionPackage != 'vip' &&
-                    _vipAdvertisements.isNotEmpty)
+                if (_vipAdvertisements.isNotEmpty)
                   _buildAdvertisementBanner(),
                 if (_subscriptionPackage == 'vip' && _isAdmin)
                   const VipAdvertisementCard(),

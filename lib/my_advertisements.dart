@@ -47,6 +47,14 @@ String advertisementRemaining(Map<String, dynamic> ad) {
   return 'المتبقي: $days يوم';
 }
 
+/// Employees may view approved public advertisements in every package.  A VIP
+/// owner keeps the management card on the dashboard instead of a public ad
+/// banner, while their staff can still see the public marketplace.
+bool showPublicAdvertisementBanner({
+  required String subscriptionPackage,
+  required bool isEmployee,
+}) => isEmployee || subscriptionPackage != 'vip';
+
 class MyAdsService {
   static Future<T> withApi<T>(Future<T> Function(KhdoomCloudApi) work) async {
     final prefs = await BranchPreferences.getInstance();
