@@ -1030,6 +1030,7 @@ def init_db() -> None:
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS transfer_receipt TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS expires_at TEXT")
             connection.execute("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS logo_data TEXT NOT NULL DEFAULT ''")
+            connection.execute("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS alert_records TEXT NOT NULL DEFAULT '[]'")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS requested_days INTEGER")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS review_note TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS deleted INTEGER NOT NULL DEFAULT 0")
@@ -1358,6 +1359,8 @@ def init_db() -> None:
             connection.execute("ALTER TABLE organizations ADD COLUMN public_chat_token TEXT")
         if "logo_data" not in organization_columns:
             connection.execute("ALTER TABLE organizations ADD COLUMN logo_data TEXT NOT NULL DEFAULT ''")
+        if "alert_records" not in organization_columns:
+            connection.execute("ALTER TABLE organizations ADD COLUMN alert_records TEXT NOT NULL DEFAULT '[]'")
         organizations_without_chat = connection.execute(
             "SELECT id FROM organizations WHERE public_chat_token IS NULL OR public_chat_token=''"
         ).fetchall()
@@ -3714,6 +3717,29 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 org = connection.execute("""SELECT organizations.id,organizations.name,organizations.activity,organizations.phone,organizations.logo_data,organizations.created_at,subscriptions.package,subscriptions.expires_at FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id WHERE organizations.id=?""", (organization_id,)).fetchone()
                 self._send(200, dict(org))
                 return
+            if path == "/api/organization/alerts":
+                if method == "GET":
+                    row = connection.execute("SELECT alert_records FROM organizations WHERE id=?", (organization_id,)).fetchone()
+                    try:
+                        records = json.loads((row["alert_records"] if row else "[]") or "[]")
+                    except (TypeError, json.JSONDecodeError):
+                        records = []
+                    self._send(200, {"records": records if isinstance(records, list) else []})
+                    return
+                if method == "PUT":
+                    require_permission(user, "manageSettings")
+                    records = self._body().get("records", [])
+                    if not isinstance(records, list) or len(records) > 100:
+                        raise ApiError(400, "بيانات مستندات المؤسسة غير صحيحة")
+                    serialized = json.dumps(records, ensure_ascii=False, separators=(",", ":"))
+                    if len(serialized) > 3500000:
+                        raise ApiError(400, "حجم مستندات المؤسسة كبير جدًا")
+                    connection.execute("UPDATE organizations SET alert_records=? WHERE id=?", (serialized, organization_id))
+                    audit_log(connection, organization_id, user["id"], "organization_alerts_updated", "تم تحديث مستندات وتنبيهات المؤسسة", "organization", organization_id)
+                    connection.commit()
+                    self._send(200, {"saved": True})
+                    return
+                raise ApiError(405, "الإجراء غير متاح")
             if method == "PUT" and path == "/api/organization":
                 require_permission(user, "manageSettings")
                 data = self._body()

@@ -9592,6 +9592,7 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
       }
       await _saveAlertRecords();
     }
+    await _syncAlertRecordsWithCloud(prefs);
     savedDates.clear();
     for (final alert in alerts.where((item) => item['type'] != 'monthlyBill')) {
       final date = alert['date']?.toString() ?? '';
@@ -9615,21 +9616,85 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
     if (mounted) setState(() {});
   }
 
+  Future<List<Map<String, dynamic>>> _recordsForCloud() async {
+    final records = <Map<String, dynamic>>[];
+    for (final source in alerts.where(
+      (item) => item['type'] != 'monthlyBill',
+    )) {
+      final item = <String, dynamic>{
+        ...source,
+        'iconName': _iconName(
+          source['icon'] as IconData? ?? Icons.folder_copy_outlined,
+        ),
+      }..remove('icon');
+      final path = item['imagePath']?.toString() ?? '';
+      if ((item['imageData']?.toString() ?? '').isEmpty &&
+          path.isNotEmpty &&
+          File(path).existsSync()) {
+        final bytes = await File(path).readAsBytes();
+        if (bytes.length <= 320000) {
+          final mime = bytes.length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50
+              ? 'png'
+              : (bytes.length >= 12 && bytes[0] == 0x52 && bytes[1] == 0x49
+                    ? 'webp'
+                    : 'jpeg');
+          item['imageData'] = 'data:image/$mime;base64,${base64Encode(bytes)}';
+        }
+      }
+      records.add(item);
+    }
+    return records;
+  }
+
+  Future<void> _syncAlertRecordsWithCloud(BranchPreferences prefs) async {
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'cloud_session_token');
+    if (token == null || token.isEmpty) return;
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
+    try {
+      final remote = await api.organizationAlertRecords();
+      final remoteRecords = remote
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .map(
+            (item) => {
+              ...item,
+              'icon': _iconFor(item['iconName']?.toString() ?? 'document'),
+            },
+          )
+          .toList();
+      final isEmployee = prefs.getString('session_user_type') == 'employee';
+      final localHasContent = alerts.any(
+        (item) =>
+            item['type'] != 'monthlyBill' &&
+            ((item['date']?.toString().isNotEmpty ?? false) ||
+                (item['imagePath']?.toString().isNotEmpty ?? false) ||
+                (item['details']?.toString().isNotEmpty ?? false)),
+      );
+      if (remoteRecords.isNotEmpty && (isEmployee || !localHasContent)) {
+        alerts.removeWhere((item) => item['type'] != 'monthlyBill');
+        alerts.insertAll(0, remoteRecords);
+        await prefs.setString(_recordsKey, jsonEncode(remote));
+      } else if (!isEmployee) {
+        await api.updateOrganizationAlertRecords(await _recordsForCloud());
+      }
+    } catch (_) {
+      // Keep the locally saved documents available while offline.
+    } finally {
+      api.close();
+    }
+  }
+
   Future<void> _saveAlertRecords() async {
     final prefs = await _branchPrefs;
-    final records = alerts
-        .where((item) => item['type'] != 'monthlyBill')
-        .map(
-          (item) => {
-            ...item,
-            'iconName': _iconName(
-              item['icon'] as IconData? ?? Icons.folder_copy_outlined,
-            ),
-          }..remove('icon'),
-        )
-        .toList();
-    if (!await prefs.setString(_recordsKey, jsonEncode(records)))
+    final records = await _recordsForCloud();
+    if (!await prefs.setString(_recordsKey, jsonEncode(records))) {
       throw StateError('تعذر حفظ المستندات');
+    }
+    await _syncAlertRecordsWithCloud(prefs);
     await KhdoomNotifications.syncStoredAlerts();
   }
 
@@ -10502,11 +10567,14 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
                     );
                   }
                 },
-                leading: (alert['imagePath']?.toString() ?? '').isNotEmpty
+                leading:
+                    ((alert['imagePath']?.toString() ?? '').isNotEmpty ||
+                        (alert['imageData']?.toString() ?? '').isNotEmpty)
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(8),
                         child: DocumentImage(
-                          path: alert['imagePath'].toString(),
+                          path: alert['imagePath']?.toString() ?? '',
+                          data: alert['imageData']?.toString(),
                           width: 48,
                           height: 48,
                           fit: BoxFit.cover,

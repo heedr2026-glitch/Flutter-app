@@ -105,6 +105,20 @@ class KhdoomCloudApi {
     await _request('PUT', '/api/organization', body: data);
   }
 
+  Future<List<dynamic>> organizationAlertRecords() async {
+    final result = await _request('GET', '/api/organization/alerts');
+    final map = Map<String, dynamic>.from(result as Map);
+    return List<dynamic>.from(map['records'] as List? ?? const []);
+  }
+
+  Future<void> updateOrganizationAlertRecords(List<dynamic> records) async {
+    await _request(
+      'PUT',
+      '/api/organization/alerts',
+      body: {'records': records},
+    );
+  }
+
   Future<List<dynamic>> employees({bool allBranches = false}) async {
     final scope = await _branchScope;
     final result = await _request('GET', '/api/employees');
