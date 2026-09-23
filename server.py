@@ -2800,6 +2800,24 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
             self._send(200, {"saved": True, "status": "approved" if action == "approve" else "rejected"})
             return
+        if path.startswith("/owner/api/subscription-requests/") and method == "DELETE":
+            self._owner()
+            try:
+                request_id = int(path.rsplit("/", 1)[1])
+            except ValueError:
+                raise ApiError(400, "رقم طلب الترقية غير صحيح")
+            with db() as connection:
+                request_row = connection.execute(
+                    "SELECT status FROM subscription_requests WHERE id=?", (request_id,)
+                ).fetchone()
+                if request_row is None:
+                    raise ApiError(404, "طلب الاشتراك غير موجود")
+                if request_row["status"] == "pending":
+                    raise ApiError(400, "راجع الطلب أو ارفضه قبل الحذف")
+                connection.execute("DELETE FROM subscription_requests WHERE id=?", (request_id,))
+                connection.commit()
+            self._send(200, {"saved": True, "message": "تم حذف طلب الاشتراك المعالج"})
+            return
         if path.startswith("/owner/api/organizations/") and path.endswith("/appointments") and method == "GET":
             self._owner()
             organization_id = int(path.split("/")[-2])

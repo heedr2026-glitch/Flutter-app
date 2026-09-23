@@ -562,6 +562,12 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    c.execute('INSERT INTO package_offers(package,paid_months,bonus_months,price_sar,label,active,created_at,starts_at,ends_at,offer_type,discount_percent) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(package,months,bonus,price,str(d.get('label',''))[:100],1,stamp(),start,end,kind,percent if kind=='percent' else 0))
   return {'saved':True}
  if re.fullmatch(r'offers/\d+',r) and m=='PUT': c.execute('UPDATE package_offers SET active=? WHERE id=?',(int(bool(d.get('active'))),int(r.split('/')[1]))); return {'saved':True}
+ if re.fullmatch(r'offers/\d+',r) and m=='DELETE':
+  ident=int(r.split('/')[1]); offer=c.execute('SELECT active,ends_at FROM package_offers WHERE id=?',(ident,)).fetchone()
+  if not offer: raise s.ApiError(404,'العرض غير موجود')
+  if offer['active'] and active_offer(offer): raise ValueError('أوقف العرض أولًا أو انتظر انتهاء مدته قبل الحذف')
+  c.execute('DELETE FROM package_offers WHERE id=?',(ident,)); audit(c,a['name'],'offer_deleted',ident)
+  return {'saved':True,'message':'تم حذف العرض المنتهي أو المتوقف'}
  if r=='support' and m=='GET':
   # Every support request must have a visible, organization-scoped AI follow-up.
   # Older requests are repaired here as well, without altering their complaint.
