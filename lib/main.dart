@@ -953,6 +953,13 @@ class _LoginPageState extends State<LoginPage> {
       _error = null;
     });
     final prefs = await BranchPreferences.getInstance();
+
+    // The server is the source of truth for every employee account.  Trying it
+    // first avoids a stale account left on this device shadowing a newly-created
+    // employee with the same username.
+    if (await _loginWithCloud(username, password, prefs)) {
+      return;
+    }
     final adminPhone = (prefs.getString('account_phone') ?? '').toLowerCase();
     final adminEmail = (prefs.getString('account_email') ?? '').toLowerCase();
     final adminUsername = (prefs.getString('admin_login_username') ?? 'admin')
@@ -1129,6 +1136,93 @@ class _LoginPageState extends State<LoginPage> {
       _loading = false;
       _error = 'اسم المستخدم أو كلمة المرور غير صحيحة';
     });
+  }
+
+  /// Sign in using the account stored by Khdoom, independent of any account
+  /// previously used on this device.  The API token carries the user's
+  /// organization, so permissions and data remain server-enforced per
+  /// organization.
+  Future<bool> _loginWithCloud(
+    String username,
+    String password,
+    BranchPreferences prefs,
+  ) async {
+    final cloudApi = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    );
+    try {
+      final device = await khdoomDeviceIdentity();
+      final loginResult = await cloudApi.login(
+        username,
+        password,
+        deviceId: device['id']!,
+        deviceName: device['name']!,
+      );
+      final user = Map<String, dynamic>.from(loginResult['user'] as Map? ?? {});
+      final cloudToken = loginResult['token']?.toString() ?? '';
+      if (cloudToken.isEmpty || user['id'] == null) return false;
+      final isEmployee = user['role']?.toString() == 'employee';
+      final permissions = Map<String, dynamic>.from(
+        user['permissions'] as Map? ?? {},
+      );
+
+      // Organization details are useful for the local dashboard but are not a
+      // prerequisite for a valid account login.
+      Map<String, dynamic> organization = const {};
+      try {
+        organization = await cloudApi.organization();
+      } catch (_) {}
+
+      await Future.wait([
+        prefs.setBool('local_account_created', true),
+        prefs.setString('remembered_login_username', username),
+        prefs.setString('session_user_type', isEmployee ? 'employee' : 'admin'),
+        prefs.setString(
+          'session_organization_id',
+          loginResult['organizationId']?.toString() ?? '',
+        ),
+        prefs.setString(
+          'subscription_package',
+          loginResult['package']?.toString() ?? 'free',
+        ),
+        if (organization.isNotEmpty) ...[
+          prefs.setString(
+            'account_business_name',
+            organization['name']?.toString() ?? '',
+          ),
+          prefs.setString('account_phone', organization['phone']?.toString() ?? ''),
+        ],
+        if (isEmployee) ...[
+          prefs.setString('session_employee_id', user['id'].toString()),
+          prefs.setString(
+            'session_employee_name',
+            user['name']?.toString() ?? username,
+          ),
+          prefs.setString('session_employee_permissions', jsonEncode(permissions)),
+        ] else ...[
+          prefs.setString('admin_login_username', username),
+          prefs.setString('account_name', user['name']?.toString() ?? username),
+          prefs.remove('session_employee_id'),
+          prefs.remove('session_employee_name'),
+          prefs.remove('session_employee_permissions'),
+          _secureStorage.write(key: 'admin_account_password', value: password),
+        ],
+        _secureStorage.write(key: 'cloud_session_token', value: cloudToken),
+      ]);
+      if (!mounted) return true;
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const DashboardPage()),
+        (_) => false,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      cloudApi.close();
+    }
   }
 
   Future<void> _refreshCloudToken(
