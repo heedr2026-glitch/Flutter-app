@@ -44,6 +44,47 @@ import 'commercial_research/commercial_research_report.dart';
 
 const accountDeletionUrl = 'https://khdoom-api.onrender.com/delete-account';
 
+/// Security choices belong to the signed-in account on this device. They are
+/// deliberately local; biometric data itself always stays with Android/iOS.
+String _securityUserScope(BranchPreferences prefs) {
+  final username =
+      (prefs.getString('remembered_login_username') ??
+              prefs.getString('admin_login_username') ??
+              'admin')
+          .trim()
+          .toLowerCase();
+  var checksum = 17;
+  for (final codeUnit in username.codeUnits) {
+    checksum = (checksum * 31 + codeUnit) & 0x7fffffff;
+  }
+  return checksum.toRadixString(36);
+}
+
+String _securityPreferenceKey(String name, BranchPreferences prefs) =>
+    '${name}_${_securityUserScope(prefs)}';
+
+String _securityPinKey(BranchPreferences prefs) =>
+    _securityPreferenceKey('security_app_pin', prefs);
+
+Future<void> _migrateLegacySecuritySettings(BranchPreferences prefs) async {
+  final scopedLock = _securityPreferenceKey('security_app_lock', prefs);
+  final scopedBiometric = _securityPreferenceKey(
+    'security_biometric_enabled',
+    prefs,
+  );
+  if (prefs.containsKey(scopedLock)) return;
+  final legacyLock = prefs.getBool('security_app_lock') ?? false;
+  final legacyBiometric = prefs.getBool('security_biometric_enabled') ?? false;
+  if (!legacyLock && !legacyBiometric) return;
+  const storage = FlutterSecureStorage();
+  final legacyPin = await storage.read(key: 'security_app_pin');
+  if (legacyPin != null) {
+    await storage.write(key: _securityPinKey(prefs), value: legacyPin);
+  }
+  await prefs.setBool(scopedLock, legacyLock && legacyPin != null);
+  await prefs.setBool(scopedBiometric, legacyBiometric && legacyPin != null);
+}
+
 Map<String, Widget Function(BuildContext, DailyWorkItem)>
 get dailyWorkDestinations => {
   'employees': (_, item) => EmployeeManagementPage(
@@ -497,6 +538,7 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
   bool _biometricEnabled = false;
   bool _accountCreated = false;
   bool _hasSession = false;
+  String _pinStorageKey = 'security_app_pin';
 
   @override
   void initState() {
@@ -506,7 +548,10 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
 
   Future<void> _checkLock() async {
     final prefs = await BranchPreferences.getInstance();
-    final enabled = prefs.getBool('security_app_lock') ?? false;
+    await _migrateLegacySecuritySettings(prefs);
+    final enabled =
+        prefs.getBool(_securityPreferenceKey('security_app_lock', prefs)) ??
+        false;
     final accountCreated = prefs.getBool('local_account_created') ?? false;
     var sessionType = prefs.getString('session_user_type');
     final loggedOutBefore = prefs.getBool('has_logged_out_once') ?? false;
@@ -514,13 +559,18 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
       sessionType = 'admin';
       await prefs.setString('session_user_type', 'admin');
     }
-    final savedPin = await _secureStorage.read(key: 'security_app_pin');
+    final savedPin = await _secureStorage.read(key: _securityPinKey(prefs));
     if (!mounted) return;
     setState(() {
       _accountCreated = accountCreated;
       _hasSession = sessionType != null;
       _requiresPin = enabled && savedPin != null && _hasSession;
-      _biometricEnabled = prefs.getBool('security_biometric_enabled') ?? false;
+      _biometricEnabled =
+          prefs.getBool(
+            _securityPreferenceKey('security_biometric_enabled', prefs),
+          ) ??
+          false;
+      _pinStorageKey = _securityPinKey(prefs);
     });
   }
 
@@ -535,6 +585,7 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
     if (_requiresPin!) {
       return AppLockPage(
         biometricEnabled: _biometricEnabled,
+        pinStorageKey: _pinStorageKey,
         onUnlocked: () => setState(() => _requiresPin = false),
       );
     }
@@ -546,11 +597,13 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
 class AppLockPage extends StatefulWidget {
   final VoidCallback onUnlocked;
   final bool biometricEnabled;
+  final String pinStorageKey;
 
   const AppLockPage({
     super.key,
     required this.onUnlocked,
     this.biometricEnabled = false,
+    required this.pinStorageKey,
   });
 
   @override
@@ -575,7 +628,7 @@ class _AppLockPageState extends State<AppLockPage> {
   }
 
   Future<void> _unlock() async {
-    final savedPin = await _secureStorage.read(key: 'security_app_pin');
+    final savedPin = await _secureStorage.read(key: widget.pinStorageKey);
     if (_pinController.text == savedPin) {
       widget.onUnlocked();
       return;
@@ -5063,21 +5116,21 @@ class _SettingsPageState extends State<SettingsPage> {
                       },
                     ),
                     const SizedBox(height: 10),
-                    _settingsInfoTile(
-                      icon: Icons.security_outlined,
-                      title: 'الخصوصية والأمان',
-                      subtitle: 'كلمات المرور والمفاتيح السرية لا تُحفظ محليًا',
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const PrivacySecurityPage(),
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 10),
                   ],
+                  _settingsInfoTile(
+                    icon: Icons.security_outlined,
+                    title: 'الخصوصية والأمان',
+                    subtitle: 'قفل وبصمة خاصة بحسابك على هذا الجهاز',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const PrivacySecurityPage(),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 10),
                   if (_canViewAuditLog) ...[
                     _settingsInfoTile(
                       icon: Icons.history_outlined,
@@ -5997,10 +6050,17 @@ class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
 
   Future<void> _loadSecuritySettings() async {
     final prefs = await BranchPreferences.getInstance();
+    await _migrateLegacySecuritySettings(prefs);
     if (!mounted) return;
     setState(() {
-      _appLockEnabled = prefs.getBool('security_app_lock') ?? false;
-      _biometricEnabled = prefs.getBool('security_biometric_enabled') ?? false;
+      _appLockEnabled =
+          prefs.getBool(_securityPreferenceKey('security_app_lock', prefs)) ??
+          false;
+      _biometricEnabled =
+          prefs.getBool(
+            _securityPreferenceKey('security_biometric_enabled', prefs),
+          ) ??
+          false;
       _hideCustomerData = prefs.getBool('security_hide_customer_data') ?? false;
       _isLoading = false;
     });
@@ -6088,8 +6148,11 @@ class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
     if (value) {
       final pin = await _requestPin(confirmPin: true);
       if (pin == null) return;
-      await _secureStorage.write(key: 'security_app_pin', value: pin);
-      await prefs.setBool('security_app_lock', true);
+      await _secureStorage.write(key: _securityPinKey(prefs), value: pin);
+      await prefs.setBool(
+        _securityPreferenceKey('security_app_lock', prefs),
+        true,
+      );
       if (!mounted) return;
       setState(() => _appLockEnabled = true);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -6100,15 +6163,18 @@ class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
 
     final currentPin = await _requestPin(confirmPin: false);
     if (currentPin == null) return;
-    final savedPin = await _secureStorage.read(key: 'security_app_pin');
+    final savedPin = await _secureStorage.read(key: _securityPinKey(prefs));
     if (currentPin != savedPin) {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('رمز القفل غير صحيح.')));
       return;
     }
-    await _secureStorage.delete(key: 'security_app_pin');
-    await prefs.setBool('security_app_lock', false);
+    await _secureStorage.delete(key: _securityPinKey(prefs));
+    await prefs.setBool(
+      _securityPreferenceKey('security_app_lock', prefs),
+      false,
+    );
     if (!mounted) return;
     setState(() => _appLockEnabled = false);
   }
@@ -6140,7 +6206,10 @@ class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
         return;
       }
     }
-    await prefs.setBool('security_biometric_enabled', value);
+    await prefs.setBool(
+      _securityPreferenceKey('security_biometric_enabled', prefs),
+      value,
+    );
     if (!mounted) return;
     setState(() => _biometricEnabled = value);
   }
