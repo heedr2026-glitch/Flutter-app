@@ -101,6 +101,10 @@ class KhdoomCloudApi {
     return Map<String, dynamic>.from(result as Map);
   }
 
+  Future<void> updateOrganization(Map<String, dynamic> data) async {
+    await _request('PUT', '/api/organization', body: data);
+  }
+
   Future<List<dynamic>> employees({bool allBranches = false}) async {
     final scope = await _branchScope;
     final result = await _request('GET', '/api/employees');

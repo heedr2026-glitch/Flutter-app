@@ -1029,6 +1029,7 @@ def init_db() -> None:
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS transfer_name TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS transfer_receipt TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS expires_at TEXT")
+            connection.execute("ALTER TABLE organizations ADD COLUMN IF NOT EXISTS logo_data TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS requested_days INTEGER")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS review_note TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS deleted INTEGER NOT NULL DEFAULT 0")
@@ -1355,6 +1356,8 @@ def init_db() -> None:
         }
         if "public_chat_token" not in organization_columns:
             connection.execute("ALTER TABLE organizations ADD COLUMN public_chat_token TEXT")
+        if "logo_data" not in organization_columns:
+            connection.execute("ALTER TABLE organizations ADD COLUMN logo_data TEXT NOT NULL DEFAULT ''")
         organizations_without_chat = connection.execute(
             "SELECT id FROM organizations WHERE public_chat_token IS NULL OR public_chat_token=''"
         ).fetchall()
@@ -3708,13 +3711,16 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(200, {"activated": True, "package": code["package"], "expiresAt": package_expires})
                 return
             if method == "GET" and path == "/api/organization":
-                org = connection.execute("""SELECT organizations.id,organizations.name,organizations.activity,organizations.phone,organizations.created_at,subscriptions.package,subscriptions.expires_at FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id WHERE organizations.id=?""", (organization_id,)).fetchone()
+                org = connection.execute("""SELECT organizations.id,organizations.name,organizations.activity,organizations.phone,organizations.logo_data,organizations.created_at,subscriptions.package,subscriptions.expires_at FROM organizations JOIN subscriptions ON subscriptions.organization_id=organizations.id WHERE organizations.id=?""", (organization_id,)).fetchone()
                 self._send(200, dict(org))
                 return
             if method == "PUT" and path == "/api/organization":
                 require_permission(user, "manageSettings")
                 data = self._body()
-                connection.execute("UPDATE organizations SET name=?,activity=?,phone=? WHERE id=?", (str(data.get("name", "")).strip(), str(data.get("activity", "")).strip(), str(data.get("phone", "")).strip(), organization_id))
+                logo_data = str(data.get("logoData", "")).strip()
+                if logo_data and (len(logo_data) > 450000 or not re.fullmatch(r"data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+", logo_data)):
+                    raise ApiError(400, "شعار المؤسسة يجب أن يكون PNG أو JPG أو WebP وبحجم مناسب")
+                connection.execute("UPDATE organizations SET name=?,activity=?,phone=?,logo_data=CASE WHEN ?='' THEN logo_data ELSE ? END WHERE id=?", (str(data.get("name", "")).strip(), str(data.get("activity", "")).strip(), str(data.get("phone", "")).strip(), logo_data, logo_data, organization_id))
                 audit_log(connection, organization_id, user["id"], "organization_updated", "تم تعديل بيانات المؤسسة", "organization", organization_id)
                 connection.commit()
                 self._send(200, {"saved": True})

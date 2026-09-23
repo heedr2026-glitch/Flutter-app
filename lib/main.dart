@@ -4,6 +4,7 @@ import 'reception_conversation_page.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -43,6 +44,15 @@ import 'commercial_research/commercial_whatsapp.dart';
 import 'commercial_research/commercial_research_report.dart';
 
 const accountDeletionUrl = 'https://khdoom-api.onrender.com/delete-account';
+
+Uint8List? _organizationLogoBytes(String? data) {
+  if (data == null || data.isEmpty) return null;
+  try {
+    return base64Decode(data.split(',').last);
+  } catch (_) {
+    return null;
+  }
+}
 
 /// Security choices belong to the signed-in account on this device. They are
 /// deliberately local; biometric data itself always stays with Android/iOS.
@@ -1192,7 +1202,10 @@ class _LoginPageState extends State<LoginPage> {
             'account_business_name',
             organization['name']?.toString() ?? '',
           ),
-          prefs.setString('account_phone', organization['phone']?.toString() ?? ''),
+          prefs.setString(
+            'account_phone',
+            organization['phone']?.toString() ?? '',
+          ),
         ],
         if (isEmployee) ...[
           prefs.setString('session_employee_id', user['id'].toString()),
@@ -1200,7 +1213,10 @@ class _LoginPageState extends State<LoginPage> {
             'session_employee_name',
             user['name']?.toString() ?? username,
           ),
-          prefs.setString('session_employee_permissions', jsonEncode(permissions)),
+          prefs.setString(
+            'session_employee_permissions',
+            jsonEncode(permissions),
+          ),
         ] else ...[
           prefs.setString('admin_login_username', username),
           prefs.setString('account_name', user['name']?.toString() ?? username),
@@ -2207,6 +2223,7 @@ class _DashboardPageState extends State<DashboardPage> {
   String _businessName = '';
   String _welcomeName = '';
   String? _businessLogoPath;
+  String? _businessLogoData;
   bool _isAdmin = true;
   Map<String, dynamic> _permissions = {};
   String _subscriptionPackage = 'free';
@@ -2375,13 +2392,15 @@ class _DashboardPageState extends State<DashboardPage> {
       _businessName = savedName.trim();
       _welcomeName = welcomeName.trim();
       _businessLogoPath = prefs.getString('business_logo_path');
+      _businessLogoData = prefs.getString('business_logo_data');
       _isAdmin = sessionType == 'admin';
       _permissions = permissions;
       _subscriptionPackage = subscriptionPackage;
-      _vipAdvertisements = showPublicAdvertisementBanner(
-        subscriptionPackage: subscriptionPackage,
-        isEmployee: isEmployeeSession,
-      )
+      _vipAdvertisements =
+          showPublicAdvertisementBanner(
+            subscriptionPackage: subscriptionPackage,
+            isEmployee: isEmployeeSession,
+          )
           ? advertisements
           : [];
       _currentAdIndex = 0;
@@ -2412,6 +2431,10 @@ class _DashboardPageState extends State<DashboardPage> {
         final advertisementUpdate = () async {
           try {
             final organization = await organizationFuture;
+            final logoData = organization['logo_data']?.toString() ?? '';
+            if (logoData.isNotEmpty) {
+              await prefs.setString('business_logo_data', logoData);
+            }
             final cloudPackage = organization['package']?.toString();
             if (cloudPackage == 'free' ||
                 cloudPackage == 'basic' ||
@@ -2460,10 +2483,14 @@ class _DashboardPageState extends State<DashboardPage> {
             if (!mounted) return;
             setState(() {
               _subscriptionPackage = subscriptionPackage;
-              _vipAdvertisements = showPublicAdvertisementBanner(
-                subscriptionPackage: subscriptionPackage,
-                isEmployee: isEmployeeSession,
-              )
+              _businessLogoData = logoData.isEmpty
+                  ? _businessLogoData
+                  : logoData;
+              _vipAdvertisements =
+                  showPublicAdvertisementBanner(
+                    subscriptionPackage: subscriptionPackage,
+                    isEmployee: isEmployeeSession,
+                  )
                   ? advertisements
                   : [];
               _currentAdIndex = 0;
@@ -2593,13 +2620,15 @@ class _DashboardPageState extends State<DashboardPage> {
       _businessName = savedName.trim();
       _welcomeName = welcomeName.trim();
       _businessLogoPath = prefs.getString('business_logo_path');
+      _businessLogoData = prefs.getString('business_logo_data');
       _isAdmin = sessionType == 'admin';
       _permissions = permissions;
       _subscriptionPackage = subscriptionPackage;
-      _vipAdvertisements = showPublicAdvertisementBanner(
-        subscriptionPackage: subscriptionPackage,
-        isEmployee: isEmployeeSession,
-      )
+      _vipAdvertisements =
+          showPublicAdvertisementBanner(
+            subscriptionPackage: subscriptionPackage,
+            isEmployee: isEmployeeSession,
+          )
           ? advertisements
           : [];
       _currentAdIndex = 0;
@@ -2619,7 +2648,9 @@ class _DashboardPageState extends State<DashboardPage> {
     void alignToClock() {
       if (!mounted || _vipAdvertisements.isEmpty) return;
       final expected =
-          DateTime.now().millisecondsSinceEpoch ~/ 8000 % _vipAdvertisements.length;
+          DateTime.now().millisecondsSinceEpoch ~/
+          8000 %
+          _vipAdvertisements.length;
       if (_currentAdIndex != expected) {
         setState(() => _currentAdIndex = expected);
       }
@@ -3651,7 +3682,17 @@ class _DashboardPageState extends State<DashboardPage> {
               children: [
                 Row(
                   children: [
-                    if (_businessLogoPath != null &&
+                    if (_organizationLogoBytes(_businessLogoData) != null) ...[
+                      ClipOval(
+                        child: Image.memory(
+                          _organizationLogoBytes(_businessLogoData)!,
+                          width: 68,
+                          height: 68,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                    ] else if (_businessLogoPath != null &&
                         File(_businessLogoPath!).existsSync()) ...[
                       ClipOval(
                         child: DocumentImage(
@@ -3686,8 +3727,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 _buildOrganizationAssistant(),
                 const SizedBox(height: 16),
 
-                if (_vipAdvertisements.isNotEmpty)
-                  _buildAdvertisementBanner(),
+                if (_vipAdvertisements.isNotEmpty) _buildAdvertisementBanner(),
                 if (_subscriptionPackage == 'vip' && _isAdmin)
                   const VipAdvertisementCard(),
               ],
@@ -7337,6 +7377,7 @@ class _MyBusinessPageState extends State<MyBusinessPage> {
   String activity = 'غير محدد';
   String phone = 'غير مضاف';
   String? businessLogoPath;
+  String? businessLogoData;
   bool _isAdmin = false;
 
   @override
@@ -7348,21 +7389,50 @@ class _MyBusinessPageState extends State<MyBusinessPage> {
   Future<void> loadBusinessData() async {
     final prefs = await _branchPrefs;
 
-    final savedBusinessName =
+    var savedBusinessName =
         prefs.getString('businessName') ??
         prefs.getString('account_business_name') ??
         'مؤسستي';
-    final savedPhone =
+    var savedPhone =
         prefs.getString('phone') ??
         prefs.getString('account_phone') ??
         'غير مضاف';
+    var savedActivity = prefs.getString('activity') ?? 'غير محدد';
+    var savedLogoData = prefs.getString('business_logo_data');
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'cloud_session_token');
+    if (token != null && token.isNotEmpty) {
+      final api = KhdoomCloudApi(
+        scope: prefs,
+        baseUrl:
+            prefs.getString('cloud_api_url') ??
+            'https://khdoom-api.onrender.com',
+      )..token = token;
+      try {
+        final organization = await api.organization();
+        savedBusinessName =
+            organization['name']?.toString() ?? savedBusinessName;
+        savedPhone = organization['phone']?.toString() ?? savedPhone;
+        savedActivity = organization['activity']?.toString() ?? savedActivity;
+        final cloudLogo = organization['logo_data']?.toString() ?? '';
+        if (cloudLogo.isNotEmpty) {
+          savedLogoData = cloudLogo;
+          await prefs.setString('business_logo_data', cloudLogo);
+        }
+      } catch (_) {
+        // The saved logo remains available if the server is temporarily offline.
+      } finally {
+        api.close();
+      }
+    }
 
     if (!mounted) return;
     setState(() {
       businessName = savedBusinessName;
-      activity = prefs.getString('activity') ?? 'غير محدد';
+      activity = savedActivity;
       phone = savedPhone;
       businessLogoPath = prefs.getString('business_logo_path');
+      businessLogoData = savedLogoData;
       _isAdmin = prefs.getString('session_user_type') != 'employee';
     });
   }
@@ -7383,8 +7453,42 @@ class _MyBusinessPageState extends State<MyBusinessPage> {
       if (destinationPath == null || destinationPath.isEmpty) return;
       final prefs = await _branchPrefs;
       await prefs.setString('business_logo_path', destinationPath);
+      final bytes = await File(destinationPath).readAsBytes();
+      if (bytes.length > 320000) {
+        throw const FileSystemException('logo too large');
+      }
+      final mime = bytes.length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50
+          ? 'png'
+          : (bytes.length >= 12 && bytes[0] == 0x52 && bytes[1] == 0x49
+                ? 'webp'
+                : 'jpeg');
+      final logoData = 'data:image/$mime;base64,${base64Encode(bytes)}';
+      const storage = FlutterSecureStorage();
+      final token = await storage.read(key: 'cloud_session_token');
+      if (token != null && token.isNotEmpty) {
+        final api = KhdoomCloudApi(
+          scope: prefs,
+          baseUrl:
+              prefs.getString('cloud_api_url') ??
+              'https://khdoom-api.onrender.com',
+        )..token = token;
+        try {
+          await api.updateOrganization({
+            'name': businessName,
+            'activity': activity == 'غير محدد' ? '' : activity,
+            'phone': phone == 'غير مضاف' ? '' : phone,
+            'logoData': logoData,
+          });
+        } finally {
+          api.close();
+        }
+      }
+      await prefs.setString('business_logo_data', logoData);
       if (!mounted) return;
-      setState(() => businessLogoPath = destinationPath);
+      setState(() {
+        businessLogoPath = destinationPath;
+        businessLogoData = logoData;
+      });
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('تم حفظ شعار المؤسسة')));
     } on PlatformException catch (_) {
@@ -7445,20 +7549,30 @@ class _MyBusinessPageState extends State<MyBusinessPage> {
                       child: CircleAvatar(
                         radius: 34,
                         backgroundColor: const Color(0xFF172554),
-                        backgroundImage:
-                            businessLogoPath != null &&
-                                File(businessLogoPath!).existsSync()
-                            ? FileImage(File(businessLogoPath!))
-                            : null,
-                        child:
-                            businessLogoPath == null ||
-                                !File(businessLogoPath!).existsSync()
-                            ? const Icon(
+                        child: _organizationLogoBytes(businessLogoData) != null
+                            ? ClipOval(
+                                child: Image.memory(
+                                  _organizationLogoBytes(businessLogoData)!,
+                                  width: 68,
+                                  height: 68,
+                                  fit: BoxFit.cover,
+                                ),
+                              )
+                            : businessLogoPath != null &&
+                                  File(businessLogoPath!).existsSync()
+                            ? ClipOval(
+                                child: Image.file(
+                                  File(businessLogoPath!),
+                                  width: 68,
+                                  height: 68,
+                                  fit: BoxFit.cover,
+                                ),
+                              )
+                            : const Icon(
                                 Icons.add_photo_alternate_outlined,
                                 color: Color(0xFF38BDF8),
                                 size: 32,
-                              )
-                            : null,
+                              ),
                       ),
                     ),
                     SizedBox(width: 16),
