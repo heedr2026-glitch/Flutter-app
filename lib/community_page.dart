@@ -230,7 +230,10 @@ class _CommunityPageState extends State<CommunityPage> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      post['name']?.toString() ?? 'مؤسسة خدوم',
+                                      post['organization_name'] == null
+                                          ? (post['name']?.toString() ??
+                                                'إدارة خدوم')
+                                          : '${post['organization_name']} — ${post['user_name'] ?? 'مستخدم'}',
                                       style: const TextStyle(
                                         color: Color(0xFF7DD3FC),
                                         fontWeight: FontWeight.bold,

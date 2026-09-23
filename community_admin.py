@@ -96,7 +96,7 @@ def client(h,method,s):
    # Community posts are intentionally shared across all organizations. Only
    # public organization identity and post content are exposed here.
    viewer_id=int(user['id'])
-   result=admin.paged(c,f'SELECT p.id,p.body,p.created_at,o.name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id) like_count,EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id={viewer_id}) liked_by_me','FROM community_posts p JOIN users u ON u.id=p.user_id JOIN organizations o ON o.id=u.organization_id WHERE p.hidden=0',[],'p.id DESC',page)
+   result=admin.paged(c,f'SELECT p.id,p.body,p.created_at,o.name organization_name,u.name user_name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id) like_count,EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id={viewer_id}) liked_by_me','FROM community_posts p JOIN users u ON u.id=p.user_id JOIN organizations o ON o.id=u.organization_id WHERE p.hidden=0',[],'p.id DESC',page)
    admin_posts=admin.rows(c,"SELECT -p.id id,p.body,p.created_at,'إدارة خدوم' name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=-p.id) like_count,EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=-p.id AND l.user_id=?) liked_by_me FROM community_admin_posts p WHERE p.hidden=0 ORDER BY p.id DESC LIMIT 100",(user['id'],))
    result['items']=admin_posts+result['items']; result['items'].sort(key=lambda item: (item.get('created_at') or '', int(item.get('id') or 0)), reverse=True); result['total']+=len(admin_posts)
   elif route=='posts' and method=='POST':

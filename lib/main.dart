@@ -2432,8 +2432,13 @@ class _DashboardPageState extends State<DashboardPage> {
           try {
             final organization = await organizationFuture;
             final logoData = organization['logo_data']?.toString() ?? '';
+            final cloudBusinessName =
+                organization['name']?.toString().trim() ?? '';
             if (logoData.isNotEmpty) {
               await prefs.setString('business_logo_data', logoData);
+            }
+            if (cloudBusinessName.isNotEmpty) {
+              await prefs.setString('businessName', cloudBusinessName);
             }
             final cloudPackage = organization['package']?.toString();
             if (cloudPackage == 'free' ||
@@ -2483,6 +2488,9 @@ class _DashboardPageState extends State<DashboardPage> {
             if (!mounted) return;
             setState(() {
               _subscriptionPackage = subscriptionPackage;
+              _businessName = cloudBusinessName.isEmpty
+                  ? _businessName
+                  : cloudBusinessName;
               _businessLogoData = logoData.isEmpty
                   ? _businessLogoData
                   : logoData;
@@ -3506,6 +3514,21 @@ class _DashboardPageState extends State<DashboardPage> {
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide.none,
               ),
+              prefixIcon: IconButton(
+                tooltip: 'اسأل بصوتك',
+                onPressed: _assistantLoading
+                    ? null
+                    : () => Navigator.push<void>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const KhdoomAiAssistantPage(),
+                        ),
+                      ),
+                icon: const Icon(
+                  Icons.mic_none_outlined,
+                  color: Color(0xFF67E8F9),
+                ),
+              ),
               suffixIcon: IconButton(
                 tooltip: _assistantLoading ? 'جاري إعداد الرد' : 'إرسال السؤال',
                 onPressed: _assistantLoading
@@ -3706,9 +3729,14 @@ class _DashboardPageState extends State<DashboardPage> {
                     ],
                     Expanded(
                       child: Text(
-                        _welcomeName.isEmpty
-                            ? 'مرحبًا بك 👋'
-                            : 'مرحبًا، $_welcomeName 👋',
+                        _businessName.isEmpty
+                            ? (_welcomeName.isEmpty
+                                  ? 'مرحبًا بك 👋'
+                                  : 'مرحبًا، $_welcomeName 👋')
+                            : (_welcomeName.isEmpty ||
+                                      _welcomeName == _businessName
+                                  ? 'مرحبًا، $_businessName 👋'
+                                  : 'مرحبًا، $_businessName — $_welcomeName 👋'),
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 26,
