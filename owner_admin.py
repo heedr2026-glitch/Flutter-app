@@ -362,9 +362,12 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   configured=bool(os.environ.get('KHDOOM_TECHNICAL_AI_SECRET','').strip())
   state_out={'status':'working' if live and state['last_task'] else 'online' if live else 'offline' if configured else 'not_configured','lastHeartbeat':heartbeat,'lastCheck':state['last_check'] if state else None,'lastTask':state['last_task'] if state else '','lastError':state['last_error'] if state else '','lastSuccess':state['last_success'] if state else ''}
   tasks=rows(c,"SELECT t.*,o.name organization_name,u.name user_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id LEFT JOIN users u ON u.id=t.user_id ORDER BY t.id DESC LIMIT 100")
+  task_stats={key:0 for key in ('queued','diagnosing','proposed','approved','completed','failed','not_executed')}
+  for task in tasks:
+   task_stats[task['status']]=task_stats.get(task['status'],0)+1
   failures=rows(c,"SELECT f.*,o.name organization_name,u.name user_name FROM login_failures f LEFT JOIN organizations o ON o.id=f.organization_id LEFT JOIN users u ON u.id=f.user_id ORDER BY f.id DESC LIMIT 100")
   recent_failures=scalar(c,"SELECT COUNT(*) n FROM login_failures WHERE created_at>=?",((datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat(),))
-  return {'state':state_out,'monitoring':True,'tasks':tasks,'loginFailures':failures,'loginAlert':recent_failures>=3,'items':rows(c,"SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id ORDER BY i.id DESC LIMIT 100"),'note':'المراقبة التلقائية تعمل من الخادم؛ لا تعديل إنتاج أو نشر تلقائيًا.'}
+  return {'state':state_out,'monitoring':True,'tasks':tasks,'taskStats':task_stats,'loginFailures':failures,'loginAlert':recent_failures>=3,'items':rows(c,"SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id ORDER BY i.id DESC LIMIT 100"),'note':'المراقبة تجمع الحالة وتكتب التقارير؛ لا تعديل إنتاج أو نشر تلقائيًا.'}
  if r=='technical-ai/heartbeat' and m=='POST':
   secret=h.headers.get('X-Technical-AI-Secret','')
   expected=os.environ.get('KHDOOM_TECHNICAL_AI_SECRET','').strip()
@@ -374,9 +377,50 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   return {'saved':True,'status':'online'}
  if r=='integrations' and m=='GET':
   return {'items':rows(c,'SELECT key,name,category,status,required_permission,provider_configured,notes,updated_at FROM platform_integrations ORDER BY id'),'note':'هذه الوحدات مجهزة للتوسع فقط. لا توجد خدمة مستقبلية مفعلة دون تكامل رسمي وإعداد خادم وصلاحية مناسبة.'}
+ if re.fullmatch(r'technical-ai/tasks/\d+/(start|report|approve|complete|fail|skip)',r) and m=='POST':
+  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks'))
+  parts=r.split('/'); ident=int(parts[2]); action=parts[3]
+  task=c.execute('SELECT * FROM technical_tasks WHERE id=?',(ident,)).fetchone()
+  if not task: raise s.ApiError(404,'مهمة موظف AI غير موجودة')
+  task=dict(task); ts=stamp(); service=task['service']; title=task['problem'][:300]
+  if action=='start':
+   diagnosis=task['diagnosis'] or 'بدأ موظف AI فحص السجلات وحالة الخدمة والصلاحيات المرتبطة بالمهمة.'
+   proposal=task['proposal'] or 'جمع نتائج الفحص ثم إعداد خطة إصلاح قابلة للمراجعة قبل أي تغيير.'
+   c.execute("UPDATE technical_tasks SET status='diagnosing',diagnosis=?,proposal=?,action_taken=?,started_at=?,finished_at=NULL WHERE id=?",(diagnosis,proposal,'بدأ الفحص الآمن؛ لم يتم تعديل الإنتاج',ts,ident))
+   c.execute("INSERT INTO technical_agent_state(id,status,last_heartbeat,last_check,last_task,last_error,updated_at) VALUES(1,'working',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status='working',last_heartbeat=excluded.last_heartbeat,last_check=excluded.last_check,last_task=excluded.last_task,last_error='',updated_at=excluded.updated_at",(ts,'فحص '+service,title,'',ts))
+   message='بدأ الفحص وتم حفظ حالة المهمة.'
+  elif action=='report':
+   diagnosis=task['diagnosis'] or 'تمت مراجعة مؤشرات الخادم والخدمة المرتبطة بالمهمة دون الوصول إلى الأسرار أو بيانات مؤسسة أخرى.'
+   proposal=task['proposal'] or 'تنفيذ الإصلاح المقترح في بيئة آمنة ثم اختبار النتيجة قبل اعتماد التنفيذ.'
+   report='تقرير موظف AI: المشكلة: '+title+' | الفحص: '+diagnosis+' | الخطة: '+proposal+' | التنفيذ الإنتاجي يحتاج موافقة الإدارة.'
+   c.execute("UPDATE technical_tasks SET status='proposed',diagnosis=?,proposal=?,action_taken=?,result=? WHERE id=?",(diagnosis,proposal,'أُعد تقرير وخطة إصلاح بانتظار موافقة الإدارة',report,ident))
+   message='تم إعداد التقرير وخطة الإصلاح.'
+  elif action=='approve':
+   c.execute("UPDATE technical_tasks SET status='approved',approved_by=?,action_taken=?,result=? WHERE id=?",(a['name'],'اعتمدت الإدارة تنفيذ الإصلاح؛ التنفيذ الفعلي يبقى يدويًا ومختبرًا','تمت الموافقة. لا توجد أي تعديلات تلقائية على الإنتاج.',ident))
+   message='تمت الموافقة. يمكن تنفيذ الإصلاح يدويًا ثم تسجيل النتيجة.'
+  elif action=='complete':
+   if task['status'] not in ('approved','diagnosing','proposed'):
+    raise ValueError('ابدأ الفحص وأعد التقرير قبل تسجيل الإنجاز')
+   result='تم الإنجاز: تم توثيق معالجة المهمة واختبار النتيجة. راجع سجل التغييرات إن وُجد.'
+   c.execute("UPDATE technical_tasks SET status='completed',action_taken=?,result=?,finished_at=? WHERE id=?",('تم تسجيل الإنجاز بعد المعالجة والاختبار',result,ts,ident))
+   match=re.match(r'طلب دعم #(\d+):',task['problem'])
+   if match and table_exists(c,'support_tickets',s):
+    c.execute("UPDATE support_tickets SET status='resolved',updated_at=? WHERE id=?",(ts,int(match.group(1))))
+   c.execute("INSERT INTO technical_agent_state(id,status,last_heartbeat,last_check,last_task,last_success,updated_at) VALUES(1,'online',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status='online',last_heartbeat=excluded.last_heartbeat,last_check=excluded.last_check,last_task=excluded.last_task,last_success=excluded.last_success,updated_at=excluded.updated_at",(ts,'اكتمل الفحص',title,result,ts))
+   message='تم الإنجاز وتحديث طلب الدعم المرتبط إلى محلول.'
+  elif action=='fail':
+   result='لم ينجز: يحتاج متابعة بشرية أو معلومات إضافية قبل الإصلاح.'
+   c.execute("UPDATE technical_tasks SET status='failed',action_taken=?,result=?,finished_at=? WHERE id=?",('توقف التنفيذ لوجود عائق يحتاج مراجعة',result,ts,ident))
+   message='سُجلت المهمة كغير منجزة مع سبب المتابعة.'
+  else:
+   result='لم يُنفذ: لم تبدأ إجراءات الإصلاح ولم تُجر أي تعديلات.'
+   c.execute("UPDATE technical_tasks SET status='not_executed',action_taken=?,result=?,finished_at=? WHERE id=?",('أُغلق الطلب دون تنفيذ',result,ts,ident))
+   message='سُجلت المهمة كغير منفذة.'
+  audit(c,a['name'],'technical_task_'+action,json.dumps({'task':ident,'service':service},ensure_ascii=False))
+  return {'saved':True,'message':message,'taskId':ident,'action':action}
  if r=='technical-ai/diagnose' and m=='POST':
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
-  service=str(d.get('service','')).strip(); services={'whatsapp':('واتساب','فشل webhook أو صلاحيات الربط','فحص رمز التحقق والتوقيع وسجل آخر webhook','تحديث الإعدادات فقط بعد نجاح اختبار مستقل'),'ai':('الذكاء الاصطناعي','الخدمة غير مهيأة أو تجاوزت الحد','مراجعة إعداد الخادم وحدود الباقة','إعادة مزامنة الحالة دون تغيير الأسرار'),'calls':('المكالمات','قناة الاتصال غير جاهزة أو بها فشل','فحص حالة قناة خدووم وسجل المكالمات','إعادة محاولة الاتصال بعد التحقق من الرصيد'),'login':('تسجيل الدخول','فشل مصادقة مستخدم أو أكثر','فحص وجود المستخدم وحالته وhash كلمة المرور وربط المؤسسة وLogin API والجلسات','اقتراح إعادة المزامنة أو إنهاء الجلسات المنتهية فقط؛ لا تغيير لكلمة المرور دون إجراء رسمي')}
+  service=str(d.get('service','')).strip(); services={'whatsapp':('واتساب','فشل webhook أو صلاحيات الربط','فحص رمز التحقق والتوقيع وسجل آخر webhook','تحديث الإعدادات فقط بعد نجاح اختبار مستقل'),'ai':('الذكاء الاصطناعي','الخدمة غير مهيأة أو تجاوزت الحد','مراجعة إعداد الخادم وحدود الباقة','إعادة مزامنة الحالة دون تغيير الأسرار'),'calls':('المكالمات','قناة الاتصال غير جاهزة أو بها فشل','فحص حالة قناة خدووم وسجل المكالمات','إعادة محاولة الاتصال بعد التحقق من الرصيد'),'login':('تسجيل الدخول','فشل مصادقة مستخدم أو أكثر','فحص وجود المستخدم وحالته وhash كلمة المرور وربط المؤسسة وLogin API والجلسات','اقتراح إعادة المزامنة أو إنهاء الجلسات المنتهية فقط؛ لا تغيير لكلمة المرور دون إجراء رسمي'),'server':('الخادم','بطء أو انقطاع في خادم خدووم','فحص استجابة API واتصال قاعدة البيانات وسجل الأخطاء','إعداد تقرير سبب العطل وخطة إصلاح ثم اختبارها قبل الاعتماد'),'database':('قاعدة البيانات','فشل استعلام أو بطء في البيانات','فحص اتصال القاعدة وسلامة الاستعلامات دون تغيير البيانات','اقتراح فهرسة أو إصلاح آمن بعد موافقة الإدارة')}
   if service not in services: raise ValueError('اختر خدمة مدعومة')
   label,problem,cause,proposal=services[service]; ts=stamp(); organization_id=number(d.get('organization_id'),1,100000000,True) if d.get('organization_id') else None; user_id=number(d.get('user_id'),1,100000000,True) if d.get('user_id') else None; cur=c.execute('INSERT INTO technical_incidents(service,organization_id,problem,root_cause,proposal,severity,test_status,deployment_status,affected_organizations,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id', (service,organization_id,problem,cause,proposal,'medium','not_tested','proposed',1 if organization_id else 0,ts,ts)); incident_id=cur.fetchone()['id']; cur=c.execute('INSERT INTO technical_tasks(organization_id,user_id,service,problem,severity,status,diagnosis,proposal,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id',(organization_id,user_id,service,problem,'medium','diagnosed',cause,proposal,ts,'ai')); task_id=cur.fetchone()['id']; audit(c,a['name'],'technical_diagnosis',service); return {'id':incident_id,'taskId':task_id,'service':label,'problem':problem,'rootCause':cause,'proposal':proposal,'testStatus':'not_tested','deploymentStatus':'proposed'}
  if re.fullmatch(r'technical-ai/\d+/(test|approve|reject)',r) and m=='POST':
