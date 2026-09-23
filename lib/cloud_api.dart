@@ -491,6 +491,43 @@ class KhdoomCloudApi {
     );
   }
 
+  Future<List<dynamic>> aiTrainingInstructions() async {
+    final result = await _request('GET', '/api/ai-training/instructions');
+    return List<dynamic>.from(result as List);
+  }
+
+  Future<void> createAiTrainingInstruction(
+    String employeeType,
+    String content, {
+    String status = 'draft',
+  }) async {
+    await _request(
+      'POST',
+      '/api/ai-training/instructions',
+      body: {
+        'employeeType': employeeType,
+        'content': content,
+        'status': status,
+      },
+    );
+  }
+
+  Future<void> updateAiTrainingInstruction(
+    int id,
+    String content,
+    String status,
+  ) async {
+    await _request(
+      'PUT',
+      '/api/ai-training/instructions/$id',
+      body: {'content': content, 'status': status},
+    );
+  }
+
+  Future<void> deleteAiTrainingInstruction(int id) async {
+    await _request('DELETE', '/api/ai-training/instructions/$id');
+  }
+
   Future<Map<String, dynamic>> subscription() async {
     final result = await _request('GET', '/api/subscription');
     return Map<String, dynamic>.from(result as Map);
@@ -567,10 +604,10 @@ class KhdoomCloudApi {
   }
 
   Future<Map<String, dynamic>> sendCommunityChat(String body) async {
-    return Map<String, dynamic>.from(await _request(
-      'POST', '/api/community/chat',
-      body: {'body': body},
-    ) as Map);
+    return Map<String, dynamic>.from(
+      await _request('POST', '/api/community/chat', body: {'body': body})
+          as Map,
+    );
   }
 
   Future<Map<String, dynamic>> callsConfig() async {

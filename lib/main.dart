@@ -10,6 +10,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import 'branch_store.dart';
 import 'daily_work_page.dart';
@@ -18,6 +20,7 @@ import 'employee_management.dart';
 import 'branch_pages.dart';
 import 'organization_categories.dart';
 import 'assistant_conversation.dart';
+import 'biometric_auth.dart';
 import 'appointment_followup_card.dart';
 import 'home_branches_switch.dart';
 import 'commercial_record_renewal_page.dart';
@@ -491,6 +494,7 @@ class AppLaunchGate extends StatefulWidget {
 class _AppLaunchGateState extends State<AppLaunchGate> {
   static const _secureStorage = FlutterSecureStorage();
   bool? _requiresPin;
+  bool _biometricEnabled = false;
   bool _accountCreated = false;
   bool _hasSession = false;
 
@@ -516,6 +520,7 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
       _accountCreated = accountCreated;
       _hasSession = sessionType != null;
       _requiresPin = enabled && savedPin != null && _hasSession;
+      _biometricEnabled = prefs.getBool('security_biometric_enabled') ?? false;
     });
   }
 
@@ -529,6 +534,7 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
     }
     if (_requiresPin!) {
       return AppLockPage(
+        biometricEnabled: _biometricEnabled,
         onUnlocked: () => setState(() => _requiresPin = false),
       );
     }
@@ -539,8 +545,13 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
 
 class AppLockPage extends StatefulWidget {
   final VoidCallback onUnlocked;
+  final bool biometricEnabled;
 
-  const AppLockPage({super.key, required this.onUnlocked});
+  const AppLockPage({
+    super.key,
+    required this.onUnlocked,
+    this.biometricEnabled = false,
+  });
 
   @override
   State<AppLockPage> createState() => _AppLockPageState();
@@ -550,6 +561,18 @@ class _AppLockPageState extends State<AppLockPage> {
   static const _secureStorage = FlutterSecureStorage();
   final _pinController = TextEditingController();
   String? _errorText;
+
+  Future<void> _unlockWithBiometric() async {
+    if (await BiometricAuth.authenticate()) {
+      widget.onUnlocked();
+      return;
+    }
+    if (mounted)
+      setState(
+        () =>
+            _errorText = 'تعذر التحقق بالبصمة. استخدم رمز PIN أو كلمة المرور.',
+      );
+  }
 
   Future<void> _unlock() async {
     final savedPin = await _secureStorage.read(key: 'security_app_pin');
@@ -611,6 +634,19 @@ class _AppLockPageState extends State<AppLockPage> {
                       style: TextStyle(color: Colors.white60),
                     ),
                     const SizedBox(height: 22),
+                    if (widget.biometricEnabled) ...[
+                      FilledButton.icon(
+                        onPressed: _unlockWithBiometric,
+                        icon: const Icon(Icons.fingerprint),
+                        label: const Text('الدخول بالبصمة'),
+                      ),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'أو استخدم رمز PIN',
+                        style: TextStyle(color: Colors.white60),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                     TextField(
                       controller: _pinController,
                       autofocus: true,
@@ -2017,6 +2053,7 @@ class _DashboardPageState extends State<DashboardPage> {
   final TextEditingController _assistantController = TextEditingController();
   String _assistantAnswer = '';
   List<Map<String, dynamic>> _assistantRecords = [];
+  bool _assistantLoading = false;
   bool _assistantLocked = false;
   String _assistantLockMessage = 'الخدمة متوقفة مؤقتًا';
   VoidCallback? _assistantAction;
@@ -2675,7 +2712,7 @@ class _DashboardPageState extends State<DashboardPage> {
   final _conversation = AssistantConversation();
 
   Future<void> _askOrganizationAssistant(String question) async {
-    if (_conversation.busy) return;
+    if (_conversation.busy || _assistantLoading) return;
     if (_assistantLocked) {
       if (mounted)
         setState(() {
@@ -2687,345 +2724,373 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     final text = _normalizeAssistantText(question);
     if (text.isEmpty) return;
-    final prefs = await _branchPrefs;
-    _conversation.bind(prefs.branchId);
-    final vehicles = _assistantList(prefs, 'business_vehicles');
-    final employees = _assistantList(prefs, 'business_employees');
-    final employeeAlerts = _assistantList(prefs, 'employee_alert_records');
-    final organizationAlerts = _assistantList(
-      prefs,
-      'organization_alert_records',
-    );
-    final bills = _assistantList(prefs, 'electricity_bills');
-    final appointments = _assistantList(
-      prefs,
-      'business_appointments_requests',
-    );
-    final today = DateTime.now();
-    final todayItems = appointments.where((item) {
-      final date = DateTime.tryParse(item['date']?.toString() ?? '');
-      return date != null &&
-          date.year == today.year &&
-          date.month == today.month &&
-          date.day == today.day &&
-          item['status'] != 'completed';
-    }).toList();
-    final pendingRequests = appointments
-        .where(
-          (item) => item['type'] == 'طلب عميل' && item['status'] != 'completed',
-        )
-        .toList();
-    final upcoming = _assistantUpcomingItems(prefs, vehicles, employeeAlerts);
-    final unpaidBills = bills.where((bill) => bill['paid'] != true).toList();
-    String answer;
-    VoidCallback? action;
-    final attachedRecords = <Map<String, dynamic>>[];
+    setState(() {
+      _assistantLoading = true;
+      _assistantAnswer = '';
+      _assistantRecords = [];
+      _assistantAction = null;
+    });
+    try {
+      final prefs = await _branchPrefs;
+      _conversation.bind(prefs.branchId);
+      final vehicles = _assistantList(prefs, 'business_vehicles');
+      final employees = _assistantList(prefs, 'business_employees');
+      final employeeAlerts = _assistantList(prefs, 'employee_alert_records');
+      final organizationAlerts = _assistantList(
+        prefs,
+        'organization_alert_records',
+      );
+      final bills = _assistantList(prefs, 'electricity_bills');
+      final appointments = _assistantList(
+        prefs,
+        'business_appointments_requests',
+      );
+      final today = DateTime.now();
+      final todayItems = appointments.where((item) {
+        final date = DateTime.tryParse(item['date']?.toString() ?? '');
+        return date != null &&
+            date.year == today.year &&
+            date.month == today.month &&
+            date.day == today.day &&
+            item['status'] != 'completed';
+      }).toList();
+      final pendingRequests = appointments
+          .where(
+            (item) =>
+                item['type'] == 'طلب عميل' && item['status'] != 'completed',
+          )
+          .toList();
+      final upcoming = _assistantUpcomingItems(prefs, vehicles, employeeAlerts);
+      final unpaidBills = bills.where((bill) => bill['paid'] != true).toList();
+      String answer;
+      VoidCallback? action;
+      final attachedRecords = <Map<String, dynamic>>[];
 
-    if (text.contains('وش عندي') ||
-        text.contains('ماذا لدي') ||
-        text.contains('اليوم') ||
-        text.contains('ملخص') ||
-        text.contains('وضعي')) {
-      final lines = <String>[
-        'ملخص المؤسسة:',
-        '• الباقة: $_subscriptionPackage',
-        if (_can('vehicles')) '• المركبات المسجلة: ${vehicles.length}',
-        if (_can('employees')) '• الموظفون المسجلون: ${employees.length}',
-        if (_can('appointments'))
-          '• التجديدات القريبة أو المنتهية: ${upcoming.length}',
-        if (_can('appointments')) '• مواعيد وطلبات اليوم: ${todayItems.length}',
-        if (_can('appointments'))
-          '• الطلبات المعلقة: ${pendingRequests.length}',
-        if (_can('appointments'))
-          '• فواتير الكهرباء غير المسددة: ${unpaidBills.length}',
-      ];
-      if (_can('appointments') && upcoming.isNotEmpty) {
-        lines.add('');
-        lines.add('الأهم الآن:');
-        lines.addAll(upcoming.take(5));
-      }
-      answer = lines.join('\n');
-    } else if (_can('appointments') &&
-        organizationAlerts.any((record) {
+      if (text.contains('وش عندي') ||
+          text.contains('ماذا لدي') ||
+          text.contains('اليوم') ||
+          text.contains('ملخص') ||
+          text.contains('وضعي')) {
+        final lines = <String>[
+          'ملخص المؤسسة:',
+          '• الباقة: $_subscriptionPackage',
+          if (_can('vehicles')) '• المركبات المسجلة: ${vehicles.length}',
+          if (_can('employees')) '• الموظفون المسجلون: ${employees.length}',
+          if (_can('appointments'))
+            '• التجديدات القريبة أو المنتهية: ${upcoming.length}',
+          if (_can('appointments'))
+            '• مواعيد وطلبات اليوم: ${todayItems.length}',
+          if (_can('appointments'))
+            '• الطلبات المعلقة: ${pendingRequests.length}',
+          if (_can('appointments'))
+            '• فواتير الكهرباء غير المسددة: ${unpaidBills.length}',
+        ];
+        if (_can('appointments') && upcoming.isNotEmpty) {
+          lines.add('');
+          lines.add('الأهم الآن:');
+          lines.addAll(upcoming.take(5));
+        }
+        answer = lines.join('\n');
+      } else if (_can('appointments') &&
+          organizationAlerts.any((record) {
+            final title = _normalizeAssistantText(
+              record['title']?.toString() ?? '',
+            );
+            if (title.isEmpty) return false;
+            if (text.contains(title) || title.contains(text)) return true;
+            return title
+                .split(RegExp(r'\s+|â€“|-'))
+                .where((word) => word.length >= 3)
+                .any(text.contains);
+          })) {
+        final record = organizationAlerts.firstWhere((record) {
           final title = _normalizeAssistantText(
             record['title']?.toString() ?? '',
           );
-          if (title.isEmpty) return false;
           if (text.contains(title) || title.contains(text)) return true;
           return title
               .split(RegExp(r'\s+|â€“|-'))
               .where((word) => word.length >= 3)
               .any(text.contains);
-        })) {
-      final record = organizationAlerts.firstWhere((record) {
-        final title = _normalizeAssistantText(
-          record['title']?.toString() ?? '',
-        );
-        if (text.contains(title) || title.contains(text)) return true;
-        return title
-            .split(RegExp(r'\s+|â€“|-'))
-            .where((word) => word.length >= 3)
-            .any(text.contains);
-      });
-      final title = record['title']?.toString() ?? 'مستند المؤسسة';
-      final details = record['details']?.toString().trim() ?? '';
-      final website = record['website']?.toString().trim() ?? '';
-      final date = record['date']?.toString() ?? '';
-      attachedRecords.add(record);
-      answer = [
-        'معلومات $title:',
-        if (details.isNotEmpty) details,
-        'الحالة: ${_assistantDateStatus(date)}',
-        if (website.isNotEmpty)
-          'يمكنك فتح الموقع الرسمي من الزر أدناه لمشاهدة بقية المستندات.',
-      ].join('\n');
-      action = website.isNotEmpty
-          ? () => openDocumentWebsite(context, website)
-          : () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const OrganizationAlertsPage()),
-            );
-    } else if (text.contains('موعد') ||
-        text.contains('مواعيد') ||
-        text.contains('طلب') ||
-        text.contains('عميل')) {
-      if (!_can('appointments')) {
-        answer = 'ليس لديك صلاحية لعرض المواعيد والطلبات.';
-      } else {
-        final wantsAll = text.contains('جميع') || text.contains('الكل');
-        String? requestedType;
-        if (!wantsAll && text.contains('مقاس')) {
-          requestedType = 'موعد مقاس';
-        } else if (!wantsAll && text.contains('صيان')) {
-          requestedType = 'موعد صيانة';
-        } else if (!wantsAll &&
-            (text.contains('طلب عميل') ||
-                text.contains('طلبات العملاء') ||
-                text.contains('طلبات عميل'))) {
-          requestedType = 'طلب عميل';
-        }
-        final pending =
-            appointments
-                .where(
-                  (item) =>
-                      item['status'] != 'completed' &&
-                      (requestedType == null || item['type'] == requestedType),
-                )
-                .toList()
-              ..sort((a, b) {
-                final first = DateTime.tryParse(a['date']?.toString() ?? '');
-                final second = DateTime.tryParse(b['date']?.toString() ?? '');
-                if (first == null || second == null) return 0;
-                return first.compareTo(second);
-              });
-        if (text.contains('كم') || text.contains('عدد')) {
-          final label = requestedType ?? 'المواعيد والطلبات';
-          answer = 'عدد $label المعلقة: ${pending.length}.';
-        } else if (pending.isEmpty) {
-          answer = requestedType == null
-              ? 'لا توجد مواعيد أو طلبات معلقة.'
-              : 'لا يوجد ' + requestedType + ' معلق حاليًا.';
-        } else {
-          final heading = requestedType == null
-              ? 'جميع المواعيد والطلبات القادمة (' +
-                    pending.length.toString() +
-                    ')'
-              : requestedType + ' القادمة (' + pending.length.toString() + ')';
-          final details = pending
-              .take(8)
-              .map((item) {
-                final type = item['type']?.toString() ?? 'موعد';
-                final title = item['title']?.toString() ?? 'بدون عنوان';
-                final customer = item['customer']?.toString() ?? '';
-                final customerText = customer.isEmpty
-                    ? ''
-                    : ' — العميل: ' + customer;
-                return 'â€¢ ' +
-                    type +
-                    ': ' +
-                    title +
-                    customerText +
-                    '\n  ' +
-                    _assistantDateStatus(item['date']);
-              })
-              .join('\n');
-          answer = heading + ':\n' + details;
-        }
-        action = () async {
-          await Navigator.push<void>(
-            context,
-            MaterialPageRoute(builder: (_) => const AppointmentsRequestsPage()),
-          );
-          await _loadBusinessName();
-        };
-      }
-    } else if (text.contains('منتهي') ||
-        text.contains('ينتهي') ||
-        text.contains('تجديد') ||
-        text.contains('تنبيه') ||
-        text.contains('قريب')) {
-      if (!_can('appointments')) {
-        answer = 'ليس لديك صلاحية لعرض التنبيهات والتجديدات.';
-      } else if (upcoming.isEmpty) {
-        answer = 'لا توجد تواريخ منتهية أو تنتهي خلال 30 يومًا حسب البيانات المسجلة.';
-      } else {
-        answer =
-            'التواريخ المنتهية أو القريبة خلال 30 يومًا:\n${upcoming.take(10).join('\n')}';
-        action = () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const AlertsPage()),
-        );
-      }
-    } else if (text.contains('كهرب') || text.contains('فاتور')) {
-      if (!_can('appointments')) {
-        answer = 'ليس لديك صلاحية لعرض الفواتير والتنبيهات.';
-      } else if (bills.isEmpty) {
-        answer = 'لا توجد فواتير كهرباء مسجلة.';
-      } else if (unpaidBills.isEmpty) {
-        answer = 'جميع فواتير الكهرباء المسجلة مسددة.';
-      } else {
-        final details = unpaidBills
-            .take(8)
-            .map(
-              (bill) =>
-                  '• ${bill['month']?.toString() ?? 'شهر غير محدد'}: ${bill['amount']?.toString() ?? '0'} ريال — غير مسددة',
-            )
-            .join('\n');
-        answer =
-            'فواتير الكهرباء غير المسددة (${unpaidBills.length}):\n$details';
-        action = () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const OrganizationAlertsPage()),
-        );
-      }
-    } else if (text.contains('مركب') ||
-        text.contains('سيار') ||
-        text.contains('لوح') ||
-        text.contains('تأمين') ||
-        text.contains('فحص') ||
-        text.contains('استمار')) {
-      if (!_can('vehicles')) {
-        answer = 'ليس لديك صلاحية لعرض بيانات المركبات.';
-      } else if (vehicles.isEmpty) {
-        answer = 'لا توجد مركبات مسجلة حتى الآن.';
-      } else if (text.contains('كم') || text.contains('عدد')) {
-        answer = vehicles.length == 1
-            ? 'لديك مركبة واحدة مسجلة.'
-            : 'لديك ${vehicles.length} مركبات مسجلة.';
-        action = () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const VehiclesPage()),
-        );
-      } else {
-        final matching = vehicles.where((vehicle) {
-          final name = _normalizeAssistantText(
-            vehicle['name']?.toString() ?? '',
-          );
-          final plate = _normalizeAssistantText(
-            vehicle['plate']?.toString() ?? '',
-          );
-          final assigned = _normalizeAssistantText(
-            vehicle['assignedEmployee']?.toString() ?? '',
-          );
-          final status = vehicle['status']?.toString() ?? 'working';
-          final statusMatches =
-              (text.contains('صيان') && status == 'maintenance') ||
-              (text.contains('عطل') && status == 'broken') ||
-              (text.contains('متوقف') && status == 'stopped');
-          return (name.isNotEmpty && text.contains(name)) ||
-              (plate.isNotEmpty && text.contains(plate)) ||
-              (assigned.isNotEmpty && text.contains(assigned)) ||
-              statusMatches;
-        }).toList();
-        final selected = matching.isEmpty ? vehicles.take(5) : matching;
-        attachedRecords.addAll(selected);
-        answer = selected
-            .map(
-              (vehicle) =>
-                  '🚗 ${vehicle['name']?.toString() ?? 'مركبة'}${(vehicle['plate']?.toString() ?? '').isEmpty ? '' : '\nاللوحة: ${vehicle['plate']}'}\nالموظف المسؤول: ${(vehicle['assignedEmployee']?.toString() ?? '').isEmpty ? 'غير محدد' : vehicle['assignedEmployee']}\nالحالة: ${const {'working': 'تعمل', 'stopped': 'متوقفة', 'broken': 'عطلانة', 'maintenance': 'تحت الصيانة'}[vehicle['status']] ?? 'تعمل'}\nالتأمين: ${_assistantDateStatus(vehicle['insurance'])}\nالفحص: ${_assistantDateStatus(vehicle['inspection'])}\nالاستمارة: ${_assistantDateStatus(vehicle['registration'])}',
-            )
-            .join('\n\n');
-        action = () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const VehiclesPage()),
-        );
-      }
-    } else if (text.contains('موظف') ||
-        text.contains('عامل') ||
-        text.contains('إقامة') ||
-        text.contains('اقامة') ||
-        text.contains('عقد')) {
-      if (!_can('employees')) {
-        answer = 'ليس لديك صلاحية لعرض بيانات الموظفين.';
-      } else if (employees.isEmpty) {
-        answer = 'لا يوجد موظفون مسجلون حتى الآن.';
-      } else {
-        final matching = employees.where((employee) {
-          final name = _normalizeAssistantText(
-            employee['name']?.toString() ?? '',
-          );
-          return name.isNotEmpty && text.contains(name);
-        }).toList();
-        final selected = matching.isEmpty ? employees.take(8) : matching;
-        attachedRecords.addAll(selected);
-        for (final employee in selected) {
-          attachedRecords.addAll(
-            employeeAlerts.where(
-              (record) =>
-                  _normalizeAssistantText(record['name']?.toString() ?? '') ==
-                  _normalizeAssistantText(employee['name']?.toString() ?? ''),
-            ),
-          );
-        }
-        answer = selected
-            .map(
-              (employee) =>
-                  '👤 ${employee['name']?.toString() ?? 'موظف'}\nالوظيفة: ${employee['role']?.toString() ?? 'غير محددة'}\nالحالة: ${employee['active'] == false ? 'موقوف' : 'نشط'}',
-            )
-            .join('\n\n');
-      }
-    } else if (text.contains('فرع') || text.contains('فروع')) {
-      answer =
-          'أنت الآن في ${prefs.branchName}. تبي تعرض بيانات هذا الفرع أو تبدّل لفرع آخر؟ التبديل من الإعدادات ← إدارة الفروع.';
-    } else if (text.contains('باقه') ||
-        text.contains('اشتراك') ||
-        text.contains('خطه')) {
-      answer = 'الباقة الحالية: $_subscriptionPackage.';
-    } else if (text.contains('مؤسس') ||
-        text.contains('نشاط') ||
-        text.contains('تواصل') ||
-        text.contains('رقم')) {
-      if (!_can('settings')) {
-        answer = 'ليس لديك صلاحية لعرض بيانات المؤسسة.';
-      } else {
-        final name = _businessName.isEmpty ? 'غير محددة' : _businessName;
-        final activity = prefs.getString('activity') ?? 'غير محدد';
-        final phone =
-            prefs.getString('phone') ??
-            prefs.getString('account_phone') ??
-            'غير مضاف';
-        answer =
-            'بيانات المؤسسة:\n• الاسم: $name\n• النشاط: $activity\n• رقم التواصل: $phone';
-        attachedRecords.add({
-          'title': name,
-          'imagePath': prefs.getString('business_logo_path') ?? '',
         });
-        action = () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const MyBusinessPage()),
-        );
+        final title = record['title']?.toString() ?? 'مستند المؤسسة';
+        final details = record['details']?.toString().trim() ?? '';
+        final website = record['website']?.toString().trim() ?? '';
+        final date = record['date']?.toString() ?? '';
+        attachedRecords.add(record);
+        answer = [
+          'معلومات $title:',
+          if (details.isNotEmpty) details,
+          'الحالة: ${_assistantDateStatus(date)}',
+          if (website.isNotEmpty)
+            'يمكنك فتح الموقع الرسمي من الزر أدناه لمشاهدة بقية المستندات.',
+        ].join('\n');
+        action = website.isNotEmpty
+            ? () => openDocumentWebsite(context, website)
+            : () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const OrganizationAlertsPage(),
+                ),
+              );
+      } else if (text.contains('موعد') ||
+          text.contains('مواعيد') ||
+          text.contains('طلب') ||
+          text.contains('عميل')) {
+        if (!_can('appointments')) {
+          answer = 'ليس لديك صلاحية لعرض المواعيد والطلبات.';
+        } else {
+          final wantsAll = text.contains('جميع') || text.contains('الكل');
+          String? requestedType;
+          if (!wantsAll && text.contains('مقاس')) {
+            requestedType = 'موعد مقاس';
+          } else if (!wantsAll && text.contains('صيان')) {
+            requestedType = 'موعد صيانة';
+          } else if (!wantsAll &&
+              (text.contains('طلب عميل') ||
+                  text.contains('طلبات العملاء') ||
+                  text.contains('طلبات عميل'))) {
+            requestedType = 'طلب عميل';
+          }
+          final pending =
+              appointments
+                  .where(
+                    (item) =>
+                        item['status'] != 'completed' &&
+                        (requestedType == null ||
+                            item['type'] == requestedType),
+                  )
+                  .toList()
+                ..sort((a, b) {
+                  final first = DateTime.tryParse(a['date']?.toString() ?? '');
+                  final second = DateTime.tryParse(b['date']?.toString() ?? '');
+                  if (first == null || second == null) return 0;
+                  return first.compareTo(second);
+                });
+          if (text.contains('كم') || text.contains('عدد')) {
+            final label = requestedType ?? 'المواعيد والطلبات';
+            answer = 'عدد $label المعلقة: ${pending.length}.';
+          } else if (pending.isEmpty) {
+            answer = requestedType == null
+                ? 'لا توجد مواعيد أو طلبات معلقة.'
+                : 'لا يوجد ' + requestedType + ' معلق حاليًا.';
+          } else {
+            final heading = requestedType == null
+                ? 'جميع المواعيد والطلبات القادمة (' +
+                      pending.length.toString() +
+                      ')'
+                : requestedType +
+                      ' القادمة (' +
+                      pending.length.toString() +
+                      ')';
+            final details = pending
+                .take(8)
+                .map((item) {
+                  final type = item['type']?.toString() ?? 'موعد';
+                  final title = item['title']?.toString() ?? 'بدون عنوان';
+                  final customer = item['customer']?.toString() ?? '';
+                  final customerText = customer.isEmpty
+                      ? ''
+                      : ' — العميل: ' + customer;
+                  return 'â€¢ ' +
+                      type +
+                      ': ' +
+                      title +
+                      customerText +
+                      '\n  ' +
+                      _assistantDateStatus(item['date']);
+                })
+                .join('\n');
+            answer = heading + ':\n' + details;
+          }
+          action = () async {
+            await Navigator.push<void>(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const AppointmentsRequestsPage(),
+              ),
+            );
+            await _loadBusinessName();
+          };
+        }
+      } else if (text.contains('منتهي') ||
+          text.contains('ينتهي') ||
+          text.contains('تجديد') ||
+          text.contains('تنبيه') ||
+          text.contains('قريب')) {
+        if (!_can('appointments')) {
+          answer = 'ليس لديك صلاحية لعرض التنبيهات والتجديدات.';
+        } else if (upcoming.isEmpty) {
+          answer = 'لا توجد تواريخ منتهية أو تنتهي خلال 30 يومًا حسب البيانات المسجلة.';
+        } else {
+          answer =
+              'التواريخ المنتهية أو القريبة خلال 30 يومًا:\n${upcoming.take(10).join('\n')}';
+          action = () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const AlertsPage()),
+          );
+        }
+      } else if (text.contains('كهرب') || text.contains('فاتور')) {
+        if (!_can('appointments')) {
+          answer = 'ليس لديك صلاحية لعرض الفواتير والتنبيهات.';
+        } else if (bills.isEmpty) {
+          answer = 'لا توجد فواتير كهرباء مسجلة.';
+        } else if (unpaidBills.isEmpty) {
+          answer = 'جميع فواتير الكهرباء المسجلة مسددة.';
+        } else {
+          final details = unpaidBills
+              .take(8)
+              .map(
+                (bill) =>
+                    '• ${bill['month']?.toString() ?? 'شهر غير محدد'}: ${bill['amount']?.toString() ?? '0'} ريال — غير مسددة',
+              )
+              .join('\n');
+          answer =
+              'فواتير الكهرباء غير المسددة (${unpaidBills.length}):\n$details';
+          action = () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const OrganizationAlertsPage()),
+          );
+        }
+      } else if (text.contains('مركب') ||
+          text.contains('سيار') ||
+          text.contains('لوح') ||
+          text.contains('تأمين') ||
+          text.contains('فحص') ||
+          text.contains('استمار')) {
+        if (!_can('vehicles')) {
+          answer = 'ليس لديك صلاحية لعرض بيانات المركبات.';
+        } else if (vehicles.isEmpty) {
+          answer = 'لا توجد مركبات مسجلة حتى الآن.';
+        } else if (text.contains('كم') || text.contains('عدد')) {
+          answer = vehicles.length == 1
+              ? 'لديك مركبة واحدة مسجلة.'
+              : 'لديك ${vehicles.length} مركبات مسجلة.';
+          action = () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const VehiclesPage()),
+          );
+        } else {
+          final matching = vehicles.where((vehicle) {
+            final name = _normalizeAssistantText(
+              vehicle['name']?.toString() ?? '',
+            );
+            final plate = _normalizeAssistantText(
+              vehicle['plate']?.toString() ?? '',
+            );
+            final assigned = _normalizeAssistantText(
+              vehicle['assignedEmployee']?.toString() ?? '',
+            );
+            final status = vehicle['status']?.toString() ?? 'working';
+            final statusMatches =
+                (text.contains('صيان') && status == 'maintenance') ||
+                (text.contains('عطل') && status == 'broken') ||
+                (text.contains('متوقف') && status == 'stopped');
+            return (name.isNotEmpty && text.contains(name)) ||
+                (plate.isNotEmpty && text.contains(plate)) ||
+                (assigned.isNotEmpty && text.contains(assigned)) ||
+                statusMatches;
+          }).toList();
+          final selected = matching.isEmpty ? vehicles.take(5) : matching;
+          attachedRecords.addAll(selected);
+          answer = selected
+              .map(
+                (vehicle) =>
+                    '🚗 ${vehicle['name']?.toString() ?? 'مركبة'}${(vehicle['plate']?.toString() ?? '').isEmpty ? '' : '\nاللوحة: ${vehicle['plate']}'}\nالموظف المسؤول: ${(vehicle['assignedEmployee']?.toString() ?? '').isEmpty ? 'غير محدد' : vehicle['assignedEmployee']}\nالحالة: ${const {'working': 'تعمل', 'stopped': 'متوقفة', 'broken': 'عطلانة', 'maintenance': 'تحت الصيانة'}[vehicle['status']] ?? 'تعمل'}\nالتأمين: ${_assistantDateStatus(vehicle['insurance'])}\nالفحص: ${_assistantDateStatus(vehicle['inspection'])}\nالاستمارة: ${_assistantDateStatus(vehicle['registration'])}',
+              )
+              .join('\n\n');
+          action = () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const VehiclesPage()),
+          );
+        }
+      } else if (text.contains('موظف') ||
+          text.contains('عامل') ||
+          text.contains('إقامة') ||
+          text.contains('اقامة') ||
+          text.contains('عقد')) {
+        if (!_can('employees')) {
+          answer = 'ليس لديك صلاحية لعرض بيانات الموظفين.';
+        } else if (employees.isEmpty) {
+          answer = 'لا يوجد موظفون مسجلون حتى الآن.';
+        } else {
+          final matching = employees.where((employee) {
+            final name = _normalizeAssistantText(
+              employee['name']?.toString() ?? '',
+            );
+            return name.isNotEmpty && text.contains(name);
+          }).toList();
+          final selected = matching.isEmpty ? employees.take(8) : matching;
+          attachedRecords.addAll(selected);
+          for (final employee in selected) {
+            attachedRecords.addAll(
+              employeeAlerts.where(
+                (record) =>
+                    _normalizeAssistantText(record['name']?.toString() ?? '') ==
+                    _normalizeAssistantText(employee['name']?.toString() ?? ''),
+              ),
+            );
+          }
+          answer = selected
+              .map(
+                (employee) =>
+                    '👤 ${employee['name']?.toString() ?? 'موظف'}\nالوظيفة: ${employee['role']?.toString() ?? 'غير محددة'}\nالحالة: ${employee['active'] == false ? 'موقوف' : 'نشط'}',
+              )
+              .join('\n\n');
+        }
+      } else if (text.contains('فرع') || text.contains('فروع')) {
+        answer =
+            'أنت الآن في ${prefs.branchName}. تبي تعرض بيانات هذا الفرع أو تبدّل لفرع آخر؟ التبديل من الإعدادات ← إدارة الفروع.';
+      } else if (text.contains('باقه') ||
+          text.contains('اشتراك') ||
+          text.contains('خطه')) {
+        answer = 'الباقة الحالية: $_subscriptionPackage.';
+      } else if (text.contains('مؤسس') ||
+          text.contains('نشاط') ||
+          text.contains('تواصل') ||
+          text.contains('رقم')) {
+        if (!_can('settings')) {
+          answer = 'ليس لديك صلاحية لعرض بيانات المؤسسة.';
+        } else {
+          final name = _businessName.isEmpty ? 'غير محددة' : _businessName;
+          final activity = prefs.getString('activity') ?? 'غير محدد';
+          final phone =
+              prefs.getString('phone') ??
+              prefs.getString('account_phone') ??
+              'غير مضاف';
+          answer =
+              'بيانات المؤسسة:\n• الاسم: $name\n• النشاط: $activity\n• رقم التواصل: $phone';
+          attachedRecords.add({
+            'title': name,
+            'imagePath': prefs.getString('business_logo_path') ?? '',
+          });
+          action = () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const MyBusinessPage()),
+          );
+        }
+      } else {
+        answer = await _conversation.ask(prefs, question);
       }
-    } else {
-      answer = await _conversation.ask(prefs, question);
-    }
 
-    if (!mounted) return;
-    setState(() {
-      _assistantAnswer = answer;
-      _assistantAction = action;
-      _assistantRecords = attachedRecords;
-    });
-    _conversation.remember(question, answer);
+      if (!mounted) return;
+      setState(() {
+        _assistantAnswer = answer;
+        _assistantAction = action;
+        _assistantRecords = attachedRecords;
+      });
+      _conversation.remember(question, answer);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _assistantAnswer =
+            'تعذر تجهيز الرد الآن. تأكد من الاتصال ثم حاول مرة أخرى.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _assistantLoading = false);
+      }
+    }
   }
 
   Widget _dailyWorkPage() => DailyWorkPage(destinations: dailyWorkDestinations);
@@ -3210,6 +3275,7 @@ class _DashboardPageState extends State<DashboardPage> {
           TextField(
             controller: _assistantController,
             textInputAction: TextInputAction.send,
+            enabled: !_assistantLoading,
             onSubmitted: (value) {
               _askOrganizationAssistant(value);
               _assistantController.clear();
@@ -3225,11 +3291,17 @@ class _DashboardPageState extends State<DashboardPage> {
                 borderSide: BorderSide.none,
               ),
               suffixIcon: IconButton(
-                onPressed: () {
-                  _askOrganizationAssistant(_assistantController.text);
-                  _assistantController.clear();
-                },
-                icon: const Icon(Icons.send, color: Color(0xFF67E8F9)),
+                tooltip: _assistantLoading ? 'جاري إعداد الرد' : 'إرسال السؤال',
+                onPressed: _assistantLoading
+                    ? null
+                    : () {
+                        _askOrganizationAssistant(_assistantController.text);
+                        _assistantController.clear();
+                      },
+                icon: Icon(
+                  _assistantLoading ? Icons.hourglass_top : Icons.send,
+                  color: const Color(0xFF67E8F9),
+                ),
               ),
             ),
           ),
@@ -3252,19 +3324,43 @@ class _DashboardPageState extends State<DashboardPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _assistantAnswer.isEmpty
-                      ? 'تظهر إجابة مساعد المؤسسة هنا'
-                      : _assistantAnswer,
-                  style: TextStyle(
-                    color: _assistantAnswer.isEmpty
-                        ? Colors.white38
-                        : Colors.white,
-                    height: 1.5,
+                if (_assistantLoading)
+                  Semantics(
+                    liveRegion: true,
+                    label: 'جاري إعداد رد مساعد المؤسسة',
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: Color(0xFF67E8F9),
+                          ),
+                        ),
+                        SizedBox(width: 12),
+                        Text(
+                          'جاري إعداد الرد…',
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Text(
+                    _assistantAnswer.isEmpty
+                        ? 'تظهر إجابة مساعد المؤسسة هنا'
+                        : _assistantAnswer,
+                    style: TextStyle(
+                      color: _assistantAnswer.isEmpty
+                          ? Colors.white38
+                          : Colors.white,
+                      height: 1.5,
+                    ),
                   ),
-                ),
-                RecordAttachments(records: _assistantRecords),
-                if (_assistantAction != null) ...[
+                if (!_assistantLoading)
+                  RecordAttachments(records: _assistantRecords),
+                if (!_assistantLoading && _assistantAction != null) ...[
                   const SizedBox(height: 8),
                   FilledButton.icon(
                     onPressed: _assistantAction,
@@ -5889,6 +5985,7 @@ class PrivacySecurityPage extends StatefulWidget {
 class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
   static const _secureStorage = FlutterSecureStorage();
   bool _appLockEnabled = false;
+  bool _biometricEnabled = false;
   bool _hideCustomerData = false;
   bool _isLoading = true;
 
@@ -5903,6 +6000,7 @@ class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
     if (!mounted) return;
     setState(() {
       _appLockEnabled = prefs.getBool('security_app_lock') ?? false;
+      _biometricEnabled = prefs.getBool('security_biometric_enabled') ?? false;
       _hideCustomerData = prefs.getBool('security_hide_customer_data') ?? false;
       _isLoading = false;
     });
@@ -6015,6 +6113,38 @@ class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
     setState(() => _appLockEnabled = false);
   }
 
+  Future<void> _toggleBiometric(bool value) async {
+    final prefs = await BranchPreferences.getInstance();
+    if (value && !_appLockEnabled) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'فعّل قفل التطبيق برمز PIN أولًا ليبقى خيارًا احتياطيًا.',
+            ),
+          ),
+        );
+      return;
+    }
+    if (value) {
+      final verified = await BiometricAuth.authenticate();
+      if (!verified) {
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'تعذر التحقق بالبصمة. تأكد من إعداد بصمة أو Face ID في الجهاز.',
+              ),
+            ),
+          );
+        return;
+      }
+    }
+    await prefs.setBool('security_biometric_enabled', value);
+    if (!mounted) return;
+    setState(() => _biometricEnabled = value);
+  }
+
   Future<void> _toggleHideCustomerData(bool value) async {
     final prefs = await BranchPreferences.getInstance();
     await prefs.setBool('security_hide_customer_data', value);
@@ -6073,6 +6203,14 @@ class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
                     subtitle: 'طلب رمز القفل عند تشغيل خدووم من جديد',
                     value: _appLockEnabled,
                     onChanged: _toggleAppLock,
+                  ),
+                  const SizedBox(height: 10),
+                  _securitySwitch(
+                    icon: Icons.fingerprint,
+                    title: 'الدخول بالبصمة أو Face ID',
+                    subtitle: 'تحقق داخل الجهاز فقط؛ لا تُحفظ البصمة في خدووم',
+                    value: _biometricEnabled,
+                    onChanged: _toggleBiometric,
                   ),
                   const SizedBox(height: 10),
                   _securitySwitch(
@@ -10657,6 +10795,11 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       BranchPreferences.getInstance();
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
+  final _speech = stt.SpeechToText();
+  final _tts = FlutterTts();
+  bool _voiceReady = false;
+  bool _isListening = false;
+  bool _speakReplies = true;
   final Map<int, List<Map<String, dynamic>>> _messageAttachments = {};
   final List<({String text, bool fromUser})> _messages = [
     (
@@ -10666,7 +10809,82 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _prepareVoice();
+  }
+
+  Future<void> _prepareVoice() async {
+    final available = await _speech.initialize(
+      onStatus: (status) {
+        if (mounted && (status == 'done' || status == 'notListening')) {
+          setState(() => _isListening = false);
+        }
+      },
+      onError: (_) {
+        if (mounted) setState(() => _isListening = false);
+      },
+    );
+    await _tts.setLanguage('ar-SA');
+    await _tts.setSpeechRate(0.48);
+    if (mounted) setState(() => _voiceReady = available);
+  }
+
+  Future<void> _toggleVoiceInput() async {
+    if (!_voiceReady) {
+      await _prepareVoice();
+      if (!_voiceReady) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'اسمح لخدووم باستخدام الميكروفون لتفعيل المحادثة الصوتية.',
+              ),
+            ),
+          );
+        }
+        return;
+      }
+    }
+    if (_isListening) {
+      await _speech.stop();
+      if (mounted) setState(() => _isListening = false);
+      return;
+    }
+    await _tts.stop();
+    if (mounted) setState(() => _isListening = true);
+    await _speech.listen(
+      listenOptions: stt.SpeechListenOptions(
+        localeId: 'ar_SA',
+        listenFor: const Duration(seconds: 30),
+        pauseFor: const Duration(seconds: 3),
+        listenMode: stt.ListenMode.dictation,
+      ),
+      onResult: (result) async {
+        if (result.recognizedWords.isNotEmpty && mounted) {
+          setState(() => _messageController.text = result.recognizedWords);
+        }
+        if (result.finalResult && result.recognizedWords.trim().isNotEmpty) {
+          await _speech.stop();
+          if (mounted) {
+            setState(() => _isListening = false);
+            await _sendMessage();
+          }
+        }
+      },
+    );
+  }
+
+  Future<void> _speak(String text) async {
+    if (!_speakReplies || !_voiceReady) return;
+    await _tts.stop();
+    await _tts.speak(text);
+  }
+
+  @override
   void dispose() {
+    _speech.stop();
+    _tts.stop();
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -10687,6 +10905,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       _messageAttachments[_messages.length] = attachments;
       _messages.add((text: answer, fromUser: false));
     });
+    unawaited(_speak(answer));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -10740,9 +10959,38 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       prefs,
       'business_appointments_requests',
     );
-    final wantsAdd = _hasAny(text, ['اضف', 'اضاف', 'انشئ', 'جديد', 'اسجل']);
+    final wantsAdd = _hasAny(text, [
+      'اضف',
+      'اضيف',
+      'اضاف',
+      'انشئ',
+      'جديد',
+      'اسجل',
+    ]);
     final wantsDelete = _hasAny(text, ['احذف', 'حذف', 'ازاله', 'الغاء']);
     final wantsView = _hasAny(text, ['اشوف', 'عرض', 'اظهر', 'اين', 'وين']);
+
+    // Keep common how-to instructions available even if the API is temporarily
+    // unavailable. These paths mirror actual screens and buttons in the app.
+    if (_hasAny(text, ['بصم', 'face id', 'فيس ايدي'])) {
+      return 'لتفعيل البصمة: افتح «الإعدادات ← الخصوصية والأمان»، فعّل أولًا «قفل التطبيق برمز PIN» واختر رمزًا احتياطيًا، ثم فعّل «الدخول بالبصمة أو Face ID» ووافق على تحقق الجهاز.';
+    }
+    if (_hasAny(text, [
+      'معلومات المؤسسه',
+      'بيانات المؤسسه',
+      'اسم المؤسسه',
+      'نشاط المؤسسه',
+      'رقم تواصل المؤسسه',
+      'سجل المؤسسه',
+    ])) {
+      return 'لتعديل معلومات المؤسسة: من الرئيسية افتح «مؤسستي ← تعديل بيانات المؤسسة»، ثم عدّل الاسم أو النشاط أو رقم التواصل واضغط «حفظ التعديلات».';
+    }
+    if (_hasAny(text, ['اسم المستخدم', 'يوزر', 'اليوزر'])) {
+      return 'لتغيير اسم المستخدم أو كلمة المرور للمدير: افتح «الإعدادات ← اسم المستخدم وكلمة المرور»، أدخل البيانات الجديدة ثم اضغط حفظ. عند النسيان اختر «نسيت اسم المستخدم؟» أو «نسيت كلمة المرور؟» من صفحة الدخول.';
+    }
+    if (_hasAny(text, ['vip', 'في اي بي', 'ترقيه الباقه', 'تفعيل باقه'])) {
+      return 'لتفعيل أو ترقية باقتك إلى VIP: افتح «الإعدادات ← الباقات والاشتراك»، اختر «VIP»، ثم أكمل طلب الاشتراك أو أدخل كود التفعيل إذا كان لديك كود.';
+    }
 
     if (_hasAny(text, ['مقاس', 'مقاسات', 'صيان', 'صيانه'])) {
       final wantsMaintenance = _hasAny(text, ['صيان', 'صيانه']);
@@ -11000,9 +11248,23 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
           backgroundColor: const Color(0xFF111B35),
           foregroundColor: Colors.white,
           title: const Text('موظف خدوم AI'),
-          actions: const [
-            Padding(
-              padding: EdgeInsetsDirectional.only(end: 16),
+          actions: [
+            IconButton(
+              tooltip: _speakReplies
+                  ? 'إيقاف قراءة الردود'
+                  : 'قراءة الردود بصوت',
+              onPressed: () {
+                setState(() => _speakReplies = !_speakReplies);
+                if (!_speakReplies) unawaited(_tts.stop());
+              },
+              icon: Icon(
+                _speakReplies
+                    ? Icons.volume_up_outlined
+                    : Icons.volume_off_outlined,
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsetsDirectional.only(end: 8),
               child: Icon(Icons.smart_toy, color: Color(0xFF38BDF8)),
             ),
           ],
@@ -11094,6 +11356,16 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
                       ),
                     ),
                     const SizedBox(width: 8),
+                    IconButton.filledTonal(
+                      tooltip: _isListening ? 'إيقاف الاستماع' : 'اسأل بصوتك',
+                      onPressed: _conversation.busy ? null : _toggleVoiceInput,
+                      icon: Icon(
+                        _isListening
+                            ? Icons.stop_circle_outlined
+                            : Icons.mic_none_outlined,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
                     IconButton.filled(
                       onPressed: _sendMessage,
                       icon: const Icon(Icons.send),
