@@ -3539,8 +3539,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(200, {"text": text, "action": action})
                 return
             if path == "/api/ai/assistant" and method == "POST":
-                # Local branch data is supplied by the administrator's app; never use it for writes.
-                require_permission(user, "manageSettings")
+                # Read-only in-app help is available to every signed-in account.
+                # This endpoint never changes organization settings or training;
+                # those write endpoints still require manageSettings.
                 data = self._body()
                 message = str(data.get("message", "")).strip()[:2000]
                 if not message:

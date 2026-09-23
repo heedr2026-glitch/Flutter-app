@@ -2614,11 +2614,20 @@ class _DashboardPageState extends State<DashboardPage> {
   void _startAdvertisementRotation() {
     _adRotationTimer?.cancel();
     if (_vipAdvertisements.length < 2) return;
-    _adRotationTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+    // Use shared wall-clock phases instead of an app-launch counter, so two
+    // devices display the same approved advertisement at the same time.
+    void alignToClock() {
       if (!mounted || _vipAdvertisements.isEmpty) return;
-      setState(() {
-        _currentAdIndex = (_currentAdIndex + 1) % _vipAdvertisements.length;
-      });
+      final expected =
+          DateTime.now().millisecondsSinceEpoch ~/ 8000 % _vipAdvertisements.length;
+      if (_currentAdIndex != expected) {
+        setState(() => _currentAdIndex = expected);
+      }
+    }
+
+    alignToClock();
+    _adRotationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      alignToClock();
     });
   }
 
