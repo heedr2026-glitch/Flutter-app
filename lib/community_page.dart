@@ -233,6 +233,8 @@ class _CommunityPageState extends State<CommunityPage> {
                                       post['organization_name'] == null
                                           ? (post['name']?.toString() ??
                                                 'إدارة خدوم')
+                                          : post['user_role'] == 'admin'
+                                          ? post['organization_name'].toString()
                                           : '${post['organization_name']} — ${post['user_name'] ?? 'مستخدم'}',
                                       style: const TextStyle(
                                         color: Color(0xFF7DD3FC),
