@@ -2623,16 +2623,30 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, {"saved": True, "priceSar": price_sar})
             return
         if method == "GET" and path == "/api/package-offers":
+            # Build the public price list from package_prices. Offers are a temporary layer only.
             with db() as connection:
-                rows = connection.execute("SELECT id,package,paid_months,bonus_months,price_sar,label,starts_at,ends_at FROM package_offers WHERE active=1 ORDER BY package,paid_months,bonus_months,id").fetchall()
-            self._send(200, [dict(row) for row in rows if owner_admin.active_offer(row)])
+                base_rows = connection.execute("SELECT package,duration_months,price_sar FROM package_prices WHERE package IN ('basic','vip') ORDER BY package,duration_months").fetchall()
+                offer_rows = connection.execute("SELECT * FROM package_offers WHERE active=1 AND base_price_sar IS NOT NULL ORDER BY id DESC").fetchall()
+            active = [dict(row) for row in offer_rows if owner_admin.active_offer(row)]
+            result=[]
+            for base in base_rows:
+                base=dict(base); package=base['package']; months=int(base['duration_months']); original=float(base['price_sar'])
+                offer=next((item for item in active if item['package']==package and int(item['paid_months'])==months),None)
+                price=float(offer['price_sar']) if offer else original
+                percent=float(offer.get('discount_percent') or 0) if offer else 0
+                if offer and not percent and original>0: percent=round((original-price)*100/original,2)
+                result.append({'id':offer['id'] if offer else None,'offer_id':offer['id'] if offer else None,'selection_id':f"offer-{offer['id']}" if offer else f"base-{package}-{months}",'package':package,'paid_months':months,'bonus_months':int(offer.get('bonus_months') or 0) if offer else 0,'price_sar':price,'original_price_sar':original,'discount_percent':percent,'label':offer.get('label','') if offer else '', 'starts_at':offer.get('starts_at') if offer else None,'ends_at':offer.get('ends_at') if offer else None,'has_offer':bool(offer)})
+            self._send(200, result)
             return
         if method == "GET" and path == "/api/package-catalog":
             with db() as connection:
                 rows = connection.execute("SELECT package,monthly,yearly,ai_daily,ai_employees,whatsapp_units,calls_units,ads_units,features FROM platform_packages ORDER BY monthly").fetchall()
+                price_rows = connection.execute("SELECT package,duration_months,price_sar FROM package_prices ORDER BY package,duration_months").fetchall()
+            prices={}
+            for price in price_rows: prices.setdefault(price['package'],[]).append({'months':int(price['duration_months']),'price_sar':float(price['price_sar'])})
             catalog=[]
             for row in rows:
-                item=dict(row)
+                item=dict(row); item['prices']=prices.get(item['package'],[])
                 item['features']=[line.strip() for line in str(item.get('features') or '').replace('،', ',').splitlines() if line.strip()]
                 catalog.append(item)
             self._send(200, catalog)
@@ -2997,8 +3011,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             data = self._body()
             raw_code = str(data.get("code", "")).strip().upper()
             package = str(data.get("package", "")).strip().lower()
-            if package not in ("basic", "vip"):
-                raise ApiError(400, "اختر باقة صحيحة")
+            duration_months = int(data.get("durationMonths", 1) or 1)
+            if package not in ("basic", "vip") or duration_months not in owner_admin.PACKAGE_DURATIONS:
+                raise ApiError(400, "اختر باقة ومدة صحيحتين")
             code_hash = hashlib.sha256(raw_code.encode()).hexdigest()
             with db() as connection:
                 code = connection.execute(
@@ -3010,13 +3025,15 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if code is None:
                 raise ApiError(400, "كود الخصم غير صحيح أو منتهي")
             with db() as connection:
-                original_price = connection.execute("SELECT monthly FROM platform_packages WHERE package=?", (package,)).fetchone()["monthly"]
+                price_row = connection.execute("SELECT price_sar FROM package_prices WHERE package=? AND duration_months=?", (package,duration_months)).fetchone()
+            if price_row is None: raise ApiError(400, "سعر المدة المختارة غير مهيأ")
+            original_price = float(price_row["price_sar"])
             discount_percent = int(code["discount_percent"])
             try:
-                discounted_price = owner_admin.discount(code, package, original_price)
+                discounted_price = owner_admin.discount(code, package, original_price, duration_months)
             except ValueError as error:
                 raise ApiError(400, str(error))
-            self._send(200, {"valid": True, "package": package, "discountPercent": discount_percent, "originalPrice": original_price, "discountedPrice": discounted_price})
+            self._send(200, {"valid": True, "package": package, "durationMonths": duration_months, "discountPercent": discount_percent, "originalPrice": original_price, "discountedPrice": discounted_price})
             return
         if method == "POST" and path == "/api/register":
             data = self._body()
@@ -4253,16 +4270,15 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 payment = connection.execute("SELECT id FROM payment_settings WHERE id=1 AND bank_name<>'' AND account_name<>'' AND iban<>''").fetchone()
                 if payment is None:
                     raise ApiError(503, "بيانات التحويل البنكي غير مهيأة بعد؛ تواصل مع إدارة خدووم")
+                duration_months = int(data.get("durationMonths", 1) or 1)
+                if duration_months not in owner_admin.PACKAGE_DURATIONS: raise ApiError(400, "اختر مدة اشتراك صحيحة")
                 offer_id = int(data.get("offerId", 0) or 0)
-                offer = connection.execute(
-                    "SELECT * FROM package_offers WHERE id=? AND package=? AND active=1",
-                    (offer_id, requested_package),
-                ).fetchone() if offer_id else connection.execute(
-                    "SELECT * FROM package_offers WHERE package=? AND active=1 ORDER BY paid_months,id LIMIT 1",
-                    (requested_package,),
-                ).fetchone()
-                if offer is None or not owner_admin.active_offer(offer):
-                    raise ApiError(400, "عرض الاشتراك غير موجود أو متوقف")
+                offer = connection.execute("SELECT * FROM package_offers WHERE id=? AND package=? AND paid_months=? AND active=1 AND base_price_sar IS NOT NULL",(offer_id,requested_package,duration_months)).fetchone() if offer_id else None
+                if offer is not None and not owner_admin.active_offer(offer): raise ApiError(400, "العرض المختار منتهي أو متوقف")
+                base = connection.execute("SELECT price_sar FROM package_prices WHERE package=? AND duration_months=?",(requested_package,duration_months)).fetchone()
+                if base is None: raise ApiError(400, "سعر المدة المختارة غير مهيأ")
+                selected_price=float(offer['price_sar']) if offer else float(base['price_sar'])
+                selected_bonus=int(offer['bonus_months'] or 0) if offer else 0
                 discount_code = str(data.get("discountCode", "")).strip().upper()
                 discount_percent = 0
                 if discount_code:
@@ -4277,7 +4293,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         raise ApiError(400, "كود الخصم غير صحيح أو منتهي")
                     discount_percent = int(code["discount_percent"])
                 try:
-                    quoted_price = owner_admin.discount(code, requested_package, offer["price_sar"]) if discount_code else float(offer["price_sar"])
+                    quoted_price = owner_admin.discount(code, requested_package, selected_price, duration_months) if discount_code else selected_price
                 except ValueError as error:
                     raise ApiError(400, str(error))
                 pending = connection.execute(
@@ -4290,18 +4306,18 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         """UPDATE subscription_requests
                            SET requested_package=?,discount_code=?,discount_percent=?,offer_id=?,paid_months=?,bonus_months=?,quoted_price=?,transfer_name=?,transfer_receipt=?,created_at=?
                            WHERE id=?""",
-                        (requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, transfer_name, transfer_receipt, now(), request_id),
+                        (requested_package, discount_code, discount_percent, offer['id'] if offer else None, duration_months, selected_bonus, quoted_price, transfer_name, transfer_receipt, now(), request_id),
                     )
                 else:
                     cursor = connection.execute(
                         """INSERT INTO subscription_requests(
                                organization_id,requested_package,discount_code,discount_percent,offer_id,paid_months,bonus_months,quoted_price,transfer_name,transfer_receipt,status,created_at
                            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (organization_id, requested_package, discount_code, discount_percent, offer["id"], offer["paid_months"], offer["bonus_months"], quoted_price, transfer_name, transfer_receipt, "pending", now()),
+                        (organization_id, requested_package, discount_code, discount_percent, offer['id'] if offer else None, duration_months, selected_bonus, quoted_price, transfer_name, transfer_receipt, "pending", now()),
                     )
                     request_id = cursor.lastrowid
                 connection.commit()
-                self._send(201, {"id": request_id, "status": "pending", "discountPercent": discount_percent, "paidMonths": offer["paid_months"], "bonusMonths": offer["bonus_months"], "quotedPrice": quoted_price})
+                self._send(201, {"id": request_id, "status": "pending", "discountPercent": discount_percent, "paidMonths": duration_months, "bonusMonths": selected_bonus, "quotedPrice": quoted_price})
                 return
             if path == "/api/payment-settings" and method == "GET":
                 row = connection.execute("SELECT bank_name,account_name,iban,account_number,instructions FROM payment_settings WHERE id=1").fetchone()

@@ -5592,8 +5592,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
     {
       'id': 'basic',
       'name': 'الأساسية',
-      'price': '49 ريال / شهر',
-      'priceValue': 49,
+      'price': 'تُحمّل الأسعار من خدووم',
       'description': 'للمؤسسات الصغيرة والمتوسطة',
       'features': [
         'حتى 5 موظفين',
@@ -5606,8 +5605,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
     {
       'id': 'vip',
       'name': 'VIP',
-      'price': '99 ريال / شهر',
-      'priceValue': 99,
+      'price': 'تُحمّل الأسعار من خدووم',
       'description': 'لإدارة المؤسسة دون حدود',
       'features': [
         'موظفون ومركبات بلا حد',
@@ -5658,10 +5656,13 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
           }
         }
         if (package == null) continue;
-        final monthly = item['monthly'];
-        if (id != 'free' && monthly != null) {
-          package['price'] = '${monthly.toString()} ريال / شهر';
-          package['priceValue'] = monthly;
+        final prices = item['prices'];
+        if (id != 'free' && prices is List && prices.isNotEmpty) {
+          final monthly = prices.cast<Map>().firstWhere(
+            (price) => price['months'].toString() == '1',
+            orElse: () => prices.first as Map,
+          );
+          package['price'] = 'يبدأ من ${monthly['price_sar']} ريال / شهر';
         }
         final features = item['features'];
         if (features is List && features.isNotEmpty) {
@@ -5823,20 +5824,20 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                   if (availableOffers.isEmpty)
                     Text('السعر: ${package['price']}')
                   else
-                    DropdownButtonFormField<int>(
+                    DropdownButtonFormField<String>(
                       isExpanded: true,
                       alignment: Alignment.centerRight,
-                      initialValue: selectedOffer?['id'] as int?,
+                      initialValue: selectedOffer?['selection_id']?.toString(),
                       decoration: const InputDecoration(
                         labelText: 'اختر مدة وعرض الاشتراك',
                         prefixIcon: Icon(Icons.calendar_month_outlined),
                       ),
                       items: availableOffers.map((offer) {
-                        return DropdownMenuItem<int>(
-                          value: offer['id'] as int,
+                        return DropdownMenuItem<String>(
+                           value: offer['selection_id']?.toString(),
                           alignment: Alignment.centerRight,
                           child: Text(
-                            '${offer['paid_months']} شهر — ${offer['price_sar']} ريال',
+                            '${offer['paid_months']} شهر — ${offer['has_offer'] == true ? 'عرض: ' : ''}${offer['price_sar']} ريال',
                             textDirection: TextDirection.rtl,
                             textAlign: TextAlign.right,
                             maxLines: 1,
@@ -5846,8 +5847,8 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                       }).toList(),
                       onChanged: (value) => setDialogState(() {
                         selectedOffer = availableOffers.firstWhere(
-                          (offer) => offer['id'] == value,
-                        );
+                           (offer) => offer['selection_id']?.toString() == value,
+                         );
                         discountResult = null;
                       }),
                     ),
@@ -5855,7 +5856,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
-                        '${selectedOffer!['paid_months']} شهر — ${selectedOffer!['price_sar']} ريال${selectedOffer!['bonus_months'] == 0 ? '' : ' + ${selectedOffer!['bonus_months']} شهر مجانًا'}',
+                        '${selectedOffer!['paid_months']} شهر${selectedOffer!['has_offer'] == true ? '\nالسعر السابق: ${selectedOffer!['original_price_sar']} ريال\nخصم ${selectedOffer!['discount_percent']}%\nالسعر الآن: ${selectedOffer!['price_sar']} ريال' : ' — السعر: ${selectedOffer!['price_sar']} ريال'}${selectedOffer!['bonus_months'] == 0 ? '' : ' + ${selectedOffer!['bonus_months']} شهر مجانًا'}${selectedOffer!['ends_at'] == null ? '' : '\nينتهي العرض: ${selectedOffer!['ends_at']}'}',
                       ),
                     ),
                   const SizedBox(height: 14),
@@ -6004,9 +6005,10 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                                 });
                                 try {
                                   final result = await api.previewDiscountCode(
-                                    code,
-                                    id,
-                                  );
+                                     code,
+                                     id,
+                                     durationMonths: int.tryParse(selectedOffer?['paid_months']?.toString() ?? '') ?? 1,
+                                   );
                                   if (!dialogContext.mounted) return;
                                   setDialogState(() {
                                     discountResult = result;
@@ -6062,7 +6064,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                       child: Text(
                         'تم تطبيق خصم ${discountResult!['discountPercent']}% ✓\n'
                         'السعر الأصلي: ${discountResult!['originalPrice']} ريال\n'
-                        'السعر بعد الخصم: ${discountResult!['discountedPrice']} ريال / شهر',
+                        'السعر بعد الخصم: ${discountResult!['discountedPrice']} ريال لمدة ${discountResult!['durationMonths']} شهر',
                         style: const TextStyle(
                           color: Color(0xFF166534),
                           fontWeight: FontWeight.bold,
@@ -6101,9 +6103,8 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                             transferName: transferNameController.text,
                             transferReceipt: transferReceipt,
                             discountCode: discountCode,
-                            offerId: int.tryParse(
-                              selectedOffer?['id']?.toString() ?? '',
-                            ),
+                            offerId: int.tryParse(selectedOffer?['offer_id']?.toString() ?? ''),
+                             durationMonths: int.tryParse(selectedOffer?['paid_months']?.toString() ?? '') ?? 1,
                           );
                           requestSent = true;
                           if (dialogContext.mounted) {

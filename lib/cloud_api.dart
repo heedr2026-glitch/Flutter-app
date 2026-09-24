@@ -295,12 +295,13 @@ class KhdoomCloudApi {
 
   Future<Map<String, dynamic>> previewDiscountCode(
     String code,
-    String package,
-  ) async {
+    String package, {
+    required int durationMonths,
+  }) async {
     final result = await _request(
       'POST',
       '/api/discount-code/preview',
-      body: {'code': code.trim().toUpperCase(), 'package': package},
+      body: {'code': code.trim().toUpperCase(), 'package': package, 'durationMonths': durationMonths},
     );
     return Map<String, dynamic>.from(result as Map);
   }
@@ -311,6 +312,7 @@ class KhdoomCloudApi {
     String transferReceipt = '',
     String discountCode = '',
     int? offerId,
+    required int durationMonths,
   }) async {
     final result = await _request(
       'POST',
@@ -321,6 +323,7 @@ class KhdoomCloudApi {
         'transferReceipt': transferReceipt,
         'discountCode': discountCode.trim().toUpperCase(),
         if (offerId != null) 'offerId': offerId,
+        'durationMonths': durationMonths,
       },
     );
     return Map<String, dynamic>.from(result as Map);

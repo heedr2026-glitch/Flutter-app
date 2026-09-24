@@ -33,6 +33,7 @@ def migrate(c,postgres=False):
  f'''platform_login_events(id {identity},account TEXT NOT NULL,ip TEXT NOT NULL,success INTEGER NOT NULL,created_at TEXT NOT NULL)''',
  f'''platform_unknown_logins(id {identity},account TEXT NOT NULL,created_at TEXT NOT NULL)''',
  '''platform_packages(package TEXT PRIMARY KEY,monthly REAL NOT NULL,yearly REAL NOT NULL,ai_daily INTEGER NOT NULL,ai_employees INTEGER NOT NULL,whatsapp_units INTEGER,calls_units INTEGER,ads_units INTEGER,features TEXT NOT NULL DEFAULT '')''',
+ '''package_prices(package TEXT NOT NULL,duration_months INTEGER NOT NULL,price_sar REAL NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(package,duration_months))''',
  f'''platform_notes(id {identity},ticket_id BIGINT NOT NULL,note TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
  f'''support_ticket_events(id {identity},ticket_id BIGINT NOT NULL,organization_id BIGINT NOT NULL,user_id BIGINT,actor_type TEXT NOT NULL,actor_name TEXT NOT NULL,event_type TEXT NOT NULL,from_status TEXT NOT NULL DEFAULT '',to_status TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
  f'''page_performance_events(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT,page_name TEXT NOT NULL,operation TEXT NOT NULL DEFAULT '',elapsed_ms INTEGER NOT NULL,success INTEGER NOT NULL DEFAULT 1,status_code INTEGER NOT NULL DEFAULT 0,app_version TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
@@ -68,7 +69,14 @@ def migrate(c,postgres=False):
   yearly=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=12 AND bonus_months=0 ORDER BY active DESC,id LIMIT 1',(p,)).fetchone()
   m=monthly['price_sar'] if monthly else m; y=yearly['price_sar'] if yearly else y
   c.execute('INSERT INTO platform_packages(package,monthly,yearly,ai_daily,ai_employees) VALUES(?,?,?,?,?) ON CONFLICT(package) DO NOTHING',(p,m,y,n,1))
- for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT")],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0")],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
+ # The only persistent source for base subscription prices.
+ defaults={'basic':{1:49,3:139,6:249,12:449},'vip':{1:99,3:279,6:499,12:899}}
+ for package,prices in defaults.items():
+  for months,fallback in prices.items():
+   legacy=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=? AND bonus_months=0 ORDER BY id LIMIT 1',(package,months)).fetchone()
+   value=float(legacy['price_sar']) if legacy else fallback
+   c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO NOTHING',(package,months,value,stamp()))
+ for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT")],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0")],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
@@ -121,14 +129,24 @@ def date(v):
  d=datetime.fromisoformat(str(v).replace('Z','+00:00'))
  if d.tzinfo is None: d=d.replace(tzinfo=timezone.utc)
  return d.astimezone(timezone.utc).isoformat()
-def discount(code,package,price):
+def discount(code,package,price,duration_months=None):
  r=dict(code)
  if r.get('starts_at') and r['starts_at']>stamp(): raise ValueError('الكود لم يبدأ بعد')
  if package not in r.get('eligible_packages','basic,vip').split(','): raise ValueError('الكود غير مخصص لهذه الباقة')
+ if duration_months is not None and str(duration_months) not in r.get('eligible_durations','1,3,6,12').split(','): raise ValueError('الكود غير مخصص لمدة الاشتراك المختارة')
  return round(max(0,float(price)*(100-r['discount_percent'])/100-r.get('discount_amount',0)),2)
 def active_offer(offer):
  o=dict(offer); t=stamp()
  return (not o.get('starts_at') or o['starts_at']<=t) and (not o.get('ends_at') or o['ends_at']>t)
+PACKAGE_DURATIONS=(1,3,6,12)
+def package_price_map(c,package):
+ return {int(row['duration_months']):float(row['price_sar']) for row in c.execute('SELECT duration_months,price_sar FROM package_prices WHERE package=? ORDER BY duration_months',(package,)).fetchall()}
+def price_warnings(prices):
+ warnings=[]
+ for before,after in zip(PACKAGE_DURATIONS,PACKAGE_DURATIONS[1:]):
+  if prices[after] < prices[before]: warnings.append(f'سعر {after} أشهر أقل من سعر {before} شهر')
+  if prices[after] > prices[before]*(after/before): warnings.append(f'سعر {after} أشهر أعلى من جمع أسعار المدة الأقصر')
+ return warnings
 def daily_limit(c,org,package):
  p=c.execute('SELECT ai_daily FROM platform_packages WHERE package=?',(package,)).fetchone()
  override=c.execute('SELECT daily_limit FROM ai_limits WHERE organization_id=?',(org,)).fetchone()
@@ -535,39 +553,48 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     c.execute('INSERT INTO subscriptions(organization_id,package,starts_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET package=excluded.package,expires_at=excluded.expires_at',(ident,pkg,stamp(),expiry))
    c.execute('INSERT INTO platform_rewards(organization_id,kind,amount,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(ident,kind,amount,reason[:500],a['name'],stamp()))
   return {'saved':True}
- if r=='packages' and m=='GET': return rows(c,'SELECT * FROM platform_packages ORDER BY monthly')
+ if r=='packages' and m=='GET':
+  out=rows(c,'SELECT * FROM platform_packages ORDER BY monthly')
+  for item in out: item['prices']=[{'months':months,'price_sar':price} for months,price in package_price_map(c,item['package']).items()]
+  return out
  if r=='packages' and m=='PUT':
   pkg=d.get('package')
   if pkg not in ('free','basic','vip'): raise ValueError('الباقة غير صحيحة')
-  monthly=number(d.get('monthly')); yearly=number(d.get('yearly'))
-  if pkg=='free' and (monthly or yearly): raise ValueError('الباقة المجانية سعرها صفر')
+  current=package_price_map(c,pkg)
+  prices={months:number(d.get(f'price_{months}',d.get('monthly') if months==1 else d.get('yearly') if months==12 else current.get(months,0)),0,100000000) for months in PACKAGE_DURATIONS}
+  if pkg=='free' and any(prices.values()): raise ValueError('الباقة المجانية سعرها صفر')
+  warnings=price_warnings(prices) if pkg!='free' else []
+  if warnings: raise ValueError('أسعار متضاربة: '+'؛ '.join(warnings))
   daily=number(d.get('ai_daily'),1,1000000,True); employees=number(d.get('ai_employees'),1,1000000,True); limits=[None if d.get(k) is None else number(d[k],0,1000000,True) for k in ('whatsapp_units','calls_units','ads_units')]
-  c.execute('UPDATE platform_packages SET monthly=?,yearly=?,ai_daily=?,ai_employees=?,whatsapp_units=?,calls_units=?,ads_units=?,features=? WHERE package=?',(monthly,yearly,daily,employees,*limits,str(d.get('features',''))[:4000],pkg))
-  for months,price in [(1,monthly),(12,yearly)]: c.execute('UPDATE package_offers SET price_sar=? WHERE package=? AND paid_months=? AND bonus_months=0 AND starts_at IS NULL AND ends_at IS NULL',(price,pkg,months))
-  return {'saved':True}
- if r=='codes' and m=='GET': return paged(c,'SELECT id,code_prefix,recipient_name,discount_percent,discount_amount,starts_at,expires_at,max_uses,used_count,eligible_packages,active',"FROM activation_codes WHERE code_kind='discount'",[],'id DESC',page)
+  c.execute('UPDATE platform_packages SET monthly=?,yearly=?,ai_daily=?,ai_employees=?,whatsapp_units=?,calls_units=?,ads_units=?,features=? WHERE package=?',(prices[1],prices[12],daily,employees,*limits,str(d.get('features',''))[:4000],pkg))
+  for months,price in prices.items(): c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO UPDATE SET price_sar=excluded.price_sar,updated_at=excluded.updated_at',(pkg,months,price,stamp()))
+  audit(c,a['name'],'package_prices_updated',json.dumps({'package':pkg,'prices':prices},ensure_ascii=False))
+  return {'saved':True,'prices':prices}
+ if r=='codes' and m=='GET': return paged(c,'SELECT id,code_prefix,recipient_name,discount_percent,discount_amount,starts_at,expires_at,max_uses,used_count,eligible_packages,eligible_durations,active',"FROM activation_codes WHERE code_kind='discount'",[],'id DESC',page)
  if r=='codes' and m=='POST':
   code=str(d.get('code','')).upper().strip()
   if not re.fullmatch('[A-Z0-9_-]{2,40}',code): raise ValueError('الكود من حرفين إلى 40 حرفًا إنجليزيًا أو رقمًا')
   start=date(d.get('starts_at')); end=date(d.get('expires_at'))
   if start and end and end<=start: raise ValueError('نهاية الكود يجب أن تكون بعد بدايته')
-  percent=number(d.get('discount_percent',0),0,100); fixed=number(d.get('discount_amount',0)); eligible=d.get('eligible_packages','basic,vip')
-  if any(x not in ('basic','vip') for x in eligible.split(',')) or (percent and fixed) or not(percent or fixed): raise ValueError('اختر نسبة أو مبلغًا وحدد الباقات')
+  percent=number(d.get('discount_percent',0),0,100); fixed=number(d.get('discount_amount',0)); eligible=d.get('eligible_packages','basic,vip'); durations=d.get('eligible_durations','1,3,6,12')
+  if any(x not in ('basic','vip') for x in eligible.split(',')) or any(int(x) not in PACKAGE_DURATIONS for x in durations.split(',') if x) or (percent and fixed) or not(percent or fixed): raise ValueError('اختر نسبة أو مبلغًا وحدد الباقات')
   digest=hashlib.sha256(code.encode()).hexdigest()
   if c.execute('SELECT id FROM activation_codes WHERE code_hash=?',(digest,)).fetchone(): raise ValueError('الكود موجود؛ لن يعاد تصفير استخدامه')
-  c.execute('INSERT INTO activation_codes(code_hash,code_prefix,package,duration_days,max_uses,expires_at,recipient_name,code_kind,discount_percent,discount_amount,eligible_packages,starts_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(digest,code,'basic',0,number(d.get('max_uses'),1,1000000,True),end,str(d.get('recipient_name',''))[:100],'discount',percent,fixed,eligible,start,stamp())); return {'saved':True}
+  c.execute('INSERT INTO activation_codes(code_hash,code_prefix,package,duration_days,max_uses,expires_at,recipient_name,code_kind,discount_percent,discount_amount,eligible_packages,eligible_durations,starts_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(digest,code,'basic',0,number(d.get('max_uses'),1,1000000,True),end,str(d.get('recipient_name',''))[:100],'discount',percent,fixed,eligible,durations,start,stamp())); return {'saved':True}
  if re.fullmatch(r'codes/\d+',r) and m=='PUT':
   ident=int(r.split('/')[1]); old=c.execute("SELECT * FROM activation_codes WHERE id=? AND code_kind='discount'",(ident,)).fetchone()
   if not old: raise s.ApiError(404,'الكود غير موجود')
   if 'recipient_name' in d:
-   start=date(d.get('starts_at')); end=date(d.get('expires_at')); percent=number(d.get('discount_percent',0),0,100); fixed=number(d.get('discount_amount',0)); maximum=number(d.get('max_uses'),old['used_count'],1000000,True); eligible=d.get('eligible_packages','basic,vip')
-   if (start and end and end<=start) or (percent and fixed) or any(x not in ('basic','vip') for x in eligible.split(',')): raise ValueError('تحقق من المدة والخصم والباقات')
-   c.execute('UPDATE activation_codes SET recipient_name=?,starts_at=?,expires_at=?,discount_percent=?,discount_amount=?,max_uses=?,eligible_packages=? WHERE id=?',(str(d['recipient_name'])[:100],start,end,percent,fixed,maximum,eligible,ident))
+   start=date(d.get('starts_at')); end=date(d.get('expires_at')); percent=number(d.get('discount_percent',0),0,100); fixed=number(d.get('discount_amount',0)); maximum=number(d.get('max_uses'),old['used_count'],1000000,True); eligible=d.get('eligible_packages','basic,vip'); durations=d.get('eligible_durations','1,3,6,12')
+   if (start and end and end<=start) or (percent and fixed) or any(x not in ('basic','vip') for x in eligible.split(',')) or any(int(x) not in PACKAGE_DURATIONS for x in durations.split(',') if x): raise ValueError('تحقق من المدة والخصم والباقات')
+   c.execute('UPDATE activation_codes SET recipient_name=?,starts_at=?,expires_at=?,discount_percent=?,discount_amount=?,max_uses=?,eligible_packages=?,eligible_durations=? WHERE id=?',(str(d['recipient_name'])[:100],start,end,percent,fixed,maximum,eligible,durations,ident))
   else: c.execute('UPDATE activation_codes SET active=? WHERE id=?',(int(bool(d.get('active'))),ident))
   return {'saved':True}
  if r=='offers' and m=='GET':
-  out=rows(c,'SELECT * FROM package_offers ORDER BY id DESC')
-  for o in out: o['effective_active']=bool(o['active'] and active_offer(o))
+  out=rows(c,'SELECT * FROM package_offers WHERE base_price_sar IS NOT NULL ORDER BY id DESC')
+  for o in out:
+   o['original_price_sar']=package_price_map(c,o['package']).get(int(o['paid_months']),o.get('base_price_sar') or o['price_sar'])
+   o['effective_active']=bool(o['active'] and active_offer(o))
   return out
  if r=='credits' and m=='GET':
   condition='WHERE 1=1'; args=['free']
@@ -614,13 +641,14 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   return {'saved':True,'credits':credits_summary(c,ident,s)}
  if r=='offers' and m=='POST':
   pkg=d.get('package'); start=date(d.get('starts_at')); end=date(d.get('ends_at')); kind=d.get('offer_type','price')
-  if pkg not in ('basic','vip','basic,vip') or (start and end and end<=start) or kind not in ('price','percent','bonus'): raise ValueError('تحقق من الباقة والتواريخ ونوع العرض')
-  months=number(d.get('paid_months'),1,60,True); bonus=number(d.get('bonus_months',0),0,60,True); percent=number(d.get('discount_percent',0),0,100)
+  if pkg not in ('basic','vip','basic,vip') or not start or not end or end<=start or kind not in ('price','percent','bonus'): raise ValueError('حدد الباقة والمدة وتاريخ بداية ونهاية صحيحين للعرض')
+  months=number(d.get('paid_months'),1,12,True); bonus=number(d.get('bonus_months',0),0,60,True); percent=number(d.get('discount_percent',0),0,100)
+  if months not in PACKAGE_DURATIONS: raise ValueError('اختر مدة شهر أو 3 أو 6 أو 12 شهرًا')
   for package in pkg.split(','):
-   base=c.execute('SELECT monthly,yearly FROM platform_packages WHERE package=?',(package,)).fetchone()
-   total=base['yearly'] if months==12 else base['monthly']*months
-   price=round(total*(100-percent)/100,2) if kind=='percent' else total if kind=='bonus' else number(d.get('price_sar'))
-   c.execute('INSERT INTO package_offers(package,paid_months,bonus_months,price_sar,label,active,created_at,starts_at,ends_at,offer_type,discount_percent) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(package,months,bonus,price,str(d.get('label',''))[:100],1,stamp(),start,end,kind,percent if kind=='percent' else 0))
+   base=package_price_map(c,package).get(months)
+   if base is None: raise ValueError('السعر الأساسي لهذه المدة غير مهيأ')
+   price=round(base*(100-percent)/100,2) if kind=='percent' else base if kind=='bonus' else number(d.get('price_sar'))
+   c.execute('INSERT INTO package_offers(package,paid_months,bonus_months,price_sar,label,active,created_at,starts_at,ends_at,offer_type,discount_percent,base_price_sar) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',(package,months,bonus,price,str(d.get('label',''))[:100],1,stamp(),start,end,kind,percent if kind=='percent' else 0,base))
   return {'saved':True}
  if re.fullmatch(r'offers/\d+',r) and m=='PUT': c.execute('UPDATE package_offers SET active=? WHERE id=?',(int(bool(d.get('active'))),int(r.split('/')[1]))); return {'saved':True}
  if re.fullmatch(r'offers/\d+',r) and m=='DELETE':
