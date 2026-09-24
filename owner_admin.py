@@ -364,6 +364,22 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   checks.append({'key':'permissions','label':'الصلاحيات','status':'ok' if scalar(c,'SELECT COUNT(*) n FROM users WHERE organization_id=? AND active=1',(ident,)) else 'warning','details':'تم فحص المستخدمين النشطين'})
   for key,label,ok,details in [('whatsapp','واتساب',table_exists(c,'whatsapp_connections',s) and bool(c.execute('SELECT 1 FROM whatsapp_connections WHERE organization_id=?',(ident,)).fetchone()),'حالة الربط الحالية'),('ai','AI',bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip()),'إعداد الخادم'),('calls','المكالمات',bool(c.execute('SELECT 1 FROM call_connections WHERE organization_id=? AND enabled=1',(ident,)).fetchone()) if table_exists(c,'call_connections',s) else False,'حالة الربط الحالية'),('database','قاعدة البيانات',True,'استعلام المؤسسة نجح'),('server','السيرفر',True,'الخدمة تستجيب')]: checks.append({'key':key,'label':label,'status':'ok' if ok else 'warning','details':details})
   warning_count=sum(x['status']=='warning' for x in checks); ts=stamp(); cur=c.execute('INSERT INTO technical_tasks(organization_id,service,problem,severity,status,diagnosis,proposal,action_taken,result,started_at,finished_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(ident,'organization','فحص شامل للمؤسسة','low','completed','فحص الحساب والخدمات والرصيد والصلاحيات','معالجة العناصر التي تظهر بتحذير بعد موافقة الإدارة','لا إجراء تلقائي','اكتمل الفحص مع '+str(warning_count)+' تحذير',ts,stamp(),'manual')); task_id=cur.fetchone()['id']; audit(c,a['name'],'technical_organization_scan',json.dumps({'organization_id':ident,'task':task_id},ensure_ascii=False)); return {'organization':dict(org),'checks':checks,'warnings':warning_count,'taskId':task_id}
+ if r=='performance/diagnose' and m=='POST':
+  ensure_owner_tables(c,s,('page_performance_events','technical_tasks'))
+  page_name=str(d.get('page','')).strip()[:120]
+  if not re.fullmatch(r'[A-Za-z0-9_./:?=&-]{1,120}',page_name): raise ValueError('حدد مسار الأداء الصحيح')
+  cutoff=(datetime.now(timezone.utc)-timedelta(hours=1)).isoformat()
+  metrics=c.execute("SELECT COUNT(*) samples,ROUND(AVG(elapsed_ms),0) avg_ms,MAX(elapsed_ms) max_ms,SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) failures,COUNT(DISTINCT organization_id) organizations,MIN(organization_id) organization_id FROM page_performance_events WHERE page_name=? AND created_at>=?",(page_name,cutoff)).fetchone()
+  if not metrics or not metrics['samples']: raise s.ApiError(404,'لا توجد قياسات حديثة لهذا المسار')
+  metrics=dict(metrics); organizations=int(metrics['organizations'] or 0); failures=int(metrics['failures'] or 0); max_ms=int(metrics['max_ms'] or 0)
+  scope='global_suspected' if organizations>=3 and (max_ms>=1500 or failures>=3) else 'private_or_unconfirmed'
+  org_id=int(metrics['organization_id']) if organizations==1 and metrics.get('organization_id') else None
+  severity='high' if failures>=3 or max_ms>=5000 else 'medium'
+  diagnosis=f"رُصد {metrics['samples']} قياسًا لمسار {page_name}: متوسط {int(metrics['avg_ms'] or 0)}ms، أعلى {max_ms}ms، وفشل {failures}. النطاق: {'عطل عام محتمل' if scope=='global_suspected' else 'محدود أو غير مؤكد'}."
+  proposal='مراجعة سجلات API وقاعدة البيانات والخدمات الخارجية، ثم اختبار الإصلاح في بيئة آمنة قبل عرضه للاعتماد.'
+  ts=stamp(); cur=c.execute("INSERT INTO technical_tasks(organization_id,service,problem,severity,status,diagnosis,proposal,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id",(org_id,'performance',f'تشخيص أداء {page_name}',severity,'diagnosed',diagnosis,proposal,ts,'performance-monitor')); task_id=cur.fetchone()['id']
+  audit(c,a['name'],'performance_diagnosis',json.dumps({'task':task_id,'page':page_name,'scope':scope},ensure_ascii=False))
+  return {'taskId':task_id,'scope':scope,'diagnosis':diagnosis,'proposal':proposal,'requiresApproval':True}
  if r=='performance' and m=='GET':
   ensure_owner_tables(c,s,('page_performance_events',))
   try: minutes=max(5,min(1440,int(q.get('minutes',60))))
