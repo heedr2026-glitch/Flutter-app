@@ -4659,14 +4659,22 @@ class _SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 12),
                   ...tickets.map((item) {
                     final x = Map<String, dynamic>.from(item as Map);
-                    final status = x['status'] == 'resolved'
-                        ? 'تم الحل'
-                        : x['status'] == 'in_progress'
-                        ? 'قيد المعالجة'
-                        : 'طلب جديد';
+                    final status =
+                        {
+                          'open': 'جديدة',
+                          'under_review': 'قيد المراجعة',
+                          'in_progress': 'جاري الحل',
+                          'awaiting_user': 'بانتظارك',
+                          'resolved': 'تم الحل',
+                          'closed': 'مغلقة',
+                        }[x['status'].toString()] ??
+                        'طلب جديد';
+                    final reference = (x['reference_code'] ?? '').toString();
                     return ListTile(
                       title: Text(
-                        (x['category'] ?? 'طلب دعم').toString(),
+                        (reference.isEmpty ? '' : reference + ' — ') +
+                            (x['title'] ?? x['category'] ?? 'طلب دعم')
+                                .toString(),
                         style: const TextStyle(color: Colors.white),
                       ),
                       subtitle: Text(
@@ -4745,15 +4753,25 @@ class _SettingsPageState extends State<SettingsPage> {
             FilledButton(
               onPressed: () async {
                 try {
-                  await api.createSupportTicket(
+                  final saved = await api.createSupportTicket(
                     category: selectedSupportCategory,
                     message: controller.text.trim(),
                   );
                   if (dialogContext.mounted) Navigator.pop(dialogContext);
-                  if (mounted)
+                  if (mounted) {
+                    final reference = (saved['referenceCode'] ?? '').toString();
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('تم إرسال طلب الدعم ✓')),
+                      SnackBar(
+                        content: Text(
+                          reference.isEmpty
+                              ? 'تم إرسال طلب الدعم ✓'
+                              : 'تم استلام شكواك بنجاح. رقم الشكوى: ' +
+                                    reference,
+                        ),
+                        duration: const Duration(seconds: 6),
+                      ),
                     );
+                  }
                 } catch (e) {
                   if (mounted)
                     ScaffoldMessenger.of(context)

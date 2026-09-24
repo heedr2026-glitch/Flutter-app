@@ -95,6 +95,20 @@ def normalize_phone(value: object) -> str:
     phone = re.sub(r"[^0-9]", "", str(value or ""))
     return phone[2:] if phone.startswith("00") else phone
 
+def support_reference(ticket_id: int, created_at: str = '') -> str:
+    """Stable, user-visible support reference; internal numeric IDs remain unchanged."""
+    year = str(created_at or '')[:4]
+    if not year.isdigit():
+        year = str(datetime.now(timezone.utc).year)
+    return f"KHD-{year}-{int(ticket_id):06d}"
+
+def add_support_event(connection: Any, *, ticket_id: int, organization_id: int, user_id: int | None, actor_type: str, actor_name: str, event_type: str, body: str = '', from_status: str = '', to_status: str = '') -> None:
+    connection.execute(
+        """INSERT INTO support_ticket_events(ticket_id,organization_id,user_id,actor_type,actor_name,event_type,from_status,to_status,body,created_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (ticket_id, organization_id, user_id, actor_type, actor_name[:120], event_type, from_status, to_status, body[:2000], now()),
+    )
+
 def record_login_failure(connection: Any, request: Any, *, organization_id: int | None,
                          user_id: int | None, username: str, code: int, reason: str,
                          data: dict[str, Any] | None = None, user: Any = None,
@@ -3221,8 +3235,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 cursor = connection.execute("INSERT INTO call_logs(organization_id,caller_phone,direction,status,started_at,created_at) VALUES(?,?,?,?,?,?)", (organization_id, target, "outbound", "queued", now(), now()))
                 audit_log(connection, organization_id, user["id"], "outbound_call_requested", "طلب مكالمة صادرة", "calls", str(cursor.lastrowid)); connection.commit(); self._send(202, {"queued": True, "id": cursor.lastrowid}); return
             if path == "/api/support-tickets" and method == "GET":
-                rows = connection.execute("SELECT id,category,message,status,owner_reply,created_at,updated_at FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
-                self._send(200, [dict(row) for row in rows])
+                rows = connection.execute("SELECT id,reference_code,title,category,message,status,owner_reply,created_at,updated_at FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
+                items = []
+                for row in rows:
+                    item = dict(row)
+                    if not item.get("reference_code"):
+                        item["reference_code"] = support_reference(item["id"], item.get("created_at", ""))
+                    items.append(item)
+                self._send(200, items)
                 return
             if path.startswith("/api/support-tickets/") and method == "DELETE":
                 ticket_id = int(path.rsplit("/", 1)[1])
@@ -3246,20 +3266,25 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 # dashboard. Ensure the isolated AI follow-up tables exist first.
                 owner_admin.ensure_owner_tables(connection, __import__('sys').modules[__name__], ('technical_tasks', 'technical_agent_state'))
                 row = connection.execute("INSERT INTO support_tickets(organization_id,user_id,category,message,status,owner_reply,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id", (organization_id,user["id"],category,message,"open","",created,created)).fetchone()
-                connection.execute("UPDATE support_tickets SET device_name=?,app_version=?,branch_id=? WHERE id=?", (str(data.get('deviceName',''))[:120],str(data.get('appVersion',''))[:40],user.get('current_branch'),row['id']))
+                ticket_id = int(row["id"])
+                reference_code = support_reference(ticket_id, created)
+                title = str(data.get("title", "")).strip()[:160] or message.splitlines()[0][:160]
+                connection.execute("UPDATE support_tickets SET reference_code=?,title=?,scope='private',device_name=?,app_version=?,branch_id=? WHERE id=?", (reference_code,title,str(data.get('deviceName',''))[:120],str(data.get('appVersion',''))[:40],user.get('current_branch'),ticket_id))
+                add_support_event(connection, ticket_id=ticket_id, organization_id=organization_id, user_id=user["id"], actor_type="user", actor_name=str(user.get("name") or user.get("username") or "المستخدم"), event_type="created", body=message, to_status="open")
                 # Route every new support request to the technical employee queue.
                 # This creates a diagnostic task only; it never changes production data.
                 connection.execute(
                     """INSERT INTO technical_tasks(
-                       organization_id,branch_id,user_id,service,problem,severity,status,
+                       organization_id,branch_id,user_id,support_ticket_id,service,problem,severity,status,
                        diagnosis,proposal,started_at,created_by
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         organization_id,
                         str(user.get('current_branch') or '')[:120],
                         user["id"],
+                        ticket_id,
                         "support",
-                        f"طلب دعم #{row['id']}: {category} — {message}",
+                        f"طلب دعم #{ticket_id}: {category} — {message}",
                         "medium",
                         "queued",
                         "تم تحويل طلب الدعم إلى الموظف التقني AI لجمع مؤشرات الحساب والخدمة",
@@ -3270,7 +3295,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 )
                 audit_log(connection, organization_id, user["id"], "support_request", "تم إرسال طلب دعم فني: " + category, "security", str(row["id"]))
                 connection.commit()
-                self._send(201, {"saved": True, "id": row["id"], "status": "open"})
+                self._send(201, {"saved": True, "id": ticket_id, "referenceCode": reference_code, "status": "open"})
                 return
             if path == "/api/maintenance-status" and method == "GET":
                 self._send(200, {service: service_maintenance_status(connection, organization_id, service) for service in ('assistant', 'appointments', 'chat')})

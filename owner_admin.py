@@ -16,6 +16,14 @@ def rows(c,sql,args=()): return [dict(r) for r in c.execute(sql,args).fetchall()
 def scalar(c,sql,args=()): return c.execute(sql,args).fetchone()['n']
 def audit(c,actor,action,target): c.execute('INSERT INTO platform_audit(actor,action,target,created_at) VALUES(?,?,?,?)',(actor,action,str(target)[:500],stamp()))
 
+def support_reference(ticket_id, created_at=''):
+ year=str(created_at or '')[:4]
+ if not year.isdigit(): year=str(datetime.now(timezone.utc).year)
+ return f"KHD-{year}-{int(ticket_id):06d}"
+
+def support_event(c, ticket, *, actor_type, actor_name, event_type, body='', from_status='', to_status=''):
+ c.execute("INSERT INTO support_ticket_events(ticket_id,organization_id,user_id,actor_type,actor_name,event_type,from_status,to_status,body,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (ticket['id'], ticket['organization_id'], ticket.get('user_id'), actor_type, actor_name[:120], event_type, from_status, to_status, body[:2000], stamp()))
+
 def migrate(c,postgres=False):
  identity='BIGSERIAL PRIMARY KEY' if postgres else 'INTEGER PRIMARY KEY AUTOINCREMENT'
  schemas=[
@@ -26,6 +34,7 @@ def migrate(c,postgres=False):
  f'''platform_unknown_logins(id {identity},account TEXT NOT NULL,created_at TEXT NOT NULL)''',
  '''platform_packages(package TEXT PRIMARY KEY,monthly REAL NOT NULL,yearly REAL NOT NULL,ai_daily INTEGER NOT NULL,ai_employees INTEGER NOT NULL,whatsapp_units INTEGER,calls_units INTEGER,ads_units INTEGER,features TEXT NOT NULL DEFAULT '')''',
  f'''platform_notes(id {identity},ticket_id BIGINT NOT NULL,note TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
+ f'''support_ticket_events(id {identity},ticket_id BIGINT NOT NULL,organization_id BIGINT NOT NULL,user_id BIGINT,actor_type TEXT NOT NULL,actor_name TEXT NOT NULL,event_type TEXT NOT NULL,from_status TEXT NOT NULL DEFAULT '',to_status TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
  '''platform_org_state(organization_id BIGINT PRIMARY KEY,suspended INTEGER NOT NULL DEFAULT 0)''',
  f'''platform_rewards(id {identity},organization_id BIGINT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
  '''platform_daily_credits(organization_id BIGINT NOT NULL,day TEXT NOT NULL,units INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(organization_id,day))''',
@@ -56,11 +65,11 @@ def migrate(c,postgres=False):
   yearly=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=12 AND bonus_months=0 ORDER BY active DESC,id LIMIT 1',(p,)).fetchone()
   m=monthly['price_sar'] if monthly else m; y=yearly['price_sar'] if yearly else y
   c.execute('INSERT INTO platform_packages(package,monthly,yearly,ai_daily,ai_employees) VALUES(?,?,?,?,?) ON CONFLICT(package) DO NOTHING',(p,m,y,n,1))
- for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''")],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0")],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
+ for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT")],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0")],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
- for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('login_failures','created_at,username'),('readiness_results','run_id,service_key'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('platform_expenses','status,due_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
+ for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('support_tickets','reference_code'),('support_ticket_events','ticket_id,created_at'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('login_failures','created_at,username'),('readiness_results','run_id,service_key'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('platform_expenses','status,due_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
  for key,package in [('free','free'),('basic','basic'),('vip','vip')]: c.execute('INSERT INTO readiness_test_accounts(account_key,package,active,created_at) VALUES(?,?,1,?) ON CONFLICT(account_key) DO UPDATE SET package=excluded.package,active=1',(f'__readiness_{key}__',package,stamp()))
 
 def permission(path,method):
@@ -572,34 +581,40 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   # Every support request must have a visible, organization-scoped AI follow-up.
   # Older requests are repaired here as well, without altering their complaint.
   ensure_owner_tables(c,s,('technical_tasks','technical_agent_state'))
-  args=[]; where='FROM support_tickets t JOIN organizations o ON o.id=t.organization_id LEFT JOIN subscriptions s ON s.organization_id=o.id WHERE 1=1'
+  args=[]; where='FROM support_tickets t JOIN organizations o ON o.id=t.organization_id LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_admins pa ON pa.id=t.assigned_admin_id WHERE 1=1'
+  # Backfill readable references for legacy requests without changing their internal IDs.
+  for legacy in rows(c, "SELECT id,created_at FROM support_tickets WHERE reference_code='' OR reference_code IS NULL"):
+   c.execute('UPDATE support_tickets SET reference_code=? WHERE id=?',(support_reference(legacy['id'],legacy.get('created_at')),legacy['id']))
   if q.get('status'): where+=' AND t.status=?'; args.append(q['status'])
-  out=paged(c,'SELECT t.*,o.name organization_name,s.package',where,args,'t.id DESC',page)
+  out=paged(c,'SELECT t.*,o.name organization_name,s.package,pa.name assigned_admin_name',where,args,'t.id DESC',page)
   for t in out['items']:
-   task=c.execute("SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE service='support' AND problem LIKE ? ORDER BY id DESC LIMIT 1",(f"طلب دعم #{t['id']}:%",)).fetchone()
+   task=c.execute("SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE support_ticket_id=? OR (support_ticket_id IS NULL AND service='support' AND problem LIKE ?) ORDER BY id DESC LIMIT 1",(t['id'],f"طلب دعم #{t['id']}:%",)).fetchone()
    if not task:
     ts=stamp()
-    cur=c.execute('INSERT INTO technical_tasks(organization_id,branch_id,user_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(t['organization_id'],str(t.get('branch_id') or '')[:120],t.get('user_id'),'support',f"طلب دعم #{t['id']}: {t['category']} — {t['message']}",'medium','queued','تم استلام الشكوى وتحويلها إلى موظف AI للتشخيص الآمن','فحص السجلات والصلاحيات والربط المرتبطة بالمؤسسة، دون تغيير بيانات الإنتاج','بانتظار بدء الفحص',ts,'support-repair'))
+    cur=c.execute('INSERT INTO technical_tasks(organization_id,branch_id,user_id,support_ticket_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(t['organization_id'],str(t.get('branch_id') or '')[:120],t.get('user_id'),t['id'],'support',f"طلب دعم #{t['id']}: {t['category']} — {t['message']}",'medium','queued','تم استلام الشكوى وتحويلها إلى موظف AI للتشخيص الآمن','فحص السجلات والصلاحيات والربط المرتبطة بالمؤسسة، دون تغيير بيانات الإنتاج','بانتظار بدء الفحص',ts,'support-repair'))
     task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(cur.fetchone()['id'],)).fetchone()
    t['technical_task']=dict(task)
    t['technical_task_id']=task['id']
    t['technical_status']=task['status']
    t['notes']=rows(c,'SELECT note,actor,created_at FROM platform_notes WHERE ticket_id=? ORDER BY id DESC LIMIT 20',(t['id'],))
+   t['events']=rows(c,'SELECT actor_type,actor_name,event_type,from_status,to_status,body,created_at FROM support_ticket_events WHERE ticket_id=? ORDER BY id DESC LIMIT 50',(t['id'],))
   return out
  if re.fullmatch(r'support/\d+/technical-followup',r) and m=='POST':
   ensure_owner_tables(c,s,('technical_tasks',))
   ident=int(r.split('/')[1]); ticket=c.execute('SELECT organization_id,user_id,category,message FROM support_tickets WHERE id=?',(ident,)).fetchone()
   if not ticket: raise s.ApiError(404,'طلب الدعم غير موجود')
-  existing=c.execute("SELECT id,status FROM technical_tasks WHERE service='support' AND problem LIKE ? ORDER BY id DESC LIMIT 1",(f'طلب دعم #{ident}:%',)).fetchone()
+  existing=c.execute("SELECT id,status FROM technical_tasks WHERE support_ticket_id=? OR (support_ticket_id IS NULL AND service='support' AND problem LIKE ?) ORDER BY id DESC LIMIT 1",(ident,f'طلب دعم #{ident}:%',)).fetchone()
   ts=stamp()
   if existing:
    c.execute("UPDATE technical_tasks SET status='diagnosing',diagnosis=?,action_taken=?,started_at=?,finished_at=NULL WHERE id=?",('تمت إعادة توجيه الطلب للمتابعة التقنية وجمع مؤشرات المشكلة','بانتظار فحص الموظف التقني AI',ts,existing['id']))
    task_id=existing['id']
   else:
-   cur=c.execute('INSERT INTO technical_tasks(organization_id,user_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(ticket['organization_id'],ticket['user_id'],'support',f"طلب دعم #{ident}: {ticket['category']} — {ticket['message']}",'medium','queued','تم تحويل الطلب إلى الموظف التقني AI لجمع مؤشرات الحساب والخدمة','تشخيص السجلات والصلاحيات والربط دون تغيير كلمة المرور أو حذف البيانات','بانتظار فحص الموظف التقني AI',ts,'support-followup'))
+   cur=c.execute('INSERT INTO technical_tasks(organization_id,user_id,support_ticket_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(ticket['organization_id'],ticket['user_id'],ident,'support',f"طلب دعم #{ident}: {ticket['category']} — {ticket['message']}",'medium','queued','تم تحويل الطلب إلى الموظف التقني AI لجمع مؤشرات الحساب والخدمة','تشخيص السجلات والصلاحيات والربط دون تغيير كلمة المرور أو حذف البيانات','بانتظار فحص الموظف التقني AI',ts,'support-followup'))
    task_id=cur.fetchone()['id']
   c.execute("UPDATE support_tickets SET status='in_progress',updated_at=? WHERE id=?",(ts,ident))
   c.execute("UPDATE support_tickets SET owner_reply=? WHERE id=?",('تم استلام طلبك وتحويله إلى الموظف التقني AI. جاري فحص المشكلة، وسيتم إبلاغك بالنتيجة بعد اكتمال المتابعة.',ident))
+  fresh=dict(c.execute('SELECT id,organization_id,user_id FROM support_tickets WHERE id=?',(ident,)).fetchone())
+  support_event(c,fresh,actor_type='admin',actor_name=a['name'],event_type='technical_followup',body='تم إرسال الطلب للمتابعة مع الموظف التقني AI',from_status='open',to_status='in_progress')
   c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,'تم إرسال الطلب للمتابعة مع الموظف التقني AI','لوحة أمن خدووم',ts))
   audit(c,a['name'],'support_technical_followup',json.dumps({'ticket_id':ident,'task_id':task_id},ensure_ascii=False))
   return {'saved':True,'taskId':task_id,'message':'تم إرسال الطلب للمتابعة مع الموظف التقني AI'}
@@ -609,9 +624,14 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   c.execute('DELETE FROM platform_notes WHERE ticket_id=?',(ident,)); c.execute('DELETE FROM support_tickets WHERE id=?',(ident,)); return {'deleted':True}
  if re.fullmatch(r'support/\d+',r) and m=='PUT':
   ident=int(r.split('/')[1]); status=d.get('status')
-  if status not in ('open','in_progress','resolved','closed'): raise ValueError('حالة غير صحيحة')
-  c.execute('UPDATE support_tickets SET status=?,owner_reply=?,updated_at=? WHERE id=?',(status,str(d.get('owner_reply',''))[:1000],stamp(),ident))
-  if d.get('note'): c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,str(d['note'])[:2000],a['name'],stamp()))
+  if status not in ('open','under_review','in_progress','awaiting_user','resolved','closed'): raise ValueError('حالة غير صحيحة')
+  ticket=c.execute('SELECT id,organization_id,user_id,status FROM support_tickets WHERE id=?',(ident,)).fetchone()
+  if not ticket: raise s.ApiError(404,'طلب الدعم غير موجود')
+  reply=str(d.get('owner_reply',''))[:1000]; note=str(d.get('note',''))[:2000]
+  assigned=d.get('assigned_admin_id') or a['id']
+  c.execute('UPDATE support_tickets SET status=?,owner_reply=?,assigned_admin_id=COALESCE(?,assigned_admin_id),updated_at=? WHERE id=?',(status,reply,assigned,stamp(),ident))
+  support_event(c,dict(ticket),actor_type='admin',actor_name=a['name'],event_type='status_changed' if status!=ticket['status'] else 'reply_updated',body=note or reply,from_status=ticket['status'],to_status=status)
+  if note: c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,note,a['name'],stamp()))
   return {'saved':True}
  if r=='security' and m=='GET':
   cutoff=(datetime.now(timezone.utc)-timedelta(days=30)).isoformat()
