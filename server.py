@@ -309,6 +309,50 @@ def db():
     return connection
 
 
+PACKAGE_PRICE_DEFAULTS = {
+    "basic": {1: 49, 3: 139, 6: 249, 12: 449},
+    "vip": {1: 99, 3: 279, 6: 499, 12: 899},
+}
+
+
+def load_package_prices(connection: Any) -> list[Any]:
+    """Read the central catalog and repair only missing rows from legacy data."""
+    if DATABASE_URL:
+        present = bool(connection.execute(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='package_prices') AS present"
+        ).fetchone()["present"])
+        if not present:
+            connection.execute("""CREATE TABLE package_prices (
+              package TEXT NOT NULL, duration_months INTEGER NOT NULL,
+              price_sar REAL NOT NULL, updated_at TEXT NOT NULL,
+              PRIMARY KEY(package, duration_months))""")
+            connection.commit()
+    current = connection.execute(
+        "SELECT package,duration_months,price_sar FROM package_prices "
+        "WHERE package IN ('basic','vip') ORDER BY package,duration_months"
+    ).fetchall()
+    if len(current) >= 8:
+        return current
+    legacy = connection.execute(
+        "SELECT package,paid_months AS duration_months,price_sar FROM package_offers "
+        "WHERE package IN ('basic','vip') AND paid_months IN (1,3,6,12) "
+        "AND bonus_months=0 ORDER BY id"
+    ).fetchall()
+    legacy_map = {(row['package'], int(row['duration_months'])): float(row['price_sar']) for row in legacy}
+    for package, durations in PACKAGE_PRICE_DEFAULTS.items():
+        for months, fallback in durations.items():
+            connection.execute(
+                "INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(package,duration_months) DO NOTHING",
+                (package, months, legacy_map.get((package, months), fallback), now()),
+            )
+    connection.commit()
+    return connection.execute(
+        "SELECT package,duration_months,price_sar FROM package_prices "
+        "WHERE package IN ('basic','vip') ORDER BY package,duration_months"
+    ).fetchall()
+
+
 DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 if psycopg is not None:
     DB_INTEGRITY_ERRORS = DB_INTEGRITY_ERRORS + (psycopg.IntegrityError,)
@@ -2655,27 +2699,13 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if method == "GET" and path == "/api/package-offers":
             # Build the public price list from package_prices. Offers are a temporary layer only.
             with db() as connection:
+                base_rows = load_package_prices(connection)
                 if DATABASE_URL:
-                    price_table = bool(connection.execute(
-                        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='package_prices') AS present"
-                    ).fetchone()['present'])
                     offer_column = bool(connection.execute(
                         "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='package_offers' AND column_name='base_price_sar') AS present"
                     ).fetchone()['present'])
                 else:
-                    price_table = True
                     offer_column = True
-                base_rows = connection.execute(
-                    "SELECT package,duration_months,price_sar FROM package_prices WHERE package IN ('basic','vip') ORDER BY package,duration_months"
-                ).fetchall() if price_table else []
-                # Compatibility only while an older deployment is still draining.
-                # The regular path above remains the sole persistent price source.
-                if len(base_rows) < 8:
-                    base_rows = connection.execute(
-                        "SELECT package,paid_months AS duration_months,price_sar FROM package_offers "
-                        "WHERE package IN ('basic','vip') AND paid_months IN (1,3,6,12) "
-                        "AND bonus_months=0 ORDER BY id"
-                    ).fetchall()
                 offer_rows = connection.execute(
                     "SELECT * FROM package_offers WHERE active=1 AND base_price_sar IS NOT NULL ORDER BY id DESC"
                 ).fetchall() if offer_column else []
@@ -2693,21 +2723,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if method == "GET" and path == "/api/package-catalog":
             with db() as connection:
                 rows = connection.execute("SELECT package,monthly,yearly,ai_daily,ai_employees,whatsapp_units,calls_units,ads_units,features FROM platform_packages ORDER BY monthly").fetchall()
-                if DATABASE_URL:
-                    price_table = bool(connection.execute(
-                        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='package_prices') AS present"
-                    ).fetchone()['present'])
-                else:
-                    price_table = True
-                price_rows = connection.execute(
-                    "SELECT package,duration_months,price_sar FROM package_prices ORDER BY package,duration_months"
-                ).fetchall() if price_table else []
-                if len(price_rows) < 8:
-                    price_rows = connection.execute(
-                        "SELECT package,paid_months AS duration_months,price_sar FROM package_offers "
-                        "WHERE package IN ('basic','vip') AND paid_months IN (1,3,6,12) "
-                        "AND bonus_months=0 ORDER BY id"
-                    ).fetchall()
+                price_rows = load_package_prices(connection)
             prices={}
             for price in price_rows: prices.setdefault(price['package'],[]).append({'months':int(price['duration_months']),'price_sar':float(price['price_sar'])})
             catalog=[]
