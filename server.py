@@ -3864,6 +3864,23 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
                 self._send(200, {"saved": True})
                 return
+            if path == "/api/cameras" and method == "GET":
+                require_permission(user, "viewSettings", "manageSettings")
+                rows = connection.execute("SELECT id,branch_id,name,location,connection_type,status,last_checked_at,created_at,updated_at FROM organization_cameras WHERE organization_id=? ORDER BY branch_id,id", (organization_id,)).fetchall()
+                self._send(200, [dict(row) for row in rows])
+                return
+            if path == "/api/cameras" and method == "POST":
+                require_permission(user, "manageSettings")
+                data = self._body(); name = str(data.get("name", "")).strip()[:120]; kind = str(data.get("connectionType", "rtsp")).strip().lower(); endpoint = str(data.get("endpoint", "")).strip()[:500]
+                if not name or kind not in ("rtsp", "onvif", "api"): raise ApiError(400, "أدخل اسم الكاميرا ونوع الربط الصحيح")
+                if endpoint and not re.fullmatch(r"(?:rtsp|rtsps|https?)://[^@\s]+", endpoint): raise ApiError(400, "أدخل رابط ربط بدون اسم مستخدم أو كلمة مرور")
+                ts=now(); cursor=connection.execute("INSERT INTO organization_cameras(organization_id,branch_id,name,location,connection_type,endpoint,status,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (organization_id,str(data.get("branchId", user.get("current_branch") or "main"))[:120],name,str(data.get("location", "")).strip()[:160],kind,endpoint,"pending_check" if endpoint else "not_connected",user["id"],ts,ts))
+                audit_log(connection,organization_id,user["id"],"camera_created","تمت إضافة كاميرا المؤسسة","camera",cursor.lastrowid); connection.commit(); self._send(201,{"id":cursor.lastrowid}); return
+            if path.startswith("/api/cameras/") and method == "DELETE":
+                require_permission(user, "manageSettings"); camera_id=int(path.rsplit("/",1)[1])
+                cursor=connection.execute("DELETE FROM organization_cameras WHERE id=? AND organization_id=?",(camera_id,organization_id))
+                if not cursor.rowcount: raise ApiError(404,"الكاميرا غير موجودة")
+                audit_log(connection,organization_id,user["id"],"camera_deleted","تم حذف كاميرا المؤسسة","camera",camera_id); connection.commit(); self._send(200,{"deleted":True}); return
             if path == "/api/employees" and method == "GET":
                 require_permission(user, "viewEmployees", "manageEmployees", "employees")
                 rows = connection.execute(
