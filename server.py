@@ -1041,6 +1041,9 @@ def init_db() -> None:
               updated_at TEXT NOT NULL,
               PRIMARY KEY(package, duration_months)
             )""")
+            # Make the table visible before any optional legacy read can wait on a
+            # draining deployment's locks.
+            connection.commit()
             # Seed only missing base prices before the lock, and commit them so the
             # catalog remains available while a prior deployment is draining.
             defaults = {'basic': {1: 49, 3: 139, 6: 249, 12: 449},
@@ -2652,8 +2655,22 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if method == "GET" and path == "/api/package-offers":
             # Build the public price list from package_prices. Offers are a temporary layer only.
             with db() as connection:
-                base_rows = connection.execute("SELECT package,duration_months,price_sar FROM package_prices WHERE package IN ('basic','vip') ORDER BY package,duration_months").fetchall()
-                offer_rows = connection.execute("SELECT * FROM package_offers WHERE active=1 AND base_price_sar IS NOT NULL ORDER BY id DESC").fetchall()
+                try:
+                    base_rows = connection.execute("SELECT package,duration_months,price_sar FROM package_prices WHERE package IN ('basic','vip') ORDER BY package,duration_months").fetchall()
+                except Exception:
+                    base_rows = []
+                # Compatibility only while an older deployment is still draining.
+                # The regular path above remains the sole persistent price source.
+                if len(base_rows) < 8:
+                    base_rows = connection.execute(
+                        "SELECT package,paid_months AS duration_months,price_sar FROM package_offers "
+                        "WHERE package IN ('basic','vip') AND paid_months IN (1,3,6,12) "
+                        "AND bonus_months=0 ORDER BY id"
+                    ).fetchall()
+                try:
+                    offer_rows = connection.execute("SELECT * FROM package_offers WHERE active=1 AND base_price_sar IS NOT NULL ORDER BY id DESC").fetchall()
+                except Exception:
+                    offer_rows = []
             active = [dict(row) for row in offer_rows if owner_admin.active_offer(row)]
             result=[]
             for base in base_rows:
@@ -2668,7 +2685,16 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if method == "GET" and path == "/api/package-catalog":
             with db() as connection:
                 rows = connection.execute("SELECT package,monthly,yearly,ai_daily,ai_employees,whatsapp_units,calls_units,ads_units,features FROM platform_packages ORDER BY monthly").fetchall()
-                price_rows = connection.execute("SELECT package,duration_months,price_sar FROM package_prices ORDER BY package,duration_months").fetchall()
+                try:
+                    price_rows = connection.execute("SELECT package,duration_months,price_sar FROM package_prices ORDER BY package,duration_months").fetchall()
+                except Exception:
+                    price_rows = []
+                if len(price_rows) < 8:
+                    price_rows = connection.execute(
+                        "SELECT package,paid_months AS duration_months,price_sar FROM package_offers "
+                        "WHERE package IN ('basic','vip') AND paid_months IN (1,3,6,12) "
+                        "AND bonus_months=0 ORDER BY id"
+                    ).fetchall()
             prices={}
             for price in price_rows: prices.setdefault(price['package'],[]).append({'months':int(price['duration_months']),'price_sar':float(price['price_sar'])})
             catalog=[]
