@@ -122,6 +122,13 @@ def authorize(h,s):
  return actor
 
 def number(v,minimum=0,maximum=1000000,integer=False):
+ """Accept normal JSON numbers and safely normalize Arabic/locale numeric input."""
+ if isinstance(v,bool): raise ValueError('قيمة رقمية غير صحيحة')
+ if isinstance(v,str):
+  normalized=v.strip().translate(str.maketrans('٠١٢٣٤٥٦٧٨٩٫٬','0123456789.,'))
+  normalized=normalized.replace(',','')
+  try: v=float(normalized)
+  except (TypeError,ValueError): raise ValueError('قيمة رقمية غير صحيحة')
  if type(v) not in (int,float) or not math.isfinite(v) or not minimum<=v<=maximum or (integer and int(v)!=v): raise ValueError('قيمة رقمية غير صحيحة')
  return int(v) if integer else round(v,2)
 def date(v):
@@ -140,7 +147,8 @@ def active_offer(offer):
  return (not o.get('starts_at') or o['starts_at']<=t) and (not o.get('ends_at') or o['ends_at']>t)
 PACKAGE_DURATIONS=(1,3,6,12)
 def package_price_map(c,package):
- return {int(row['duration_months']):float(row['price_sar']) for row in c.execute('SELECT duration_months,price_sar FROM package_prices WHERE package=? ORDER BY duration_months',(package,)).fetchall()}
+ prices={int(row['duration_months']):float(row['price_sar']) for row in c.execute('SELECT duration_months,price_sar FROM package_prices WHERE package=? ORDER BY duration_months',(package,)).fetchall()}
+ return {months:prices.get(months,0.0) for months in PACKAGE_DURATIONS}
 def price_warnings(prices):
  warnings=[]
  for before,after in zip(PACKAGE_DURATIONS,PACKAGE_DURATIONS[1:]):
@@ -563,16 +571,26 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='packages' and m=='PUT':
   pkg=d.get('package')
   if pkg not in ('free','basic','vip'): raise ValueError('الباقة غير صحيحة')
+  settings=c.execute('SELECT * FROM platform_packages WHERE package=?',(pkg,)).fetchone()
+  if settings is None: raise ValueError('الباقة غير موجودة')
   current=package_price_map(c,pkg)
-  prices={months:number(d.get(f'price_{months}',d.get('monthly') if months==1 else d.get('yearly') if months==12 else current.get(months,0)),0,100000000) for months in PACKAGE_DURATIONS}
+  prices={}
+  for months in PACKAGE_DURATIONS:
+   raw=d.get(f'price_{months}',d.get('monthly') if months==1 else d.get('yearly') if months==12 else current[months])
+   try: prices[months]=number(raw,0,100000000)
+   except ValueError: raise ValueError(f'سعر مدة {months} شهر يجب أن يكون رقمًا صحيحًا أو عشريًا')
   if pkg=='free' and any(prices.values()): raise ValueError('الباقة المجانية سعرها صفر')
   warnings=price_warnings(prices) if pkg!='free' else []
-  if warnings: raise ValueError('أسعار متضاربة: '+'؛ '.join(warnings))
-  daily=number(d.get('ai_daily'),1,1000000,True); employees=number(d.get('ai_employees'),1,1000000,True); limits=[None if d.get(k) is None else number(d[k],0,1000000,True) for k in ('whatsapp_units','calls_units','ads_units')]
-  c.execute('UPDATE platform_packages SET monthly=?,yearly=?,ai_daily=?,ai_employees=?,whatsapp_units=?,calls_units=?,ads_units=?,features=? WHERE package=?',(prices[1],prices[12],daily,employees,*limits,str(d.get('features',''))[:4000],pkg))
+  daily=number(d.get('ai_daily',settings['ai_daily']),1,1000000,True); employees=number(d.get('ai_employees',settings['ai_employees']),1,1000000,True)
+  limits=[]
+  for key in ('whatsapp_units','calls_units','ads_units'):
+   raw=d[key] if key in d else settings[key]
+   limits.append(None if raw is None or raw=='' else number(raw,0,1000000,True))
+  features=str(d.get('features',settings['features'] or ''))[:4000]
+  c.execute('UPDATE platform_packages SET monthly=?,yearly=?,ai_daily=?,ai_employees=?,whatsapp_units=?,calls_units=?,ads_units=?,features=? WHERE package=?',(prices[1],prices[12],daily,employees,*limits,features,pkg))
   for months,price in prices.items(): c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO UPDATE SET price_sar=excluded.price_sar,updated_at=excluded.updated_at',(pkg,months,price,stamp()))
   audit(c,a['name'],'package_prices_updated',json.dumps({'package':pkg,'prices':prices},ensure_ascii=False))
-  return {'saved':True,'prices':prices}
+  return {'saved':True,'prices':prices,'price_warnings':warnings}
  if r=='codes' and m=='GET': return paged(c,'SELECT id,code_prefix,recipient_name,discount_percent,discount_amount,starts_at,expires_at,max_uses,used_count,eligible_packages,eligible_durations,active',"FROM activation_codes WHERE code_kind='discount'",[],'id DESC',page)
  if r=='codes' and m=='POST':
   code=str(d.get('code','')).upper().strip()
