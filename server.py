@@ -1041,6 +1041,24 @@ def init_db() -> None:
               updated_at TEXT NOT NULL,
               PRIMARY KEY(package, duration_months)
             )""")
+            # Seed only missing base prices before the lock, and commit them so the
+            # catalog remains available while a prior deployment is draining.
+            defaults = {'basic': {1: 49, 3: 139, 6: 249, 12: 449},
+                        'vip': {1: 99, 3: 279, 6: 499, 12: 899}}
+            legacy_rows = connection.execute(
+                "SELECT package,paid_months,price_sar FROM package_offers "
+                "WHERE package IN ('basic','vip') AND paid_months IN (1,3,6,12) "
+                "AND bonus_months=0 ORDER BY id"
+            ).fetchall()
+            legacy_prices = {(row['package'], int(row['paid_months'])): float(row['price_sar']) for row in legacy_rows}
+            for package, durations in defaults.items():
+                for months, fallback in durations.items():
+                    connection.execute(
+                        "INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(package,duration_months) DO NOTHING",
+                        (package, months, legacy_prices.get((package, months), fallback), now()),
+                    )
+            connection.commit()
             # Serialize the remaining startup migrations so overlapping Render instances cannot deadlock.
             connection.execute("SELECT pg_advisory_lock(735421)")
             connection.executescript(postgres_schema)
