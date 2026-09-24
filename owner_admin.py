@@ -363,6 +363,26 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   checks.append({'key':'permissions','label':'الصلاحيات','status':'ok' if scalar(c,'SELECT COUNT(*) n FROM users WHERE organization_id=? AND active=1',(ident,)) else 'warning','details':'تم فحص المستخدمين النشطين'})
   for key,label,ok,details in [('whatsapp','واتساب',table_exists(c,'whatsapp_connections',s) and bool(c.execute('SELECT 1 FROM whatsapp_connections WHERE organization_id=?',(ident,)).fetchone()),'حالة الربط الحالية'),('ai','AI',bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip()),'إعداد الخادم'),('calls','المكالمات',bool(c.execute('SELECT 1 FROM call_connections WHERE organization_id=? AND enabled=1',(ident,)).fetchone()) if table_exists(c,'call_connections',s) else False,'حالة الربط الحالية'),('database','قاعدة البيانات',True,'استعلام المؤسسة نجح'),('server','السيرفر',True,'الخدمة تستجيب')]: checks.append({'key':key,'label':label,'status':'ok' if ok else 'warning','details':details})
   warning_count=sum(x['status']=='warning' for x in checks); ts=stamp(); cur=c.execute('INSERT INTO technical_tasks(organization_id,service,problem,severity,status,diagnosis,proposal,action_taken,result,started_at,finished_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(ident,'organization','فحص شامل للمؤسسة','low','completed','فحص الحساب والخدمات والرصيد والصلاحيات','معالجة العناصر التي تظهر بتحذير بعد موافقة الإدارة','لا إجراء تلقائي','اكتمل الفحص مع '+str(warning_count)+' تحذير',ts,stamp(),'manual')); task_id=cur.fetchone()['id']; audit(c,a['name'],'technical_organization_scan',json.dumps({'organization_id':ident,'task':task_id},ensure_ascii=False)); return {'organization':dict(org),'checks':checks,'warnings':warning_count,'taskId':task_id}
+ if r=='technical-ai/daily-report' and m=='GET':
+  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
+  start=stamp()[:10]
+  tasks=rows(c,"SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.started_at>=? ORDER BY t.id DESC",(start,))
+  counts={key:0 for key in ('queued','diagnosing','proposed','approved','completed','failed','not_executed')}
+  for task in tasks: counts[task['status']]=counts.get(task['status'],0)+1
+  last_detected=c.execute("SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id WHERE i.created_at>=? ORDER BY i.id DESC LIMIT 1",(start,)).fetchone()
+  last_completed=c.execute("SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.status='completed' AND COALESCE(t.finished_at,t.started_at)>=? ORDER BY t.id DESC LIMIT 1",(start,)).fetchone()
+  state=c.execute('SELECT status,last_check,last_task,last_success,last_error FROM technical_agent_state WHERE id=1').fetchone()
+  return {'date':start,'counts':counts,'totalTasks':len(tasks),'lastDetected':dict(last_detected) if last_detected else None,'lastCompleted':dict(last_completed) if last_completed else None,'state':dict(state) if state else {},'recentTasks':tasks[:20]}
+ if r=='technical-ai/daily-report' and m=='GET':
+  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
+  start=stamp()[:10]
+  tasks=rows(c,"SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.started_at>=? ORDER BY t.id DESC",(start,))
+  counts={key:0 for key in ('queued','diagnosing','proposed','approved','completed','failed','not_executed')}
+  for task in tasks: counts[task['status']]=counts.get(task['status'],0)+1
+  last_detected=c.execute("SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id WHERE i.created_at>=? ORDER BY i.id DESC LIMIT 1",(start,)).fetchone()
+  last_completed=c.execute("SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.status='completed' AND COALESCE(t.finished_at,t.started_at)>=? ORDER BY t.id DESC LIMIT 1",(start,)).fetchone()
+  state=c.execute('SELECT status,last_check,last_task,last_success,last_error FROM technical_agent_state WHERE id=1').fetchone()
+  return {'date':start,'counts':counts,'totalTasks':len(tasks),'lastDetected':dict(last_detected) if last_detected else None,'lastCompleted':dict(last_completed) if last_completed else None,'state':dict(state) if state else {},'recentTasks':tasks[:20]}
  if r=='technical-ai' and m=='GET':
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   state=c.execute('SELECT * FROM technical_agent_state WHERE id=1').fetchone()
