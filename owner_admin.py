@@ -555,7 +555,10 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   return {'saved':True}
  if r=='packages' and m=='GET':
   out=rows(c,'SELECT * FROM platform_packages ORDER BY monthly')
-  for item in out: item['prices']=[{'months':months,'price_sar':price} for months,price in package_price_map(c,item['package']).items()]
+  for item in out:
+   price_map=package_price_map(c,item['package'])
+   item['prices']=[{'months':months,'price_sar':price} for months,price in price_map.items()]
+   item['price_warnings']=price_warnings(price_map) if item['package']!='free' else []
   return out
  if r=='packages' and m=='PUT':
   pkg=d.get('package')
