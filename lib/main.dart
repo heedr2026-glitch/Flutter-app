@@ -4592,7 +4592,36 @@ class _SettingsPageState extends State<SettingsPage> {
     final api = KhdoomCloudApi(scope: prefs, baseUrl: prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com')..token = token;
     try {
       final cameras = await api.cameras(); if (!mounted) return;
-      await showDialog<void>(context: context, builder: (context) => AlertDialog(title: const Text('كاميرات المؤسسة'), content: SizedBox(width: 420, child: cameras.isEmpty ? const Text('لا توجد كاميرات مسجلة.') : ListView(shrinkWrap: true, children: cameras.map((x) => ListTile(leading: const Icon(Icons.videocam_outlined), title: Text(x['name']?.toString() ?? 'كاميرا'), subtitle: Text('${x['location'] ?? ''} — ${x['status'] ?? 'not_connected'}')).toList())), actions: [TextButton(onPressed: () async { Navigator.pop(context); await _addCamera(); if (mounted) _openCameras(); }, child: const Text('إضافة كاميرا')), TextButton(onPressed: () => Navigator.pop(context), child: const Text('إغلاق'))]));
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('كاميرات المؤسسة'),
+          content: SizedBox(
+            width: 420,
+            child: cameras.isEmpty
+                ? const Text('لا توجد كاميرات مسجلة.')
+                : ListView(
+                    shrinkWrap: true,
+                    children: cameras.map((camera) => ListTile(
+                      leading: const Icon(Icons.videocam_outlined),
+                      title: Text(camera['name']?.toString() ?? 'كاميرا'),
+                      subtitle: Text('${camera['location'] ?? ''} — ${camera['status'] ?? 'not_connected'}'),
+                    )).toList(),
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                await _addCamera();
+                if (mounted) _openCameras();
+              },
+              child: const Text('إضافة كاميرا'),
+            ),
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('إغلاق')),
+          ],
+        ),
+      );
     } on CloudApiException catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message))); }
     finally { api.close(); }
   }
