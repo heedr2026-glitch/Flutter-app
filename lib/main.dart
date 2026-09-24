@@ -4576,13 +4576,23 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<void> _addCamera() async {
+    final name = TextEditingController(); final location = TextEditingController(); final endpoint = TextEditingController();
+    final values = await showDialog<Map<String,String>>(context: context, builder: (context) => AlertDialog(title: const Text('إضافة كاميرا'), content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller:name, decoration:const InputDecoration(labelText:'اسم الكاميرا')),TextField(controller:location, decoration:const InputDecoration(labelText:'الموقع أو الفرع')),TextField(controller:endpoint, decoration:const InputDecoration(labelText:'رابط RTSP أو ONVIF بدون بيانات دخول'))]), actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('إلغاء')),FilledButton(onPressed:()=>Navigator.pop(context,{'name':name.text.trim(),'location':location.text.trim(),'endpoint':endpoint.text.trim()}),child:const Text('حفظ'))]));
+    name.dispose(); location.dispose(); endpoint.dispose();
+    if (values == null || values['name']!.isEmpty) return;
+    final prefs=await BranchPreferences.getInstance(); const storage=FlutterSecureStorage(); final token=await storage.read(key:'cloud_session_token'); if(token==null||token.isEmpty)return;
+    final api=KhdoomCloudApi(scope:prefs,baseUrl:prefs.getString('cloud_api_url')??'https://khdoom-api.onrender.com')..token=token;
+    try { await api.createCamera({'name':values['name'],'location':values['location'],'endpoint':values['endpoint'],'connectionType':'rtsp'}); if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('تم حفظ الكاميرا'))); } on CloudApiException catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message)));} finally {api.close();}
+  }
+
   Future<void> _openCameras() async {
     final prefs = await BranchPreferences.getInstance(); const storage = FlutterSecureStorage(); final token = await storage.read(key: 'cloud_session_token');
     if (token == null || token.isEmpty) return;
     final api = KhdoomCloudApi(scope: prefs, baseUrl: prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com')..token = token;
     try {
       final cameras = await api.cameras(); if (!mounted) return;
-      await showDialog<void>(context: context, builder: (context) => AlertDialog(title: const Text('كاميرات المؤسسة'), content: SizedBox(width: 420, child: cameras.isEmpty ? const Text('لا توجد كاميرات مسجلة.') : ListView(shrinkWrap: true, children: cameras.map((x) => ListTile(leading: const Icon(Icons.videocam_outlined), title: Text(x['name']?.toString() ?? 'كاميرا'), subtitle: Text('${x['location'] ?? ''} — ${x['status'] ?? 'not_connected'}')).toList())), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('إغلاق'))]));
+      await showDialog<void>(context: context, builder: (context) => AlertDialog(title: const Text('كاميرات المؤسسة'), content: SizedBox(width: 420, child: cameras.isEmpty ? const Text('لا توجد كاميرات مسجلة.') : ListView(shrinkWrap: true, children: cameras.map((x) => ListTile(leading: const Icon(Icons.videocam_outlined), title: Text(x['name']?.toString() ?? 'كاميرا'), subtitle: Text('${x['location'] ?? ''} — ${x['status'] ?? 'not_connected'}')).toList())), actions: [TextButton(onPressed: () async { Navigator.pop(context); await _addCamera(); if (mounted) _openCameras(); }, child: const Text('إضافة كاميرا')), TextButton(onPressed: () => Navigator.pop(context), child: const Text('إغلاق'))]));
     } on CloudApiException catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message))); }
     finally { api.close(); }
   }
