@@ -35,6 +35,7 @@ def migrate(c,postgres=False):
  '''platform_packages(package TEXT PRIMARY KEY,monthly REAL NOT NULL,yearly REAL NOT NULL,ai_daily INTEGER NOT NULL,ai_employees INTEGER NOT NULL,whatsapp_units INTEGER,calls_units INTEGER,ads_units INTEGER,features TEXT NOT NULL DEFAULT '')''',
  f'''platform_notes(id {identity},ticket_id BIGINT NOT NULL,note TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
  f'''support_ticket_events(id {identity},ticket_id BIGINT NOT NULL,organization_id BIGINT NOT NULL,user_id BIGINT,actor_type TEXT NOT NULL,actor_name TEXT NOT NULL,event_type TEXT NOT NULL,from_status TEXT NOT NULL DEFAULT '',to_status TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
+ f'''page_performance_events(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT,page_name TEXT NOT NULL,operation TEXT NOT NULL DEFAULT '',elapsed_ms INTEGER NOT NULL,success INTEGER NOT NULL DEFAULT 1,status_code INTEGER NOT NULL DEFAULT 0,app_version TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
  '''platform_org_state(organization_id BIGINT PRIMARY KEY,suspended INTEGER NOT NULL DEFAULT 0)''',
  f'''platform_rewards(id {identity},organization_id BIGINT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
  '''platform_daily_credits(organization_id BIGINT NOT NULL,day TEXT NOT NULL,units INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(organization_id,day))''',
@@ -69,7 +70,7 @@ def migrate(c,postgres=False):
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
- for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('support_tickets','reference_code'),('support_ticket_events','ticket_id,created_at'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('login_failures','created_at,username'),('readiness_results','run_id,service_key'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('platform_expenses','status,due_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
+ for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('support_tickets','reference_code'),('support_ticket_events','ticket_id,created_at'),('page_performance_events','created_at,page_name'),('page_performance_events','organization_id,created_at'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('login_failures','created_at,username'),('readiness_results','run_id,service_key'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('platform_expenses','status,due_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
  for key,package in [('free','free'),('basic','basic'),('vip','vip')]: c.execute('INSERT INTO readiness_test_accounts(account_key,package,active,created_at) VALUES(?,?,1,?) ON CONFLICT(account_key) DO UPDATE SET package=excluded.package,active=1',(f'__readiness_{key}__',package,stamp()))
 
 def permission(path,method):
@@ -83,7 +84,7 @@ def permission(path,method):
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('credits'): return 'usage'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
-  for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('expenses','finance'),('technical-ai','security'),('readiness','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
+  for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('expenses','finance'),('technical-ai','security'),('performance','security'),('readiness','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
    if p.startswith(prefix): return perm
   return 'admins'
  if p.startswith('security/accounts/') and method != 'GET': return 'suspend'
@@ -363,6 +364,18 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   checks.append({'key':'permissions','label':'الصلاحيات','status':'ok' if scalar(c,'SELECT COUNT(*) n FROM users WHERE organization_id=? AND active=1',(ident,)) else 'warning','details':'تم فحص المستخدمين النشطين'})
   for key,label,ok,details in [('whatsapp','واتساب',table_exists(c,'whatsapp_connections',s) and bool(c.execute('SELECT 1 FROM whatsapp_connections WHERE organization_id=?',(ident,)).fetchone()),'حالة الربط الحالية'),('ai','AI',bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip()),'إعداد الخادم'),('calls','المكالمات',bool(c.execute('SELECT 1 FROM call_connections WHERE organization_id=? AND enabled=1',(ident,)).fetchone()) if table_exists(c,'call_connections',s) else False,'حالة الربط الحالية'),('database','قاعدة البيانات',True,'استعلام المؤسسة نجح'),('server','السيرفر',True,'الخدمة تستجيب')]: checks.append({'key':key,'label':label,'status':'ok' if ok else 'warning','details':details})
   warning_count=sum(x['status']=='warning' for x in checks); ts=stamp(); cur=c.execute('INSERT INTO technical_tasks(organization_id,service,problem,severity,status,diagnosis,proposal,action_taken,result,started_at,finished_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(ident,'organization','فحص شامل للمؤسسة','low','completed','فحص الحساب والخدمات والرصيد والصلاحيات','معالجة العناصر التي تظهر بتحذير بعد موافقة الإدارة','لا إجراء تلقائي','اكتمل الفحص مع '+str(warning_count)+' تحذير',ts,stamp(),'manual')); task_id=cur.fetchone()['id']; audit(c,a['name'],'technical_organization_scan',json.dumps({'organization_id':ident,'task':task_id},ensure_ascii=False)); return {'organization':dict(org),'checks':checks,'warnings':warning_count,'taskId':task_id}
+ if r=='performance' and m=='GET':
+  ensure_owner_tables(c,s,('page_performance_events',))
+  try: minutes=max(5,min(1440,int(q.get('minutes',60))))
+  except (TypeError,ValueError): minutes=60
+  cutoff=(datetime.now(timezone.utc)-timedelta(minutes=minutes)).isoformat()
+  where='FROM page_performance_events p LEFT JOIN organizations o ON o.id=p.organization_id LEFT JOIN users u ON u.id=p.user_id WHERE p.created_at>=?'
+  args=[cutoff]
+  summary=rows(c,"SELECT p.page_name,COUNT(*) samples,ROUND(AVG(p.elapsed_ms),0) avg_ms,MAX(p.elapsed_ms) max_ms,SUM(CASE WHEN p.success=0 THEN 1 ELSE 0 END) failures,COUNT(DISTINCT p.organization_id) organizations "+where+" GROUP BY p.page_name ORDER BY failures DESC,max_ms DESC,samples DESC",args)
+  for item in summary:
+   item['scope']='global_suspected' if int(item.get('organizations') or 0)>=3 and (int(item.get('max_ms') or 0)>=1500 or int(item.get('failures') or 0)>=3) else 'private_or_unconfirmed'
+  details=paged(c,'SELECT p.*,o.name organization_name,u.name user_name',where,args,'p.id DESC',page)
+  return {'minutes':minutes,'checkedAt':stamp(),'summary':summary,'items':details['items'],'total':details['total'],'page':details['page'],'pageSize':details['pageSize'],'note':'تسجل هذه الشاشة قياسات API البطيئة أو الفاشلة فقط. لا تحفظ محتوى الطلبات أو الرسائل، ولا تنفذ إصلاحًا تلقائيًا.'}
  if r=='technical-ai/daily-report' and m=='GET':
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   start=stamp()[:10]

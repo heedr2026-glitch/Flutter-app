@@ -3234,6 +3234,29 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 if link["status"] != "ready": raise ApiError(503, "خدمة المكالمات غير جاهزة على الخادم")
                 cursor = connection.execute("INSERT INTO call_logs(organization_id,caller_phone,direction,status,started_at,created_at) VALUES(?,?,?,?,?,?)", (organization_id, target, "outbound", "queued", now(), now()))
                 audit_log(connection, organization_id, user["id"], "outbound_call_requested", "طلب مكالمة صادرة", "calls", str(cursor.lastrowid)); connection.commit(); self._send(202, {"queued": True, "id": cursor.lastrowid}); return
+            if path == "/api/performance-events" and method == "POST":
+                data = self._body()
+                page_name = str(data.get("page", "")).strip()[:120]
+                operation = str(data.get("operation", "")).strip().upper()[:20]
+                if not re.fullmatch(r"[A-Za-z0-9_./:?=&-]{1,120}", page_name):
+                    raise ApiError(400, "اسم القياس غير صالح")
+                if operation and operation not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                    raise ApiError(400, "نوع العملية غير صالح")
+                try:
+                    elapsed_ms = int(data.get("elapsedMs", 0))
+                    status_code = int(data.get("statusCode", 0))
+                except (TypeError, ValueError):
+                    raise ApiError(400, "قيمة القياس غير صحيحة")
+                if not 0 <= elapsed_ms <= 120000 or not 0 <= status_code <= 599:
+                    raise ApiError(400, "قيمة القياس خارج الحد المسموح")
+                owner_admin.ensure_owner_tables(connection, __import__('sys').modules[__name__], ('page_performance_events',))
+                connection.execute(
+                    "INSERT INTO page_performance_events(organization_id,user_id,page_name,operation,elapsed_ms,success,status_code,app_version,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (organization_id, user["id"], page_name, operation, elapsed_ms, 1 if bool(data.get("success", True)) else 0, status_code, str(data.get("appVersion", ""))[:40], now()),
+                )
+                connection.commit()
+                self._send(202, {"saved": True})
+                return
             if path == "/api/support-tickets" and method == "GET":
                 rows = connection.execute("SELECT id,reference_code,title,category,message,status,owner_reply,created_at,updated_at FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
                 items = []

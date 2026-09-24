@@ -577,28 +577,89 @@ class KhdoomCloudApi {
     Map<String, dynamic>? body,
   }) async {
     final headers = <String, String>{'Content-Type': 'application/json'};
-    if (token != null) {
-      headers['Authorization'] = 'Bearer $token';
+    if (token case final activeToken?) {
+      headers['Authorization'] = 'Bearer $activeToken';
       headers['X-Branch-Id'] = path.startsWith('/api/addons/')
           ? 'main'
           : (await _branchScope).branchId;
     }
-    final response = await _client.send(
-      method,
-      baseUri.resolve(path),
-      headers: headers,
-      body: body == null ? null : jsonEncode(body),
-    );
-    final text = response.body;
-    final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final message = decoded is Map ? decoded['error']?.toString() : null;
-      throw CloudApiException(
-        response.statusCode,
-        message ?? 'تعذر الاتصال بالخادم',
+    final watch = Stopwatch()..start();
+    var performanceReported = false;
+    try {
+      final response = await _client.send(
+        method,
+        baseUri.resolve(path),
+        headers: headers,
+        body: body == null ? null : jsonEncode(body),
       );
+      watch.stop();
+      final text = response.body;
+      final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+      final succeeded = response.statusCode >= 200 && response.statusCode < 300;
+      if (!succeeded || watch.elapsedMilliseconds >= 1500) {
+        _reportPerformance(
+          path: path,
+          operation: method,
+          elapsedMs: watch.elapsedMilliseconds,
+          success: succeeded,
+          statusCode: response.statusCode,
+        );
+        performanceReported = true;
+      }
+      if (!succeeded) {
+        final message = decoded is Map ? decoded['error']?.toString() : null;
+        throw CloudApiException(
+          response.statusCode,
+          message ?? 'تعذر الاتصال بالخادم',
+        );
+      }
+      return decoded;
+    } catch (_) {
+      if (watch.isRunning) watch.stop();
+      // A network failure can still be reported when the API becomes reachable.
+      // The report contains no request content, token, or personal data.
+      if (!performanceReported && path != '/api/performance-events') {
+        _reportPerformance(
+          path: path,
+          operation: method,
+          elapsedMs: watch.elapsedMilliseconds,
+          success: false,
+          statusCode: 0,
+        );
+      }
+      rethrow;
     }
-    return decoded;
+  }
+
+  Future<void> _reportPerformance({
+    required String path,
+    required String operation,
+    required int elapsedMs,
+    required bool success,
+    required int statusCode,
+  }) async {
+    if (path == '/api/performance-events' || token == null || token!.isEmpty) {
+      return;
+    }
+    try {
+      await _client.send(
+        'POST',
+        baseUri.resolve('/api/performance-events'),
+        headers: <String, String>{
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode(<String, dynamic>{
+          'page': path.split('?').first,
+          'operation': operation,
+          'elapsedMs': elapsedMs.clamp(0, 120000),
+          'success': success,
+          'statusCode': statusCode.clamp(0, 599),
+        }),
+      );
+    } catch (_) {
+      // Monitoring must never affect the user's original request.
+    }
   }
 
   Future<List<dynamic>> communityPosts({int page = 1}) async {
