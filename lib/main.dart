@@ -4576,6 +4576,17 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<void> _openCameras() async {
+    final prefs = await BranchPreferences.getInstance(); const storage = FlutterSecureStorage(); final token = await storage.read(key: 'cloud_session_token');
+    if (token == null || token.isEmpty) return;
+    final api = KhdoomCloudApi(scope: prefs, baseUrl: prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com')..token = token;
+    try {
+      final cameras = await api.cameras(); if (!mounted) return;
+      await showDialog<void>(context: context, builder: (context) => AlertDialog(title: const Text('كاميرات المؤسسة'), content: SizedBox(width: 420, child: cameras.isEmpty ? const Text('لا توجد كاميرات مسجلة.') : ListView(shrinkWrap: true, children: cameras.map((x) => ListTile(leading: const Icon(Icons.videocam_outlined), title: Text(x['name']?.toString() ?? 'كاميرا'), subtitle: Text('${x['location'] ?? ''} — ${x['status'] ?? 'not_connected'}')).toList())), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('إغلاق'))]));
+    } on CloudApiException catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message))); }
+    finally { api.close(); }
+  }
+
   Future<void> _openTechnicalSupport() async {
     final prefs = await BranchPreferences.getInstance();
     const storage = FlutterSecureStorage();
@@ -5193,6 +5204,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   const SizedBox(height: 22),
                   if (_canManageSettings) ...[
+                    ListTile(leading: const Icon(Icons.videocam_outlined, color: Color(0xFF7DD3FC)), title: const Text('كاميرات المؤسسة', style: TextStyle(color: Colors.white)), subtitle: const Text('عرض الكاميرات المسجلة وحالة الاتصال', style: TextStyle(color: Colors.white60)), onTap: _openCameras),
                     _sectionTitle('الإشعارات'),
                     const SizedBox(height: 10),
                     _settingsSwitch(
