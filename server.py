@@ -1674,6 +1674,18 @@ def create_account_deletion_request(connection: Any, identifier: object) -> None
         )
 
 
+def employee_invite_page(token: str, invitation: Any | None, error: str = '') -> str:
+    valid = invitation is not None
+    name = str(invitation["name"]) if valid else ""
+    phone = str(invitation["phone"]) if valid else ""
+    notice = f'<p class="error">{error}</p>' if error else ''
+    form = f'''<form method="post"><label>اسم الموظف</label><input value="{name}" disabled><label>رقم الجوال</label><input value="{phone}" disabled><label>اسم المستخدم</label><input name="username" required minlength="3" autocomplete="username"><label>كلمة المرور</label><input name="password" type="password" required minlength="8" autocomplete="new-password"><label>تأكيد كلمة المرور</label><input name="confirmPassword" type="password" required minlength="8" autocomplete="new-password"><button>إنشاء الحساب</button></form>''' if valid else '<p class="error">رابط الدعوة غير صالح أو انتهت صلاحيته.</p>'
+    return f'''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>دعوة موظف - خدووم</title><style>body{{margin:0;background:#071126;color:#eef6ff;font-family:Tahoma,Arial;line-height:1.8}}main{{max-width:600px;margin:auto;padding:24px}}section{{background:#111f42;border:1px solid #1d4f7a;border-radius:18px;padding:22px}}input,button{{display:block;width:100%;box-sizing:border-box;margin:8px 0 14px;padding:13px;border-radius:10px}}input{{background:#071126;border:1px solid #3b82f6;color:#fff}}button{{border:0;background:#0ea5e9;color:#06111f;font-weight:bold}}.error{{color:#fca5a5}}.note{{color:#cbd5e1}}</style><main><section><h1>دعوة موظف إلى خدووم</h1><p class="note">أنشئ بيانات دخولك مرة واحدة، ثم افتح تطبيق خدووم وسجّل الدخول بها.</p>{notice}{form}</section></main></html>'''
+
+def employee_invitation(connection: Any, raw_token: str) -> Any | None:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,120}", raw_token): return None
+    return connection.execute("SELECT * FROM employee_invitations WHERE token_hash=? AND status='pending' AND expires_at>?", (hashlib.sha256(raw_token.encode()).hexdigest(), now())).fetchone()
+
 def deletion_request_page() -> str:
     return """<!doctype html>
 <html lang=\"ar\" dir=\"rtl\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
@@ -1862,6 +1874,38 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                 cursor = call_connection.execute("INSERT INTO call_logs(organization_id,caller_phone,caller_name,direction,status,started_at,duration_seconds,transcript,summary,request_text,appointment,follow_up,human_handoff,last_error,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (int(organization_id),str(data.get("callerPhone", ""))[:40],str(data.get("callerName", ""))[:160],str(data.get("direction", "inbound"))[:20],str(data.get("status", "ended"))[:30],str(data.get("startedAt") or now()),int(data.get("durationSeconds", 0) or 0),str(data.get("transcript", ""))[:30000],str(data.get("summary", ""))[:4000],str(data.get("request", ""))[:2000],str(data.get("appointment", ""))[:2000],int(bool(data.get("followUp"))),int(bool(data.get("humanHandoff"))),str(data.get("lastError", ""))[:1000],now()))
                 call_connection.commit()
             self._send(201, {"saved": True, "id": cursor.lastrowid})
+            return
+        if path.startswith("/employee-invite/"):
+            token = path.rsplit("/", 1)[-1]
+            with db() as invite_connection:
+                invitation = employee_invitation(invite_connection, token)
+                if method == "GET":
+                    self._send_html(employee_invite_page(token, invitation))
+                    return
+                if method != "POST": raise ApiError(405, "الطريقة غير مدعومة")
+                if invitation is None:
+                    self._send_html(employee_invite_page(token, None))
+                    return
+                data = self._body(); username = str(data.get("username", "")).strip().lower(); password = str(data.get("password", "")); confirm = str(data.get("confirmPassword", ""))
+                if len(username) < 3 or not re.fullmatch(r"[a-z0-9_.-]{3,80}", username):
+                    self._send_html(employee_invite_page(token, invitation, "اكتب اسم مستخدم صحيحًا باللغة الإنجليزية.")); return
+                if len(password) < 8 or password != confirm:
+                    self._send_html(employee_invite_page(token, invitation, "كلمتا المرور غير متطابقتين أو أقصر من 8 خانات.")); return
+                package_row = invite_connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (invitation["organization_id"],)).fetchone()
+                package = package_row["package"] if package_row else "free"
+                used = invite_connection.execute("SELECT COUNT(*) n FROM users WHERE organization_id=? AND role='employee'", (invitation["organization_id"],)).fetchone()["n"]
+                limit = package_resource_limit(package, "employees", invite_connection)
+                if limit is not None and used >= limit:
+                    self._send_html(employee_invite_page(token, invitation, "وصلت المؤسسة إلى حد الموظفين في الباقة.")); return
+                try:
+                    password_hash, salt = hash_password(password)
+                    user_row = invite_connection.execute("INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,job_title,permissions,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id", (invitation["organization_id"], invitation["name"], username, invitation["phone"], "", password_hash, salt, "employee", invitation["job_title"], invitation["permissions"], 1, now())).fetchone()
+                except DB_INTEGRITY_ERRORS:
+                    self._send_html(employee_invite_page(token, invitation, "اسم المستخدم مستخدم بالفعل.")); return
+                invite_connection.execute("UPDATE employee_invitations SET status='accepted',accepted_at=?,accepted_user_id=? WHERE id=? AND status='pending'", (now(), user_row["id"], invitation["id"]))
+                audit_log(invite_connection, invitation["organization_id"], user_row["id"], "employee_invite_accepted", "تم قبول دعوة الموظف وإنشاء الحساب", "employee", user_row["id"])
+                invite_connection.commit()
+            self._send_html("<html lang='ar' dir='rtl'><meta charset='utf-8'><body style='font-family:Tahoma;padding:30px'><h2>تم إنشاء الحساب بنجاح ✓</h2><p>افتح تطبيق خدووم وسجل الدخول باسم المستخدم وكلمة المرور اللذين اخترتهما.</p></body></html>")
             return
         if path == "/delete-account":
             if method == "GET":
@@ -3834,6 +3878,22 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     item["active"] = bool(item["active"])
                     result.append(item)
                 self._send(200, result)
+                return
+            if path == "/api/employee-invitations" and method == "GET":
+                require_permission(user, "viewEmployees", "manageEmployees", "employees")
+                rows = connection.execute("SELECT id,name,phone,job_title,status,expires_at,created_at,accepted_at FROM employee_invitations WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
+                self._send(200, [dict(row) for row in rows])
+                return
+            if path == "/api/employee-invitations" and method == "POST":
+                require_permission(user, "manageEmployees")
+                data = self._body(); name = str(data.get("name", "")).strip()[:160]; phone = normalize_phone(data.get("phone", "")); title = str(data.get("role", "موظف")).strip()[:100] or "موظف"
+                if not name or len(phone) < 8: raise ApiError(400, "أدخل اسم الموظف ورقم جواله مع رمز الدولة")
+                permissions = data.get("permissions", {}); permissions = permissions if isinstance(permissions, dict) else {}
+                raw_token = secrets.token_urlsafe(32); expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+                cursor = connection.execute("INSERT INTO employee_invitations(organization_id,name,phone,job_title,permissions,token_hash,status,expires_at,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (organization_id,name,phone,title,json.dumps(permissions,ensure_ascii=False),hashlib.sha256(raw_token.encode()).hexdigest(),"pending",expires,user["id"],now()))
+                audit_log(connection, organization_id, user["id"], "employee_invite_created", "تم إنشاء رابط دعوة موظف", "employee", cursor.lastrowid)
+                connection.commit()
+                self._send(201, {"id":cursor.lastrowid,"link":f"https://khdoom-api.onrender.com/employee-invite/{raw_token}","expiresAt":expires})
                 return
             if path == "/api/employees" and method == "POST":
                 require_permission(user, "manageEmployees")
