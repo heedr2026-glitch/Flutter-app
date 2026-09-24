@@ -139,6 +139,19 @@ class KhdoomCloudApi {
     }
   }
 
+  Future<List<dynamic>> cameras() async => List<dynamic>.from(
+    await _request('GET', '/api/cameras') as List,
+  );
+
+  Future<Map<String, dynamic>> createCamera(Map<String, dynamic> camera) async =>
+      Map<String, dynamic>.from(
+        await _request('POST', '/api/cameras', body: camera) as Map,
+      );
+
+  Future<void> deleteCamera(Object id) async {
+    await _request('DELETE', '/api/cameras/$id');
+  }
+
   Future<Map<String, dynamic>> createEmployeeInvitation(
     Map<String, dynamic> invitation,
   ) async => Map<String, dynamic>.from(
