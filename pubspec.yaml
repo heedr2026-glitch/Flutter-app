@@ -45,6 +45,7 @@ dependencies:
   record: ^7.1.1
   speech_to_text: ^7.5.0
   flutter_tts: ^4.2.5
+  geolocator: ^13.0.2
 
 dev_dependencies:
   flutter_test:

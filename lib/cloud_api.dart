@@ -152,6 +152,28 @@ class KhdoomCloudApi {
     await _request('DELETE', '/api/cameras/$id');
   }
 
+  Future<Map<String, dynamic>> vehicleTracking(String vehicleKey) async =>
+      Map<String, dynamic>.from(
+        await _request(
+          'GET',
+          '/api/vehicle-tracking?vehicleKey=${Uri.encodeQueryComponent(vehicleKey)}',
+        ) as Map,
+      );
+
+  Future<void> updateVehicleTracking({
+    required String vehicleKey,
+    required double latitude,
+    required double longitude,
+    required double accuracyMeters,
+  }) async {
+    await _request('POST', '/api/vehicle-tracking', body: {
+      'vehicleKey': vehicleKey,
+      'latitude': latitude,
+      'longitude': longitude,
+      'accuracyMeters': accuracyMeters,
+    });
+  }
+
   Future<Map<String, dynamic>> createEmployeeInvitation(
     Map<String, dynamic> invitation,
   ) async => Map<String, dynamic>.from(

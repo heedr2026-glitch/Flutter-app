@@ -12,6 +12,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import 'branch_store.dart';
@@ -4272,6 +4273,71 @@ class _VehiclesPageState extends State<VehiclesPage> {
     await KhdoomNotifications.syncStoredAlerts();
   }
 
+  String _trackingKey(Map<String, dynamic> vehicle) {
+    final plate = vehicle['plate']?.toString().trim() ?? '';
+    return plate.isNotEmpty ? 'plate:$plate' : 'local:${vehicle['id']}';
+  }
+
+  Future<KhdoomCloudApi?> _trackingApi() async {
+    final prefs = await _branchPrefs;
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'cloud_session_token');
+    if (token == null || token.isEmpty) return null;
+    return KhdoomCloudApi(
+      scope: prefs,
+      baseUrl: prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
+  }
+
+  Future<void> _trackVehicle(Map<String, dynamic> vehicle) async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فعّل خدمة الموقع من الجهاز أولاً.')));
+      return;
+    }
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) permission = await Geolocator.requestPermission();
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('يلزم السماح بالموقع لتحديث موقع المركبة.')));
+      return;
+    }
+    try {
+      final position = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
+      final api = await _trackingApi();
+      if (api == null) throw const CloudApiException(401, 'سجّل الدخول أولاً لتحديث موقع المركبة');
+      try {
+        await api.updateVehicleTracking(vehicleKey: _trackingKey(vehicle), latitude: position.latitude, longitude: position.longitude, accuracyMeters: position.accuracy);
+      } finally {
+        api.close();
+      }
+      vehicle['lastLatitude'] = position.latitude;
+      vehicle['lastLongitude'] = position.longitude;
+      vehicle['lastLocationAt'] = DateTime.now().toIso8601String();
+      await _save();
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تحديث موقع المركبة وحفظه للمؤسسة.')));
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذر تحديث الموقع: $error')));
+    }
+  }
+
+  Future<void> _showVehicleLocation(Map<String, dynamic> vehicle) async {
+    try {
+      final api = await _trackingApi();
+      if (api == null) throw const CloudApiException(401, 'سجّل الدخول أولاً لعرض موقع المركبة');
+      final location = await api.vehicleTracking(_trackingKey(vehicle));
+      api.close();
+      final latitude = (location['latitude'] as num?)?.toDouble();
+      final longitude = (location['longitude'] as num?)?.toDouble();
+      if (latitude == null || longitude == null) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يوجد موقع مسجل لهذه المركبة بعد.')));
+        return;
+      }
+      final map = Uri.parse('https://www.openstreetmap.org/?mlat=$latitude&mlon=$longitude#map=16/$latitude/$longitude');
+      await launchUrl(map, mode: LaunchMode.externalApplication);
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذر عرض الموقع: $error')));
+    }
+  }
+
   String _format(DateTime? date) => date == null
       ? 'اختر التاريخ'
       : '${date.year}/${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')}';
@@ -4534,6 +4600,23 @@ class _VehiclesPageState extends State<VehiclesPage> {
                         'انتهاء التأمين',
                         vehicle['insurance']?.toString() ?? '',
                       ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: () => _trackVehicle(vehicle),
+                            icon: const Icon(Icons.my_location_outlined),
+                            label: const Text('تحديث موقع المركبة'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: () => _showVehicleLocation(vehicle),
+                            icon: const Icon(Icons.map_outlined),
+                            label: const Text('عرض آخر موقع'),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 );
@@ -4561,6 +4644,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _isLoading = true;
   bool _isAdmin = true;
   bool _canManageSettings = true;
+  bool _canViewSettings = true;
   bool _canViewAuditLog = true;
   String? _profileImagePath;
 
@@ -4610,7 +4694,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
           ),
           actions: [
-            TextButton(
+            if (_canManageSettings) TextButton(
               onPressed: () async {
                 Navigator.pop(dialogContext);
                 await _addCamera();
@@ -4848,6 +4932,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final prefs = await BranchPreferences.getInstance();
     final sessionType = prefs.getString('session_user_type') ?? 'admin';
     var canManageSettings = sessionType == 'admin';
+    var canViewSettings = sessionType == 'admin';
     var canViewAuditLog = sessionType == 'admin';
     if (sessionType == 'employee') {
       final employeeId = prefs.getString('session_employee_id');
@@ -4863,6 +4948,8 @@ class _SettingsPageState extends State<SettingsPage> {
             canManageSettings =
                 permissions['manageSettings'] == true ||
                 permissions['settings'] == true;
+            canViewSettings =
+                permissions['viewSettings'] == true || canManageSettings;
             canViewAuditLog = permissions['viewAuditLog'] == true;
             break;
           }
@@ -4886,6 +4973,7 @@ class _SettingsPageState extends State<SettingsPage> {
       _language = prefs.getString('settings_language') ?? 'العربية';
       _isAdmin = sessionType == 'admin';
       _canManageSettings = canManageSettings;
+      _canViewSettings = canViewSettings;
       _canViewAuditLog = canViewAuditLog;
       _profileImagePath = prefs.getString('profile_image_path');
       _isLoading = false;
@@ -5242,8 +5330,9 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ),
                   const SizedBox(height: 22),
-                  if (_canManageSettings) ...[
+                  if (_canViewSettings)
                     ListTile(leading: const Icon(Icons.videocam_outlined, color: Color(0xFF7DD3FC)), title: const Text('كاميرات المؤسسة', style: TextStyle(color: Colors.white)), subtitle: const Text('عرض الكاميرات المسجلة وحالة الاتصال', style: TextStyle(color: Colors.white60)), onTap: _openCameras),
+                  if (_canManageSettings) ...[
                     _sectionTitle('الإشعارات'),
                     const SizedBox(height: 10),
                     _settingsSwitch(

@@ -4224,6 +4224,40 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     connection.commit()
                 self._send(200, {"saved": True, "status": status, "replyMessage": reply_message})
                 return
+            if path == "/api/vehicle-tracking" and method == "GET":
+                require_permission(user, "viewVehicles", "editVehicles", "vehicles")
+                vehicle_key = str(parse_qs(urlparse(self.path).query).get("vehicleKey", [""])[0]).strip()[:160]
+                if not vehicle_key:
+                    raise ApiError(400, "حدد المركبة أولاً")
+                location = connection.execute(
+                    """SELECT vehicle_key,latitude,longitude,accuracy_meters,recorded_at
+                       FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=?
+                       ORDER BY id DESC LIMIT 1""",
+                    (organization_id, vehicle_key),
+                ).fetchone()
+                self._send(200, dict(location) if location else {"vehicle_key": vehicle_key, "status": "no_location"})
+                return
+            if path == "/api/vehicle-tracking" and method == "POST":
+                require_permission(user, "viewVehicles", "editVehicles", "vehicles")
+                data = self._body()
+                vehicle_key = str(data.get("vehicleKey", "")).strip()[:160]
+                try:
+                    latitude = float(data.get("latitude")); longitude = float(data.get("longitude"))
+                    accuracy = float(data.get("accuracyMeters", 0) or 0)
+                except (TypeError, ValueError):
+                    raise ApiError(400, "إحداثيات الموقع غير صحيحة")
+                if not vehicle_key or not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180) or not (0 <= accuracy <= 100000):
+                    raise ApiError(400, "بيانات تتبع المركبة غير صحيحة")
+                recorded_at = now()
+                connection.execute(
+                    """INSERT INTO vehicle_location_events(organization_id,vehicle_key,latitude,longitude,accuracy_meters,recorded_at,user_id,created_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (organization_id, vehicle_key, latitude, longitude, accuracy, recorded_at, user["id"], recorded_at),
+                )
+                audit_log(connection, organization_id, user["id"], "vehicle_location_updated", "تم تحديث موقع مركبة", "vehicle", vehicle_key)
+                connection.commit()
+                self._send(201, {"saved": True, "vehicleKey": vehicle_key, "recordedAt": recorded_at})
+                return
             if path == "/api/vehicles" and method == "GET":
                 require_permission(user, "viewVehicles", "editVehicles", "vehicles")
                 rows = connection.execute("SELECT * FROM vehicles WHERE organization_id=? ORDER BY id DESC", (organization_id,)).fetchall()
