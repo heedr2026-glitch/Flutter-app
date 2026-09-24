@@ -377,25 +377,17 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   details=paged(c,'SELECT p.*,o.name organization_name,u.name user_name',where,args,'p.id DESC',page)
   return {'minutes':minutes,'checkedAt':stamp(),'summary':summary,'items':details['items'],'total':details['total'],'page':details['page'],'pageSize':details['pageSize'],'note':'تسجل هذه الشاشة قياسات API البطيئة أو الفاشلة فقط. لا تحفظ محتوى الطلبات أو الرسائل، ولا تنفذ إصلاحًا تلقائيًا.'}
  if r=='technical-ai/daily-report' and m=='GET':
-  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
+  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures','page_performance_events'))
   start=stamp()[:10]
+  performance_row=c.execute("SELECT COUNT(*) samples,SUM(CASE WHEN elapsed_ms>=1500 THEN 1 ELSE 0 END) slow,SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) failed,COUNT(DISTINCT organization_id) organizations FROM page_performance_events WHERE created_at>=?",(start,)).fetchone()
+  performance={key:int((performance_row[key] if performance_row else 0) or 0) for key in ('samples','slow','failed','organizations')}
   tasks=rows(c,"SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.started_at>=? ORDER BY t.id DESC",(start,))
   counts={key:0 for key in ('queued','diagnosing','proposed','approved','completed','failed','not_executed')}
   for task in tasks: counts[task['status']]=counts.get(task['status'],0)+1
   last_detected=c.execute("SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id WHERE i.created_at>=? ORDER BY i.id DESC LIMIT 1",(start,)).fetchone()
   last_completed=c.execute("SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.status='completed' AND COALESCE(t.finished_at,t.started_at)>=? ORDER BY t.id DESC LIMIT 1",(start,)).fetchone()
   state=c.execute('SELECT status,last_check,last_task,last_success,last_error FROM technical_agent_state WHERE id=1').fetchone()
-  return {'date':start,'counts':counts,'totalTasks':len(tasks),'lastDetected':dict(last_detected) if last_detected else None,'lastCompleted':dict(last_completed) if last_completed else None,'state':dict(state) if state else {},'recentTasks':tasks[:20]}
- if r=='technical-ai/daily-report' and m=='GET':
-  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
-  start=stamp()[:10]
-  tasks=rows(c,"SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.started_at>=? ORDER BY t.id DESC",(start,))
-  counts={key:0 for key in ('queued','diagnosing','proposed','approved','completed','failed','not_executed')}
-  for task in tasks: counts[task['status']]=counts.get(task['status'],0)+1
-  last_detected=c.execute("SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id WHERE i.created_at>=? ORDER BY i.id DESC LIMIT 1",(start,)).fetchone()
-  last_completed=c.execute("SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.status='completed' AND COALESCE(t.finished_at,t.started_at)>=? ORDER BY t.id DESC LIMIT 1",(start,)).fetchone()
-  state=c.execute('SELECT status,last_check,last_task,last_success,last_error FROM technical_agent_state WHERE id=1').fetchone()
-  return {'date':start,'counts':counts,'totalTasks':len(tasks),'lastDetected':dict(last_detected) if last_detected else None,'lastCompleted':dict(last_completed) if last_completed else None,'state':dict(state) if state else {},'recentTasks':tasks[:20]}
+  return {'date':start,'counts':counts,'totalTasks':len(tasks),'performance':performance,'lastDetected':dict(last_detected) if last_detected else None,'lastCompleted':dict(last_completed) if last_completed else None,'state':dict(state) if state else {},'recentTasks':tasks[:20]}
  if r=='technical-ai' and m=='GET':
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   state=c.execute('SELECT * FROM technical_agent_state WHERE id=1').fetchone()
