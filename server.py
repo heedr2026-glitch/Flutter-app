@@ -1035,6 +1035,15 @@ def init_db() -> None:
             # Serialize startup migrations so overlapping Render instances cannot deadlock.
             connection.execute("SELECT pg_advisory_lock(735421)")
             connection.executescript(postgres_schema)
+            # Kept here as an explicit production migration so existing PostgreSQL
+            # databases receive the central price source before any catalog request.
+            connection.execute("""CREATE TABLE IF NOT EXISTS package_prices (
+              package TEXT NOT NULL,
+              duration_months INTEGER NOT NULL,
+              price_sar REAL NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(package, duration_months)
+            )""")
             connection.execute("ALTER TABLE appointment_requests ADD COLUMN IF NOT EXISTS chat_session_id BIGINT")
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS offer_id BIGINT")
             connection.execute("ALTER TABLE subscription_requests ADD COLUMN IF NOT EXISTS paid_months INTEGER NOT NULL DEFAULT 1")
