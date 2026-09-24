@@ -139,6 +139,16 @@ class KhdoomCloudApi {
     }
   }
 
+  Future<Map<String, dynamic>> createEmployeeInvitation(
+    Map<String, dynamic> invitation,
+  ) async => Map<String, dynamic>.from(
+    await _request('POST', '/api/employee-invitations', body: invitation) as Map,
+  );
+
+  Future<List<dynamic>> employeeInvitations() async => List<dynamic>.from(
+    await _request('GET', '/api/employee-invitations') as List,
+  );
+
   Future<Map<String, dynamic>> createEmployee(
     Map<String, dynamic> employee,
   ) async {
