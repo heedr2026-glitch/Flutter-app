@@ -3757,7 +3757,7 @@ class _DashboardPageState extends State<DashboardPage> {
                 const SizedBox(height: 16),
 
                 if (_vipAdvertisements.isNotEmpty) _buildAdvertisementBanner(),
-                if (_subscriptionPackage == 'vip' && _isAdmin)
+                if (_subscriptionPackage == 'vip')
                   const VipAdvertisementCard(),
               ],
             ),

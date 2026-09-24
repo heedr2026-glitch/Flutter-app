@@ -127,7 +127,9 @@ def number(v,minimum=0,maximum=1000000,integer=False):
  if isinstance(v,bool): raise ValueError('قيمة رقمية غير صحيحة')
  if isinstance(v,str):
   normalized=v.strip().translate(str.maketrans('٠١٢٣٤٥٦٧٨٩٫٬','0123456789.,'))
-  normalized=normalized.replace(',','')
+  # Accept the same human-friendly formats as the admin form, while storing
+  # only a real integer/float in the database.
+  normalized=re.sub(r'[\s\u00a0\u202f,]','',normalized)
   try: v=float(normalized)
   except (TypeError,ValueError): raise ValueError('قيمة رقمية غير صحيحة')
  if type(v) not in (int,float) or not math.isfinite(v) or not minimum<=v<=maximum or (integer and int(v)!=v): raise ValueError('قيمة رقمية غير صحيحة')
@@ -567,6 +569,13 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   for item in out:
    price_map=package_price_map(c,item['package'])
    item['prices']=[{'months':months,'price_sar':price} for months,price in price_map.items()]
+   item['service_limits']={
+    'ai_daily':item['ai_daily'],
+    'ai_employees':item['ai_employees'],
+    'whatsapp_units':item['whatsapp_units'],
+    'calls_units':item['calls_units'],
+    'ads_units':item['ads_units'],
+   }
    item['price_warnings']=price_warnings(price_map) if item['package']!='free' else []
   return out
  if r=='packages' and m=='PUT':
@@ -577,7 +586,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   current=package_price_map(c,pkg)
   prices={}
   for months in PACKAGE_DURATIONS:
-   raw=d.get(f'price_{months}',d.get('monthly') if months==1 else d.get('yearly') if months==12 else current[months])
+   raw=d.get(f'price_{months}')
+   if raw is None: raw=d.get('monthly') if months==1 else d.get('yearly') if months==12 else None
+   if raw is None: raw=current[months]
    try: prices[months]=number(raw,0,100000000)
    except ValueError: raise ValueError(f'سعر مدة {months} شهر يجب أن يكون رقمًا صحيحًا أو عشريًا')
   if pkg=='free' and any(prices.values()): raise ValueError('الباقة المجانية سعرها صفر')
@@ -591,7 +602,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   c.execute('UPDATE platform_packages SET monthly=?,yearly=?,ai_daily=?,ai_employees=?,whatsapp_units=?,calls_units=?,ads_units=?,features=? WHERE package=?',(prices[1],prices[12],daily,employees,*limits,features,pkg))
   for months,price in prices.items(): c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO UPDATE SET price_sar=excluded.price_sar,updated_at=excluded.updated_at',(pkg,months,price,stamp()))
   audit(c,a['name'],'package_prices_updated',json.dumps({'package':pkg,'prices':prices},ensure_ascii=False))
-  return {'saved':True,'prices':prices,'price_warnings':warnings}
+  return {'saved':True,'prices':prices,'service_limits':{'ai_daily':daily,'ai_employees':employees,'whatsapp_units':limits[0],'calls_units':limits[1],'ads_units':limits[2]},'price_warnings':warnings}
  if r=='codes' and m=='GET': return paged(c,'SELECT id,code_prefix,recipient_name,discount_percent,discount_amount,starts_at,expires_at,max_uses,used_count,eligible_packages,eligible_durations,active',"FROM activation_codes WHERE code_kind='discount'",[],'id DESC',page)
  if r=='codes' and m=='POST':
   code=str(d.get('code','')).upper().strip()

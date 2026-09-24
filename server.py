@@ -4316,8 +4316,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(200, [dict(row) for row in rows])
                 return
             if path == "/api/my-ads" and method == "GET":
-                if user["role"] != "admin":
-                    raise ApiError(403, "إعلانات المؤسسة متاحة للمدير فقط")
+                if user["role"] not in ("admin", "employee"):
+                    raise ApiError(403, "إعلانات المؤسسة متاحة للمدير وموظف المؤسسة فقط")
                 rows = connection.execute("SELECT * FROM advertisements WHERE organization_id=? AND COALESCE(deleted,0)=0 ORDER BY id DESC", (organization_id,)).fetchall()
                 self._send(200, [ad_policy.project(row) for row in rows])
                 return
@@ -4336,8 +4336,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(200, {"deleted": True})
                 return
             if path == "/api/ads" and method == "POST":
-                if user["role"] != "admin":
-                    raise ApiError(403, "هذه العملية للمدير فقط")
+                if user["role"] not in ("admin", "employee"):
+                    raise ApiError(403, "إرسال الإعلان متاح للمدير وموظف المؤسسة فقط")
                 package = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()["package"]
                 if package != "vip":
                     raise ApiError(403, "إنشاء الإعلانات متاح لباقة VIP فقط")
