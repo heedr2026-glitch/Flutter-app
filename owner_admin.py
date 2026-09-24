@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
 
 PERMISSIONS = ['organizations.view','organizations.edit','packages','codes','offers','usage','security','support','ads','community','rewards','suspend','admins','settings','integrations','finance']
-ROLES = {'owner': PERMISSIONS, 'system': [p for p in PERMISSIONS if p != 'admins'], 'manager': [p for p in PERMISSIONS if p != 'admins'], 'support': ['organizations.view','organizations.edit','suspend','support'], 'technician': ['organizations.view','organizations.edit','usage','security','support','settings'], 'accounting': ['organizations.view','packages','codes','offers','usage','finance'], 'employee': ['organizations.view','support'], 'ads': ['ads'], 'community': ['community']}
+ROLES = {'owner': PERMISSIONS, 'system': [p for p in PERMISSIONS if p != 'admins'], 'manager': [p for p in PERMISSIONS if p != 'admins'], 'support': ['organizations.view','organizations.edit','suspend','support'], 'technician': ['organizations.view','organizations.edit','usage','security','support','settings'], 'accounting': ['organizations.view','packages','codes','offers','usage','finance'], 'employee': ['organizations.view','support','ads'], 'ads': ['ads'], 'community': ['community']}
 def stamp(): return datetime.now(timezone.utc).isoformat()
 def rows(c,sql,args=()): return [dict(r) for r in c.execute(sql,args).fetchall()]
 def scalar(c,sql,args=()): return c.execute(sql,args).fetchone()['n']
