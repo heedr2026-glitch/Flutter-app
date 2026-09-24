@@ -14732,6 +14732,32 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
     );
   }
 
+  Future<void> _inviteEmployee() async {
+    final name = TextEditingController();
+    final phone = TextEditingController(text: '966');
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('دعوة موظف'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: name, decoration: const InputDecoration(labelText: 'اسم الموظف')),
+          TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الجوال مع رمز الدولة')),
+        ]),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('إلغاء')), FilledButton(onPressed: () => Navigator.pop(context, {'name':name.text.trim(),'phone':phone.text.trim()}), child: const Text('إنشاء الرابط'))],
+      ),
+    );
+    name.dispose(); phone.dispose();
+    if (result == null || result['name']!.isEmpty || result['phone']!.length < 8) return;
+    final prefs = await _branchPrefs; final api = await _employeeApi(prefs);
+    if (api == null) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('سجل دخولك أولًا لإنشاء الدعوة'))); return; }
+    try {
+      final invite = await api.createEmployeeInvitation({'name':result['name'],'phone':result['phone'],'role':'موظف','permissions':<String,dynamic>{}});
+      if (!mounted) return;
+      await showDialog<void>(context: context, builder: (context) => AlertDialog(title: const Text('رابط دعوة الموظف'), content: SelectableText(invite['link']?.toString() ?? ''), actions:[FilledButton(onPressed:()=>Navigator.pop(context),child:const Text('تم'))]));
+    } on CloudApiException catch (error) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message))); }
+    finally { api.close(); }
+  }
+
   Future<void> _deleteEmployee(int index) async {
     final employeeName = _employees[index]['name'] as String;
     final confirmed = await _confirmSensitiveOperation(
@@ -14786,7 +14812,7 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
           backgroundColor: const Color(0xFF111B35),
           foregroundColor: Colors.white,
           title: const Text('الموظفون والصلاحيات'),
-          actions: [PageRefreshButton(onRefresh: _loadEmployees)],
+          actions: [IconButton(icon: const Icon(Icons.link), tooltip: 'دعوة موظف', onPressed: _inviteEmployee), PageRefreshButton(onRefresh: _loadEmployees)],
         ),
         floatingActionButton: FloatingActionButton.extended(
           onPressed: _showEmployeeForm,
