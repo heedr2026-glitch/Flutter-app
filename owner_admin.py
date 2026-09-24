@@ -497,6 +497,16 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    result='لم يُنفذ: لم تبدأ إجراءات الإصلاح ولم تُجر أي تعديلات.'
    c.execute("UPDATE technical_tasks SET status='not_executed',action_taken=?,result=?,finished_at=? WHERE id=?",('أُغلق الطلب دون تنفيذ',result,ts,ident))
    message='سُجلت المهمة كغير منفذة.'
+  if task.get('support_ticket_id') and table_exists(c,'support_tickets',s):
+   ticket=c.execute('SELECT * FROM support_tickets WHERE id=?',(task['support_ticket_id'],)).fetchone()
+   if ticket:
+    if action=='start': reply='بدأ موظف التقنية AI الفحص الأولي الآمن لطلبك.'
+    elif action=='report': reply=report
+    elif action=='approve': reply='تم اعتماد خطة موظف التقنية AI، ويجري توثيق النتيجة.'
+    else: reply=result
+    next_status='resolved' if action=='complete' else 'in_progress' if action in ('start','report','approve') else ticket['status']
+    c.execute('UPDATE support_tickets SET status=?,owner_reply=?,updated_at=? WHERE id=?',(next_status,reply,ts,ticket['id']))
+    support_event(c,dict(ticket),actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_'+action,body=reply,from_status=ticket['status'],to_status=next_status)
   audit(c,a['name'],'technical_task_'+action,json.dumps({'task':ident,'service':service},ensure_ascii=False))
   return {'saved':True,'message':message,'taskId':ident,'action':action}
  if r=='technical-ai/diagnose' and m=='POST':
@@ -705,7 +715,14 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    if not task:
     ts=stamp()
     cur=c.execute('INSERT INTO technical_tasks(organization_id,branch_id,user_id,support_ticket_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(t['organization_id'],str(t.get('branch_id') or '')[:120],t.get('user_id'),t['id'],'support',f"طلب دعم #{t['id']}: {t['category']} — {t['message']}",'medium','queued','تم استلام الشكوى وتحويلها إلى موظف AI للتشخيص الآمن','فحص السجلات والصلاحيات والربط المرتبطة بالمؤسسة، دون تغيير بيانات الإنتاج','بانتظار بدء الفحص',ts,'support-repair'))
-    task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(cur.fetchone()['id'],)).fetchone()
+   task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(cur.fetchone()['id'],)).fetchone()
+  if task and task['status']=='queued':
+   ts=stamp(); reply='تم استلام طلبك وإسناده إلى موظف التقنية AI. بدأ الفحص الأولي، وسيظهر التقرير هنا عند اكتماله.'
+   c.execute("UPDATE technical_tasks SET status='diagnosing',action_taken=?,started_at=?,finished_at=NULL WHERE id=?",('بدأ موظف التقنية AI الفحص الأولي الآمن',ts,task['id']))
+   if t['status'] in ('open','under_review'):
+    c.execute("UPDATE support_tickets SET status='in_progress',owner_reply=?,updated_at=? WHERE id=?",(reply,ts,t['id']))
+    support_event(c,t,actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_assigned',body=reply,from_status=t['status'],to_status='in_progress')
+   task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(task['id'],)).fetchone()
    t['technical_task']=dict(task)
    t['technical_task_id']=task['id']
    t['technical_status']=task['status']

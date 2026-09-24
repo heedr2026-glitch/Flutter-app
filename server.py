@@ -3431,12 +3431,13 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 # Support requests can arrive before an administrator opens the
                 # dashboard. Ensure the isolated AI follow-up tables exist first.
                 owner_admin.ensure_owner_tables(connection, __import__('sys').modules[__name__], ('technical_tasks', 'technical_agent_state'))
-                row = connection.execute("INSERT INTO support_tickets(organization_id,user_id,category,message,status,owner_reply,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id", (organization_id,user["id"],category,message,"open","",created,created)).fetchone()
+                technical_reply = "تم استلام طلبك وإسناده إلى موظف التقنية AI. بدأ الفحص الأولي، وسيظهر التقرير هنا عند اكتماله."
+                row = connection.execute("INSERT INTO support_tickets(organization_id,user_id,category,message,status,owner_reply,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) RETURNING id", (organization_id,user["id"],category,message,"in_progress",technical_reply,created,created)).fetchone()
                 ticket_id = int(row["id"])
                 reference_code = support_reference(ticket_id, created)
                 title = str(data.get("title", "")).strip()[:160] or message.splitlines()[0][:160]
                 connection.execute("UPDATE support_tickets SET reference_code=?,title=?,scope='private',device_name=?,app_version=?,branch_id=? WHERE id=?", (reference_code,title,str(data.get('deviceName',''))[:120],str(data.get('appVersion',''))[:40],user.get('current_branch'),ticket_id))
-                add_support_event(connection, ticket_id=ticket_id, organization_id=organization_id, user_id=user["id"], actor_type="user", actor_name=str(user.get("name") or user.get("username") or "المستخدم"), event_type="created", body=message, to_status="open")
+                add_support_event(connection, ticket_id=ticket_id, organization_id=organization_id, user_id=user["id"], actor_type="user", actor_name=str(user.get("name") or user.get("username") or "المستخدم"), event_type="created", body=message, to_status="in_progress")
                 # Route every new support request to the technical employee queue.
                 # This creates a diagnostic task only; it never changes production data.
                 connection.execute(
@@ -3452,13 +3453,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         "support",
                         f"طلب دعم #{ticket_id}: {category} — {message}",
                         "medium",
-                        "queued",
+                       "diagnosing",
                         "تم تحويل طلب الدعم إلى الموظف التقني AI لجمع مؤشرات الحساب والخدمة",
                         "تشخيص السجلات والصلاحيات والربط دون تغيير كلمة المرور أو حذف البيانات",
                         created,
                         "support-router",
                     ),
                 )
+                add_support_event(connection, ticket_id=ticket_id, organization_id=organization_id, user_id=user["id"], actor_type="technical_ai", actor_name="موظف التقنية AI", event_type="technical_assigned", body=technical_reply, from_status="in_progress", to_status="in_progress")
                 audit_log(connection, organization_id, user["id"], "support_request", "تم إرسال طلب دعم فني: " + category, "security", str(row["id"]))
                 connection.commit()
                 self._send(201, {"saved": True, "id": ticket_id, "referenceCode": reference_code, "status": "open"})
