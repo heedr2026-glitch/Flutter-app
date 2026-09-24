@@ -625,12 +625,18 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if re.fullmatch(r'support/\d+',r) and m=='PUT':
   ident=int(r.split('/')[1]); status=d.get('status')
   if status not in ('open','under_review','in_progress','awaiting_user','resolved','closed'): raise ValueError('حالة غير صحيحة')
-  ticket=c.execute('SELECT id,organization_id,user_id,status FROM support_tickets WHERE id=?',(ident,)).fetchone()
+  ticket=c.execute('SELECT id,organization_id,user_id,status,scope FROM support_tickets WHERE id=?',(ident,)).fetchone()
   if not ticket: raise s.ApiError(404,'طلب الدعم غير موجود')
   reply=str(d.get('owner_reply',''))[:1000]; note=str(d.get('note',''))[:2000]
+  last_error=str(d.get('last_error',''))[:1000]
+  scope=str(d.get('scope') or ticket['scope'] or 'private')
+  if scope not in ('private','global'): raise ValueError('نطاق المشكلة غير صحيح')
   assigned=d.get('assigned_admin_id') or a['id']
-  c.execute('UPDATE support_tickets SET status=?,owner_reply=?,assigned_admin_id=COALESCE(?,assigned_admin_id),updated_at=? WHERE id=?',(status,reply,assigned,stamp(),ident))
-  support_event(c,dict(ticket),actor_type='admin',actor_name=a['name'],event_type='status_changed' if status!=ticket['status'] else 'reply_updated',body=note or reply,from_status=ticket['status'],to_status=status)
+  c.execute('UPDATE support_tickets SET status=?,scope=?,last_error=?,owner_reply=?,assigned_admin_id=COALESCE(?,assigned_admin_id),updated_at=? WHERE id=?',(status,scope,last_error,reply,assigned,stamp(),ident))
+  event_type='scope_changed' if scope!=ticket['scope'] else 'status_changed' if status!=ticket['status'] else 'reply_updated'
+  support_event(c,dict(ticket),actor_type='admin',actor_name=a['name'],event_type=event_type,body=note or reply or last_error,from_status=ticket['status'],to_status=status)
+  if scope=='global' and ticket['scope']!='global':
+   c.execute('INSERT INTO technical_incidents(service,organization_id,problem,root_cause,proposal,severity,test_status,deployment_status,affected_organizations,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',('support',None,'عطل عام معلن من مركز الدعم','تحتاج عدة مؤسسات إلى مراجعة موحدة؛ لا يتم إصلاح الإنتاج تلقائيًا','فحص آمن ثم اختبار وموافقة قبل أي تطبيق عام','high','not_tested','proposed',0,stamp(),stamp()))
   if note: c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,note,a['name'],stamp()))
   return {'saved':True}
  if r=='security' and m=='GET':
