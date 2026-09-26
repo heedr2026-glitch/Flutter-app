@@ -1060,7 +1060,12 @@ class _AdvertisementRequestDialogState
 
   Map<String, dynamic> _payload(String action) => {
     '_action': action,
-    'title': _title.text.trim(),
+    // The backend requires a title for every ad record.  A full-banner image
+    // can be submitted without visible text, so give it a stable internal
+    // title instead of failing validation at publish time.
+    'title': _title.text.trim().isEmpty && _fullImageMode
+        ? 'إعلان صورة'
+        : _title.text.trim(),
     'message': _message.text.trim(),
     'contact': _contact.text.trim(),
     'requestedDays': _days,
@@ -1663,6 +1668,13 @@ class _AdvertisementRequestDialogState
     _showAdditionalText = _message.text.trim().isNotEmpty;
     _fullImageMode =
         config['adType']?.toString() == 'image' && _bannerImageData.isNotEmpty;
+    if (_fullImageMode) {
+      // A full-banner image is the bar itself, not a smaller object inside it.
+      _bannerX = .5;
+      _bannerY = .5;
+      _bannerWidth = 1;
+      _bannerHeight = 1;
+    }
     if (widget.initial == null && widget.fullScreen) {
       _textAlign = 'center';
       _logoPosition = 'left';
@@ -2023,7 +2035,9 @@ class _AdvertisementRequestDialogState
                   ),
                   onChanged: (_) => setState(() {}),
                   validator: (s) => s == null || s.trim().isEmpty
-                      ? 'اكتب النص الرئيسي'
+                      ? (_fullImageMode && _bannerImageData.isNotEmpty
+                            ? null
+                            : 'اكتب النص الرئيسي')
                       : null,
                 ),
                 Align(
