@@ -2428,6 +2428,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             day_start = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
             week_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
             with db() as connection:
+                # Keep older production databases compatible with the security
+                # dashboard by applying only the additive owner schema before
+                # any security/service queries run.
+                owner_admin.ensure_owner_tables(
+                    connection,
+                    __import__('sys').modules[__name__],
+                    ('service_maintenance', 'maintenance_modes', 'blocked_devices'),
+                )
                 active_users = connection.execute("SELECT COUNT(*) AS total FROM users WHERE active=1").fetchone()["total"]
                 failed_logins = connection.execute("SELECT COUNT(*) AS total FROM audit_logs WHERE action='failed_login' AND created_at>=?", (day_start,)).fetchone()["total"]
                 untrusted_devices = connection.execute("SELECT COUNT(*) AS total FROM sessions WHERE trusted=0 AND expires_at>?", (current_time,)).fetchone()["total"]
