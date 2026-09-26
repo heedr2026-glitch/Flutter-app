@@ -162,7 +162,8 @@ class AdvertisementFilters extends StatelessWidget {
 }
 
 class VipAdvertisementCard extends StatefulWidget {
-  const VipAdvertisementCard({super.key});
+  final String subscriptionPackage;
+  const VipAdvertisementCard({super.key, required this.subscriptionPackage});
   @override
   State<VipAdvertisementCard> createState() => _VipAdvertisementCardState();
 }
@@ -229,7 +230,10 @@ class _VipAdvertisementCardState extends State<VipAdvertisementCard>
       await Navigator.push<void>(
         context,
         MaterialPageRoute(
-          builder: (_) => MyAdvertisementsPage(initialStatus: status),
+          builder: (_) => MyAdvertisementsPage(
+            initialStatus: status,
+            canCreate: widget.subscriptionPackage == 'vip',
+          ),
         ),
       );
       if (mounted) await _load();
@@ -243,7 +247,11 @@ class _VipAdvertisementCardState extends State<VipAdvertisementCard>
     onOpen: () async {
       await Navigator.push<void>(
         context,
-        MaterialPageRoute(builder: (_) => const MyAdvertisementsPage()),
+        MaterialPageRoute(
+          builder: (_) => MyAdvertisementsPage(
+            canCreate: widget.subscriptionPackage == 'vip',
+          ),
+        ),
       );
       if (mounted) await _load();
     },
@@ -408,7 +416,12 @@ class CompactAdvertisementSummary extends StatelessWidget {
 
 class MyAdvertisementsPage extends StatefulWidget {
   final String initialStatus;
-  const MyAdvertisementsPage({super.key, this.initialStatus = 'all'});
+  final bool? canCreate;
+  const MyAdvertisementsPage({
+    super.key,
+    this.initialStatus = 'all',
+    this.canCreate,
+  });
   @override
   State<MyAdvertisementsPage> createState() => _MyAdvertisementsPageState();
 }
@@ -448,6 +461,35 @@ class AdvertisementBannerView extends StatelessWidget {
         .toDouble();
     final imageData =
         ad['image_data']?.toString() ?? ad['imageData']?.toString() ?? '';
+    final fullBannerImage =
+        config['adType']?.toString() == 'image' &&
+        (config['bannerImageData']?.toString().isNotEmpty ?? false);
+    if (fullBannerImage) {
+      final bannerImageData = config['bannerImageData']!.toString();
+      return Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: barColor,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
+        ),
+        child: AspectRatio(
+          aspectRatio: 4,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: Image.memory(
+              base64Decode(bannerImageData.split(',').last),
+              width: double.infinity,
+              height: double.infinity,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => Center(
+                child: Icon(Icons.broken_image_outlined, color: textColor),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     final logo = imageData.isEmpty
         ? const Icon(Icons.campaign, color: Color(0xFFF59E0B), size: 46)
         : ClipRRect(
@@ -536,6 +578,7 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
   String? _error;
   bool _loading = true;
   bool _submitting = false;
+  bool _canCreate = false;
   bool _fetching = false;
   DateTime? _updatedAt;
   Timer? _timer;
@@ -545,9 +588,19 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
     _selectedStatus = advertisementGroups.containsKey(widget.initialStatus)
         ? widget.initialStatus
         : 'all';
+    _canCreate = widget.canCreate ?? false;
     WidgetsBinding.instance.addObserver(this);
+    if (widget.canCreate == null) _loadPackageAccess();
     _load();
     _timer = Timer.periodic(const Duration(seconds: 15), (_) => _load());
+  }
+
+  Future<void> _loadPackageAccess() async {
+    final prefs = await BranchPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _canCreate = (prefs.getString('subscription_package') ?? 'free') == 'vip';
+    });
   }
 
   @override
@@ -705,12 +758,47 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
   }
 
   @override
-  Widget build(BuildContext context) => KhdoomDarkPage(
-    child: AdvertisementRequestDialog(
-      fullScreen: true,
-      onCompleted: _handleRequestResult,
-    ),
-  );
+  Widget build(BuildContext context) {
+    if (!_canCreate) {
+      return KhdoomDarkPage(
+        child: Center(
+          child: Card(
+            margin: const EdgeInsets.all(24),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.lock_outline,
+                    size: 48,
+                    color: Color(0xFFF59E0B),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'إنشاء الإعلان متاح في باقة VIP فقط',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'يمكنك مشاهدة الإعلانات المنشورة، لكن لا يمكن إنشاء إعلان جديد من الباقة الحالية.',
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return KhdoomDarkPage(
+      child: AdvertisementRequestDialog(
+        fullScreen: true,
+        onCompleted: _handleRequestResult,
+      ),
+    );
+  }
 
   Future<void> _handleRequestResult(Map<String, dynamic> request) async {
     if (!mounted) return;
@@ -1203,9 +1291,7 @@ class _AdvertisementRequestDialogState
         : TextAlign.right;
 
     Widget textElement({required bool titleElement}) {
-      final value = titleElement
-          ? _title.text.trim()
-          : text;
+      final value = titleElement ? _title.text.trim() : text;
       final selected = titleElement
           ? _selectedElement == 'title'
           : _selectedElement == 'message';
@@ -1445,10 +1531,10 @@ class _AdvertisementRequestDialogState
                               ),
                             Positioned(
                               left:
-                                  constraints.maxWidth * _logoX -
-                                  logoWidth / 2,
+                                  constraints.maxWidth * _logoX - logoWidth / 2,
                               top:
-                                  constraints.maxHeight * _logoY - logoHeight / 2,
+                                  constraints.maxHeight * _logoY -
+                                  logoHeight / 2,
                               child: logoWidget,
                             ),
                           ],

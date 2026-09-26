@@ -2789,7 +2789,9 @@ class _DashboardPageState extends State<DashboardPage> {
           child: Container(
             width: double.infinity,
             constraints: BoxConstraints(minHeight: bannerHeight),
-            padding: const EdgeInsets.all(18),
+            padding: fullBannerImage
+                ? EdgeInsets.zero
+                : const EdgeInsets.all(18),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
@@ -2813,7 +2815,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       child: Image.memory(
                         base64Decode(ad['bannerImageData']!.split(',').last),
                         width: double.infinity,
-                        height: bannerHeight - 36,
+                        height: bannerHeight,
                         fit: BoxFit.cover,
                         errorBuilder: (_, _, _) => const SizedBox.shrink(),
                       ),
@@ -3871,7 +3873,9 @@ class _DashboardPageState extends State<DashboardPage> {
                 const SizedBox(height: 16),
 
                 if (_subscriptionPackage == 'vip' && _isAdmin) ...[
-                  const VipAdvertisementCard(),
+                  VipAdvertisementCard(
+                    subscriptionPackage: _subscriptionPackage,
+                  ),
                   const SizedBox(height: 16),
                 ],
 
@@ -6528,7 +6532,10 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
   Future<void> _manageVipAdvertisement() async {
     await Navigator.push<void>(
       context,
-      MaterialPageRoute(builder: (_) => const MyAdvertisementsPage()),
+      MaterialPageRoute(
+        builder: (_) =>
+            MyAdvertisementsPage(canCreate: _currentPackage == 'vip'),
+      ),
     );
   }
 

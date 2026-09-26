@@ -4360,7 +4360,15 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if path == "/api/my-ads" and method == "GET":
                 require_advertisement_permission(user)
                 rows = connection.execute("SELECT * FROM advertisements WHERE organization_id=? AND COALESCE(deleted,0)=0 ORDER BY id DESC", (organization_id,)).fetchall()
-                self._send(200, [ad_policy.project(row) for row in rows])
+                projected = [ad_policy.project(row) for row in rows]
+                # The expiry date is private to the organization owner.  Keep
+                # it out of employee responses so one employee cannot expose
+                # or mix another person's publication details in the app.
+                if user.get("role") != "admin":
+                    for item in projected:
+                        item.pop("expires_at", None)
+                        item.pop("remaining_days", None)
+                self._send(200, projected)
                 return
             if path.startswith("/api/ads/") and method == "DELETE":
                 require_advertisement_permission(user, manage=True)
