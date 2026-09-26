@@ -4400,7 +4400,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         raise ApiError(400, "إعدادات تصميم الإعلان غير صحيحة")
                 if not isinstance(banner_config, dict):
                     raise ApiError(400, "إعدادات تصميم الإعلان غير صحيحة")
-                banner_config = {key: banner_config.get(key) for key in ("textColor", "barColor", "textAlign", "logoPosition", "fontSize", "logoScale", "height", "textX", "textY", "logoX", "logoY") if key in banner_config}
+                banner_config = {key: banner_config.get(key) for key in ("textColor", "barColor", "textAlign", "logoPosition", "fontSize", "logoScale", "height", "textX", "textY", "messageX", "messageY", "logoX", "logoY", "bannerX", "bannerY", "bannerWidth", "bannerHeight", "adType", "bannerImageData") if key in banner_config}
                 if banner_config.get("textAlign") not in (None, "right", "center", "left") or banner_config.get("logoPosition") not in (None, "right", "center", "left"):
                     raise ApiError(400, "موضع التصميم غير صحيح")
                 for key, low, high in (("fontSize", 12, 32), ("logoScale", .5, 1.5), ("height", 80, 180), ("textX", .08, .92), ("textY", .15, .85), ("logoX", .08, .92), ("logoY", .15, .85)):
