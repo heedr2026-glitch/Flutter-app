@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -16,6 +17,16 @@ Color _safeAdvertisementColor(String value, Color fallback) {
 
 String _advertisementColorHex(Color color) =>
     '#${color.value.toRadixString(16).substring(2).toUpperCase()}';
+
+Uint8List? _safeAdvertisementBytes(dynamic raw) {
+  final value = raw?.toString().trim() ?? '';
+  if (value.isEmpty) return null;
+  try {
+    return Uint8List.fromList(base64Decode(value.split(',').last));
+  } on FormatException {
+    return null;
+  }
+}
 
 const _advertisementColors = <MapEntry<String, Color>>[
   MapEntry('أبيض', Colors.white),
@@ -459,13 +470,13 @@ class AdvertisementBannerView extends StatelessWidget {
     final scale = (double.tryParse(config['logoScale']?.toString() ?? '') ?? 1)
         .clamp(.5, 1.5)
         .toDouble();
-    final imageData =
-        ad['image_data']?.toString() ?? ad['imageData']?.toString() ?? '';
+    final logoBytes = _safeAdvertisementBytes(
+      ad['image_data'] ?? ad['imageData'],
+    );
+    final bannerBytes = _safeAdvertisementBytes(config['bannerImageData']);
     final fullBannerImage =
-        config['adType']?.toString() == 'image' &&
-        (config['bannerImageData']?.toString().isNotEmpty ?? false);
+        config['adType']?.toString() == 'image' && bannerBytes != null;
     if (fullBannerImage) {
-      final bannerImageData = config['bannerImageData']!.toString();
       return Container(
         width: double.infinity,
         decoration: BoxDecoration(
@@ -478,7 +489,7 @@ class AdvertisementBannerView extends StatelessWidget {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(14),
             child: Image.memory(
-              base64Decode(bannerImageData.split(',').last),
+              bannerBytes,
               width: double.infinity,
               height: double.infinity,
               fit: BoxFit.cover,
@@ -497,12 +508,12 @@ class AdvertisementBannerView extends StatelessWidget {
         : textAlignValue == 'center'
         ? TextAlign.center
         : TextAlign.right;
-    final logo = imageData.isEmpty
+    final logo = logoBytes == null
         ? const Icon(Icons.campaign, color: Color(0xFFF59E0B), size: 46)
         : ClipRRect(
             borderRadius: BorderRadius.circular(10),
             child: Image.memory(
-              base64Decode(imageData.split(',').last),
+              logoBytes,
               width: (72 * scale).clamp(40, 108).toDouble(),
               height: (72 * scale).clamp(40, 108).toDouble(),
               fit: BoxFit.contain,
@@ -591,7 +602,7 @@ class AdvertisementBannerView extends StatelessWidget {
                   ),
                 ),
               ),
-              if (imageData.isNotEmpty)
+              if (logoBytes != null)
                 Positioned.fill(
                   child: Align(
                     alignment: logoPosition == 'right'
