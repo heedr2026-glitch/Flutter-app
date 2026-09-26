@@ -806,7 +806,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='ads' and m=='GET':
   ensure_owner_tables(c,s,('advertisements',))
   condition="CASE WHEN a.approved=1 AND a.expires_at IS NOT NULL AND a.expires_at<=? THEN 'expired' WHEN a.active=0 AND a.approved=0 THEN 'rejected' WHEN a.active=0 THEN 'stopped' WHEN a.approved=0 THEN 'pending' WHEN a.scheduled_at>? THEN 'scheduled' ELSE 'published' END"
-  where='FROM advertisements a JOIN organizations o ON o.id=a.organization_id WHERE a.deleted=0'; args=[stamp(),stamp()]
+  where='FROM advertisements a JOIN organizations o ON o.id=a.organization_id WHERE COALESCE(a.deleted,0)=0'; args=[stamp(),stamp()]
   # Status expression is in the projection; use a subquery for pagination and filtering.
   src='FROM (SELECT a.*,o.name organization_name,'+condition+' status '+where+') ads WHERE 1=1'
   if q.get('status'): src+=' AND status=?'; args.append(q['status'])
