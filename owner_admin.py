@@ -282,7 +282,7 @@ def readiness_checks(c,s):
 
 def handle(h,method,s):
  path=urlparse(h.path).path.rstrip('/')
- if path=='/owner' and method=='GET': h._send_html((s.ROOT/'owner_dashboard.html').read_text(encoding='utf-8').replace('20260924-ad-image-compress-fix','20260926-ad-request-thumbnails')); return True
+ if path=='/owner' and method=='GET': h._send_html((s.ROOT/'owner_dashboard.html').read_text(encoding='utf-8').replace('20260924-ad-image-compress-fix','20260926-ad-balance-v2')); return True
  if path=='/owner/dashboard.js' and method=='GET': h._send_javascript((s.ROOT/'owner_dashboard.js').read_text(encoding='utf-8')); return True
  if path=='/owner/addons.js' and method=='GET': h._send_javascript((s.ROOT/'owner_addons.js').read_text(encoding='utf-8')); return True
  if not path.startswith('/owner/api/v2/'): return False
