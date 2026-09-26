@@ -590,17 +590,37 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
         : 'all';
     _canCreate = widget.canCreate ?? false;
     WidgetsBinding.instance.addObserver(this);
-    if (widget.canCreate == null) _loadPackageAccess();
+    // The cached package can be stale after an admin changes an institution's
+    // subscription. Always refresh the server-side package before deciding
+    // whether this institution may submit an advertisement.
+    _loadPackageAccess();
     _load();
     _timer = Timer.periodic(const Duration(seconds: 15), (_) => _load());
   }
 
   Future<void> _loadPackageAccess() async {
     final prefs = await BranchPreferences.getInstance();
-    if (!mounted) return;
-    setState(() {
-      _canCreate = (prefs.getString('subscription_package') ?? 'free') == 'vip';
-    });
+    try {
+      final subscription = await MyAdsService.withApi(
+        (api) => api.subscription(),
+      );
+      final package = subscription['package']?.toString().toLowerCase() ?? '';
+      if (package.isNotEmpty) {
+        await prefs.setString('subscription_package', package);
+      }
+      if (!mounted) return;
+      setState(() => _canCreate = package == 'vip');
+    } catch (_) {
+      // Keep the supplied/cached value only when the server is temporarily
+      // unavailable; the POST endpoint still enforces the real permission.
+      if (!mounted) return;
+      setState(() {
+        _canCreate =
+            (prefs.getString('subscription_package') ??
+                (widget.canCreate == true ? 'vip' : 'free')) ==
+            'vip';
+      });
+    }
   }
 
   @override
