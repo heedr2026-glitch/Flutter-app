@@ -77,10 +77,12 @@ def migrate(c,postgres=False):
    legacy=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=? AND bonus_months=0 ORDER BY id LIMIT 1',(package,months)).fetchone()
    value=float(legacy['price_sar']) if legacy else fallback
    c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO NOTHING',(package,months,value,stamp()))
- for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT")],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0")],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
+ for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT")],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
+ ad_columns={row['column_name'] for row in c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='advertisements'").fetchall()} if postgres else {row['name'] for row in c.execute('PRAGMA table_info(advertisements)')}
+ if 'published_by' not in ad_columns: c.execute("ALTER TABLE advertisements ADD COLUMN "+('IF NOT EXISTS ' if postgres else '')+"published_by TEXT NOT NULL DEFAULT ''")
  for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('support_tickets','reference_code'),('support_ticket_events','ticket_id,created_at'),('page_performance_events','created_at,page_name'),('employee_invitations','organization_id,status,created_at'),('organization_cameras','organization_id,branch_id,updated_at'),('vehicle_location_events','organization_id,vehicle_key,recorded_at'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('login_failures','created_at,username'),('readiness_results','run_id,service_key'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('platform_expenses','status,due_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
  for key,package in [('free','free'),('basic','basic'),('vip','vip')]: c.execute('INSERT INTO readiness_test_accounts(account_key,package,active,created_at) VALUES(?,?,1,?) ON CONFLICT(account_key) DO UPDATE SET package=excluded.package,active=1',(f'__readiness_{key}__',package,stamp()))
 
@@ -378,11 +380,27 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   for candidate in rows(c,'SELECT id,name FROM organizations ORDER BY id'):
    if candidate['name'] and candidate['name'] in question: org=candidate; break
   service='whatsapp' if any(x in question.lower() for x in ('واتساب','whatsapp')) else 'calls' if any(x in question.lower() for x in ('مكالمة','المكالمات','calls')) else 'ai' if any(x in question.lower() for x in ('ai','ذكاء','موظف')) else 'login' if any(x in question.lower() for x in ('دخول','تسجيل','401','كلمة المرور')) else 'platform'
-  diagnosis='لم يتم تحديد مؤسسة بالاسم؛ يلزم اختيار المؤسسة من لوحة الإدارة' if not org else ('تم العثور على المؤسسة وفحص السجلات المرتبطة بها' if service!='platform' else 'تم تحديد المؤسسة وجمع مؤشرات الحساب والخدمات')
-  proposal='اختيار المؤسسة ثم تشغيل الفحص الشامل' if not org else ('فحص الاتصال والسجلات والصلاحيات دون تغيير الأسرار' if service!='login' else 'فحص جلسة الدخول وسجل فشل المصادقة وإعادة المزامنة الآمنة عند الحاجة')
+  checks=[]; affected='عامة'; scope='global'
+  if org:
+   affected=org['name']; scope='organization'
+   sub=c.execute('SELECT package,starts_at,expires_at FROM subscriptions WHERE organization_id=?',(org['id'],)).fetchone()
+   users=scalar(c,'SELECT COUNT(*) n FROM users WHERE organization_id=? AND active=1',(org['id'],))
+   open_support=scalar(c,"SELECT COUNT(*) n FROM support_tickets WHERE organization_id=? AND status IN ('open','under_review','in_progress')",(org['id'],))
+   failures=scalar(c,'SELECT COUNT(*) n FROM login_failures WHERE organization_id=? AND created_at>=?',(org['id'],(datetime.now(timezone.utc)-timedelta(hours=24)).isoformat()))
+   credits=credits_summary(c,org['id'],s)
+   checks.extend([{'key':'package','label':'الباقة','status':'ok' if sub else 'warning','details':sub['package'] if sub else 'غير موجودة'}, {'key':'users','label':'المستخدمون','status':'ok' if users else 'warning','details':f'{users} مستخدم نشط'}, {'key':'support','label':'طلبات الدعم','status':'warning' if open_support else 'ok','details':f'{open_support} طلب مفتوح'}, {'key':'login','label':'الأخطاء الأخيرة','status':'warning' if failures else 'ok','details':f'{failures} محاولة/خطأ خلال 24 ساعة'}, {'key':'balance','label':'الاستخدام والرصيد','status':'warning' if any(v['base'] and v['remaining']<=max(1,math.ceil(v['base']*.1)) for v in credits['services'].values()) else 'ok','details':f"{credits['total_remaining']} وحدة متبقية"}])
+  else:
+   if table_exists(c,'page_performance_events',s):
+    perf=c.execute("SELECT COUNT(*) samples,COALESCE(ROUND(AVG(elapsed_ms),0),0) avg_ms,COALESCE(MAX(elapsed_ms),0) max_ms,COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) failures FROM page_performance_events WHERE created_at>=?",((datetime.now(timezone.utc)-timedelta(hours=1)).isoformat(),)).fetchone()
+    checks.append({'key':'performance','label':'الأداء','status':'warning' if perf['max_ms']>=1500 or perf['failures'] else 'ok','details':f"{perf['samples']} قياس · متوسط {int(perf['avg_ms'])}ms · أعلى {int(perf['max_ms'])}ms · فشل {int(perf['failures'])}"})
+   checks.append({'key':'database','label':'قاعدة البيانات','status':'ok','details':'استعلام الفحص نجح'})
+   checks.append({'key':'server','label':'السيرفر','status':'ok','details':'واجهة الإدارة استجابت'})
+  warnings=[x for x in checks if x['status']=='warning']
+  diagnosis=('تم فحص المؤسسة فعليًا من السجلات الحالية' if org else 'تم فحص مؤشرات المنصة والأداء الحالية')+('، وظهرت '+str(len(warnings))+' ملاحظات تحتاج متابعة' if warnings else '، ولم تظهر ملاحظات حرجة في القياسات المتاحة')
+  proposal=('مراجعة عناصر التحذير أعلاه ثم تنفيذ إصلاح آمن بعد الموافقة' if warnings else 'الاستمرار بالمراقبة وجمع قياسات أكثر قبل أي تغيير')
   ts=stamp(); cur=c.execute('INSERT INTO technical_tasks(organization_id,service,problem,severity,status,diagnosis,proposal,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id',(org['id'] if org else None,service,question,'medium','diagnosed',diagnosis,proposal,ts,'manual')); task_id=cur.fetchone()['id']
   audit(c,a['name'],'technical_manual_diagnosis',json.dumps({'task':task_id,'organization_id':org['id'] if org else None},ensure_ascii=False))
-  return {'taskId':task_id,'organization':org,'service':service,'diagnosis':diagnosis,'proposal':proposal,'requiresApproval':True if service in ('platform','login') else False,'status':'diagnosed'}
+  return {'taskId':task_id,'organization':org,'service':service,'diagnosis':diagnosis,'proposal':proposal,'affected':affected,'scope':scope,'checks':checks,'warnings':len(warnings),'requiresApproval':True if service in ('platform','login') else False,'status':'diagnosed'}
  if re.fullmatch(r'technical-ai/organization/\d+/scan',r) and m=='POST':
   ident=int(r.split('/')[2]); org=c.execute('SELECT id,name FROM organizations WHERE id=?',(ident,)).fetchone()
   if not org: raise s.ApiError(404,'المؤسسة غير موجودة')
@@ -786,18 +804,57 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   out=paged(c,'SELECT a.action,a.summary,a.created_at,o.name organization_name,a.organization_id',f'FROM audit_logs a JOIN organizations o ON o.id=a.organization_id WHERE a.action IN ({actions})',[],'a.id DESC',page); out['unknownLogins']=rows(c,'SELECT account,created_at FROM platform_unknown_logins ORDER BY id DESC LIMIT 30');out['adminLogins']=rows(c,'SELECT account,success,created_at FROM platform_login_events ORDER BY id DESC LIMIT 30'); return out
  if r=='usage' and m=='GET': return usage(c,q,page,s)
  if r=='ads' and m=='GET':
+  ensure_owner_tables(c,s,('advertisements',))
   condition="CASE WHEN a.approved=1 AND a.expires_at IS NOT NULL AND a.expires_at<=? THEN 'expired' WHEN a.active=0 AND a.approved=0 THEN 'rejected' WHEN a.active=0 THEN 'stopped' WHEN a.approved=0 THEN 'pending' WHEN a.scheduled_at>? THEN 'scheduled' ELSE 'published' END"
   where='FROM advertisements a JOIN organizations o ON o.id=a.organization_id WHERE a.deleted=0'; args=[stamp(),stamp()]
   # Status expression is in the projection; use a subquery for pagination and filtering.
   src='FROM (SELECT a.*,o.name organization_name,'+condition+' status '+where+') ads WHERE 1=1'
   if q.get('status'): src+=' AND status=?'; args.append(q['status'])
   return paged(c,'SELECT *',src,args,'id DESC',page)
+ if re.fullmatch(r'ads/\d+/preview',r) and m=='GET':
+  ensure_owner_tables(c,s,('advertisements',))
+  ident=int(r.split('/')[1]); ad=c.execute("SELECT a.*,o.name organization_name FROM advertisements a JOIN organizations o ON o.id=a.organization_id WHERE a.id=? AND COALESCE(a.deleted,0)=0",(ident,)).fetchone()
+  if not ad: raise s.ApiError(404,'الإعلان غير موجود')
+  out=dict(ad)
+  try: out['banner_config']=json.loads(out.get('banner_config') or '{}')
+  except (TypeError,ValueError): out['banner_config']={}
+  out['preview_only']=True
+  return out
  if re.fullmatch(r'ads/\d+',r) and m=='DELETE':
-  c.execute('UPDATE advertisements SET active=0,deleted=1 WHERE id=?',(int(r.split('/')[1]),)); return {'saved':True}
+  ensure_owner_tables(c,s,('advertisements',))
+  ident=int(r.split('/')[1]); old=c.execute('SELECT id,title,active,approved FROM advertisements WHERE id=? AND COALESCE(deleted,0)=0',(ident,)).fetchone()
+  if not old: raise s.ApiError(404,'الإعلان غير موجود')
+  c.execute('UPDATE advertisements SET active=0,deleted=1 WHERE id=?',(ident,)); audit(c,a['name'],'advertisement_deleted',json.dumps({'ad_id':ident,'title':old['title']},ensure_ascii=False)); return {'saved':True}
  if re.fullmatch(r'ads/\d+',r) and m=='PUT':
-  ident=int(r.split('/')[1]); status=d.get('status'); start=date(d.get('scheduled_at')); end=date(d.get('expires_at'))
+  ensure_owner_tables(c,s,('advertisements',))
+  ident=int(r.split('/')[1]); old=c.execute('SELECT * FROM advertisements WHERE id=? AND COALESCE(deleted,0)=0',(ident,)).fetchone()
+  if not old: raise s.ApiError(404,'الإعلان غير موجود')
+  status=d.get('status'); start=date(d.get('scheduled_at')); end=date(d.get('expires_at'))
   if status not in ('published','scheduled','rejected','stopped','pending') or (start and end and end<=start): raise ValueError('تحقق من الحالة والتاريخ')
-  c.execute('UPDATE advertisements SET active=?,approved=?,scheduled_at=?,expires_at=?,approved_at=?,review_note=? WHERE id=?',(int(status not in ('rejected','stopped')),int(status in ('published','scheduled','stopped')),start,end,stamp(),str(d.get('review_note',''))[:500],ident)); return {'saved':True}
+  seconds=number(d.get('display_seconds',old['display_seconds'] if 'display_seconds' in old.keys() else 8),3,60,True)
+  config=d.get('banner_config',old['banner_config'] if 'banner_config' in old.keys() else '{}')
+  if isinstance(config,str):
+   try: config=json.loads(config or '{}')
+   except (TypeError,ValueError): raise ValueError('إعدادات تصميم الشريط غير صحيحة')
+  if not isinstance(config,dict): raise ValueError('إعدادات تصميم الشريط غير صحيحة')
+  for key in ('textColor','barColor','textAlign','logoPosition','fontSize','logoScale','height','textX','textY','logoX','logoY'):
+   if key in d and d[key] not in (None,''): config[key]=d[key]
+  safe={key:config.get(key) for key in ('textColor','barColor','textAlign','logoPosition','fontSize','logoScale','height','textX','textY','logoX','logoY') if key in config}
+  if safe.get('textAlign') not in (None,'right','center','left') or safe.get('logoPosition') not in (None,'right','left'): raise ValueError('موضع التصميم غير صحيح')
+  for key,low,high in (('fontSize',12,32),('logoScale',0.5,1.5),('height',44,180),('textX',0.08,0.92),('textY',0.15,0.85),('logoX',0.08,0.92),('logoY',0.15,0.85)):
+   if key in safe: safe[key]=number(safe[key],low,high,False)
+  for key in ('textColor','barColor'):
+   if key in safe and safe[key] is not None and not re.fullmatch(r'#[0-9A-Fa-f]{6}',str(safe[key])): raise ValueError('لون التصميم غير صحيح')
+  title=str(d.get('title',old['title']))[:120]; message=str(d.get('message',old['message']))[:1000]; contact=str(d.get('contact',old['contact']))[:80]; image=str(d.get('image_data','')) or str(old['image_data'] if 'image_data' in old.keys() else '')
+  if image and (len(image)>850000 or not image.startswith(('data:image/jpeg;base64,','data:image/png;base64,','data:image/webp;base64,'))): raise ValueError('صيغة الصورة غير مدعومة أو حجمها كبير')
+  active=int(status not in ('rejected','stopped')); approved=int(status in ('published','scheduled','stopped'))
+  published_at=stamp() if status in ('published','scheduled') else None if status=='pending' else old['published_at'] if 'published_at' in old.keys() else None
+  published_by=a['name'] if status in ('published','scheduled') else '' if status=='pending' else old['published_by'] if 'published_by' in old.keys() else ''
+  c.execute('UPDATE advertisements SET title=?,message=?,contact=?,image_data=?,active=?,approved=?,scheduled_at=?,expires_at=?,approved_at=?,published_at=?,published_by=?,review_note=?,display_seconds=?,banner_config=? WHERE id=?',(title,message,contact,image,active,approved,start,end,stamp(),published_at,published_by,str(d.get('review_note',''))[:500],seconds,json.dumps(safe,ensure_ascii=False),ident))
+  audit(c,a['name'],'advertisement_'+status,json.dumps({'ad_id':ident,'before':{'status':old['approved'],'active':old['active'],'display_seconds':old['display_seconds'] if 'display_seconds' in old.keys() else 8},'after':{'status':status,'display_seconds':seconds}},ensure_ascii=False))
+  previous_config=old['banner_config'] if 'banner_config' in old.keys() else '{}'
+  audit(c,a['name'],'advertisement_design',json.dumps({'ad_id':ident,'before':previous_config,'after':safe},ensure_ascii=False))
+  return {'saved':True,'status':status,'display_seconds':seconds}
  if r=='community' or r.startswith('community/'):
   import community_admin
   return community_admin.moderation(c,r,m,d,q,page,s.ApiError,a,bool(s.DATABASE_URL))
