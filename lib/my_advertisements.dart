@@ -490,6 +490,13 @@ class AdvertisementBannerView extends StatelessWidget {
         ),
       );
     }
+    final logoPosition = config['logoPosition']?.toString() ?? 'left';
+    final textAlignValue = config['textAlign']?.toString() ?? 'right';
+    final textAlign = textAlignValue == 'left'
+        ? TextAlign.left
+        : textAlignValue == 'center'
+        ? TextAlign.center
+        : TextAlign.right;
     final logo = imageData.isEmpty
         ? const Icon(Icons.campaign, color: Color(0xFFF59E0B), size: 46)
         : ClipRRect(
@@ -498,7 +505,7 @@ class AdvertisementBannerView extends StatelessWidget {
               base64Decode(imageData.split(',').last),
               width: (72 * scale).clamp(40, 108).toDouble(),
               height: (72 * scale).clamp(40, 108).toDouble(),
-              fit: BoxFit.cover,
+              fit: BoxFit.contain,
               errorBuilder: (_, _, _) => const Icon(
                 Icons.campaign,
                 color: Color(0xFFF59E0B),
@@ -506,66 +513,101 @@ class AdvertisementBannerView extends StatelessWidget {
               ),
             ),
           );
+    final textBlock = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: textAlign == TextAlign.left
+          ? CrossAxisAlignment.start
+          : textAlign == TextAlign.center
+          ? CrossAxisAlignment.center
+          : CrossAxisAlignment.end,
+      children: [
+        Text(
+          ad['title']?.toString().trim().isNotEmpty == true
+              ? ad['title'].toString()
+              : 'إعلان',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          textAlign: textAlign,
+          style: TextStyle(
+            color: textColor,
+            fontSize: fontSize,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          ad['message']?.toString().trim().isNotEmpty == true
+              ? ad['message'].toString()
+              : 'نص الإعلان سيظهر هنا',
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          textAlign: textAlign,
+          style: TextStyle(
+            color: textColor.withValues(alpha: .82),
+            fontSize: (fontSize - 3).clamp(12, 28),
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 7),
+        const Text(
+          'عرض تفاصيل الإعلان',
+          style: TextStyle(
+            color: Color(0xFFFBBF24),
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
+    );
     return Container(
       width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 145, maxHeight: 180),
-      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: barColor,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
       ),
-      child: Row(
-        children: [
-          logo,
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  ad['title']?.toString().trim().isNotEmpty == true
-                      ? ad['title'].toString()
-                      : 'إعلان',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: textColor,
-                    fontSize: fontSize,
-                    fontWeight: FontWeight.bold,
+      child: AspectRatio(
+        aspectRatio: 4,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  child: Align(
+                    alignment: textAlignValue == 'left'
+                        ? Alignment.centerLeft
+                        : textAlignValue == 'center'
+                        ? Alignment.center
+                        : Alignment.centerRight,
+                    child: FractionallySizedBox(
+                      widthFactor: .72,
+                      child: textBlock,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  ad['message']?.toString().trim().isNotEmpty == true
-                      ? ad['message'].toString()
-                      : 'نص الإعلان سيظهر هنا',
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: config['textAlign'] == 'left'
-                      ? TextAlign.left
-                      : config['textAlign'] == 'center'
-                      ? TextAlign.center
-                      : TextAlign.right,
-                  style: TextStyle(
-                    color: textColor.withValues(alpha: .82),
-                    fontSize: (fontSize - 3).clamp(12, 28),
-                    height: 1.4,
+              ),
+              if (imageData.isNotEmpty)
+                Positioned.fill(
+                  child: Align(
+                    alignment: logoPosition == 'right'
+                        ? Alignment.centerRight
+                        : logoPosition == 'center'
+                        ? Alignment.center
+                        : Alignment.centerLeft,
+                    child: FractionallySizedBox(
+                      widthFactor: .23,
+                      child: Center(child: logo),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 7),
-                const Text(
-                  'عرض تفاصيل الإعلان',
-                  style: TextStyle(
-                    color: Color(0xFFFBBF24),
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
