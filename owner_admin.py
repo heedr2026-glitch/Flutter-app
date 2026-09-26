@@ -376,10 +376,16 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='technical-ai/ask' and m=='POST':
   question=str(d.get('question','')).strip()[:1000]
   if len(question)<4: raise ValueError('اكتب وصف المشكلة أولًا')
+  question_fold=question.casefold()
   org=None
   for candidate in rows(c,'SELECT id,name FROM organizations ORDER BY id'):
-   if candidate['name'] and candidate['name'] in question: org=candidate; break
-  service='whatsapp' if any(x in question.lower() for x in ('واتساب','whatsapp')) else 'calls' if any(x in question.lower() for x in ('مكالمة','المكالمات','calls')) else 'ai' if any(x in question.lower() for x in ('ai','ذكاء','موظف')) else 'login' if any(x in question.lower() for x in ('دخول','تسجيل','401','كلمة المرور')) else 'platform'
+   if candidate['name'] and candidate['name'].casefold() in question_fold: org=candidate; break
+  ticket=None
+  ticket_match=re.search(r'(?:#|طلب\s*دعم|شكوى|بلاغ)\s*(\d+)',question_fold)
+  if ticket_match:
+   ticket=c.execute('SELECT id,organization_id,status,category,message,last_error FROM support_tickets WHERE id=?',(int(ticket_match.group(1)),)).fetchone()
+   if ticket and not org: org=c.execute('SELECT id,name FROM organizations WHERE id=?',(ticket['organization_id'],)).fetchone()
+  service='whatsapp' if any(x in question_fold for x in ('واتساب','whatsapp')) else 'calls' if any(x in question_fold for x in ('مكالمة','المكالمات','calls')) else 'ai' if any(x in question_fold for x in ('ai','ذكاء','موظف')) else 'login' if any(x in question_fold for x in ('دخول','تسجيل','401','كلمة المرور','تسجيل الدخول')) else 'ads' if any(x in question_fold for x in ('إعلان','اعلان','الإعلانات','اعلانات')) else 'performance' if any(x in question_fold for x in ('بطء','بطيء','سرعة','صفحة')) else 'support' if any(x in question_fold for x in ('دعم','شكوى','بلاغ')) else 'platform'
   checks=[]; affected='عامة'; scope='global'
   if org:
    affected=org['name']; scope='organization'
@@ -389,6 +395,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    failures=scalar(c,'SELECT COUNT(*) n FROM login_failures WHERE organization_id=? AND created_at>=?',(org['id'],(datetime.now(timezone.utc)-timedelta(hours=24)).isoformat()))
    credits=credits_summary(c,org['id'],s)
    checks.extend([{'key':'package','label':'الباقة','status':'ok' if sub else 'warning','details':sub['package'] if sub else 'غير موجودة'}, {'key':'users','label':'المستخدمون','status':'ok' if users else 'warning','details':f'{users} مستخدم نشط'}, {'key':'support','label':'طلبات الدعم','status':'warning' if open_support else 'ok','details':f'{open_support} طلب مفتوح'}, {'key':'login','label':'الأخطاء الأخيرة','status':'warning' if failures else 'ok','details':f'{failures} محاولة/خطأ خلال 24 ساعة'}, {'key':'balance','label':'الاستخدام والرصيد','status':'warning' if any(v['base'] and v['remaining']<=max(1,math.ceil(v['base']*.1)) for v in credits['services'].values()) else 'ok','details':f"{credits['total_remaining']} وحدة متبقية"}])
+   if ticket:
+    checks.append({'key':'ticket','label':'طلب الدعم','status':'warning' if ticket['status'] not in ('resolved','closed') else 'ok','details':f"#{ticket['id']} · {ticket['status']} · {ticket['category']}"})
   else:
    if table_exists(c,'page_performance_events',s):
     perf=c.execute("SELECT COUNT(*) samples,COALESCE(ROUND(AVG(elapsed_ms),0),0) avg_ms,COALESCE(MAX(elapsed_ms),0) max_ms,COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) failures FROM page_performance_events WHERE created_at>=?",((datetime.now(timezone.utc)-timedelta(hours=1)).isoformat(),)).fetchone()
@@ -498,7 +506,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    c.execute("UPDATE technical_tasks SET status='approved',approved_by=?,action_taken=?,result=? WHERE id=?",(a['name'],'اعتمدت الإدارة تنفيذ الإصلاح؛ التنفيذ الفعلي يبقى يدويًا ومختبرًا','تمت الموافقة. لا توجد أي تعديلات تلقائية على الإنتاج.',ident))
    message='تمت الموافقة. يمكن تنفيذ الإصلاح يدويًا ثم تسجيل النتيجة.'
   elif action=='complete':
-   if task['status'] not in ('approved','diagnosing','proposed'):
+   if task['status'] not in ('approved','diagnosing','diagnosed','proposed'):
     raise ValueError('ابدأ الفحص وأعد التقرير قبل تسجيل الإنجاز')
    result='تم الإنجاز: تم توثيق معالجة المهمة واختبار النتيجة. راجع سجل التغييرات إن وُجد.'
    c.execute("UPDATE technical_tasks SET status='completed',action_taken=?,result=?,finished_at=? WHERE id=?",('تم تسجيل الإنجاز بعد المعالجة والاختبار',result,ts,ident))
