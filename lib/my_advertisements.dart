@@ -1074,6 +1074,33 @@ class _AdvertisementRequestDialogState
     }
   }
 
+  void _deleteSelectedElement() {
+    setState(() {
+      switch (_selectedElement) {
+        case 'title':
+          _title.clear();
+          break;
+        case 'message':
+          _message.clear();
+          _showAdditionalText = false;
+          break;
+        case 'banner':
+          _bannerImageData = '';
+          _fullImageMode = false;
+          _bannerX = .5;
+          _bannerY = .5;
+          _bannerWidth = .96;
+          _bannerHeight = .96;
+          break;
+        case 'logo':
+        default:
+          _imageData = '';
+          break;
+      }
+      _selectedElement = 'title';
+    });
+  }
+
   Widget _colorChooser({
     required String title,
     required String value,
@@ -1149,24 +1176,16 @@ class _AdvertisementRequestDialogState
 
   Widget _buildBannerPreview({bool showTools = true}) {
     final text = _message.text.trim();
+    final logoWidth = (_imageWidth * _logoScale).clamp(40, 600).toDouble();
+    final logoHeight = (_imageHeight * _logoScale).clamp(30, 300).toDouble();
     final logo = _imageData.isEmpty
-        ? Image.asset(
-            'assets/images/khdoom_logo.png',
-            width: _imageWidth.clamp(40, 600).toDouble(),
-            height: _imageHeight.clamp(30, 300).toDouble(),
-            fit: BoxFit.contain,
-            errorBuilder: (_, _, _) => const Icon(
-              Icons.campaign_outlined,
-              color: Colors.white70,
-              size: 38,
-            ),
-          )
+        ? const SizedBox.shrink()
         : ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: Image.memory(
               base64Decode(_imageData.split(',').last),
-              width: _imageWidth.clamp(40, 600).toDouble(),
-              height: _imageHeight.clamp(30, 300).toDouble(),
+              width: logoWidth,
+              height: logoHeight,
               fit: BoxFit.cover,
               errorBuilder: (_, _, _) => const Icon(
                 Icons.broken_image_outlined,
@@ -1185,7 +1204,7 @@ class _AdvertisementRequestDialogState
 
     Widget textElement({required bool titleElement}) {
       final value = titleElement
-          ? (_title.text.trim().isEmpty ? 'عنوان الإعلان' : _title.text.trim())
+          ? _title.text.trim()
           : text;
       final selected = titleElement
           ? _selectedElement == 'title'
@@ -1396,19 +1415,20 @@ class _AdvertisementRequestDialogState
                       : Stack(
                           clipBehavior: Clip.hardEdge,
                           children: [
-                            Positioned(
-                              left:
-                                  constraints.maxWidth * _textX -
-                                  constraints.maxWidth * .36,
-                              top: constraints.maxHeight * _textY - 24,
-                              width: constraints.maxWidth * .72,
-                              height: constraints.maxHeight * .42,
-                              child: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                alignment: Alignment.center,
-                                child: titleWidget,
+                            if (_title.text.trim().isNotEmpty)
+                              Positioned(
+                                left:
+                                    constraints.maxWidth * _textX -
+                                    constraints.maxWidth * .36,
+                                top: constraints.maxHeight * _textY - 24,
+                                width: constraints.maxWidth * .72,
+                                height: constraints.maxHeight * .42,
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.center,
+                                  child: titleWidget,
+                                ),
                               ),
-                            ),
                             if (messageWidget != null)
                               Positioned(
                                 left:
@@ -1426,10 +1446,9 @@ class _AdvertisementRequestDialogState
                             Positioned(
                               left:
                                   constraints.maxWidth * _logoX -
-                                  36 * _logoScale,
+                                  logoWidth / 2,
                               top:
-                                  constraints.maxHeight * _logoY -
-                                  36 * _logoScale,
+                                  constraints.maxHeight * _logoY - logoHeight / 2,
                               child: logoWidget,
                             ),
                           ],
@@ -1461,13 +1480,7 @@ class _AdvertisementRequestDialogState
                 label: const Text('إضافة صورة'),
               ),
               OutlinedButton.icon(
-                onPressed: () => setState(() {
-                  if (_selectedElement == 'logo') {
-                    _imageData = '';
-                  } else {
-                    _message.clear();
-                  }
-                }),
+                onPressed: _deleteSelectedElement,
                 icon: const Icon(Icons.delete_outline),
                 label: const Text('حذف المحدد'),
               ),
@@ -1487,14 +1500,10 @@ class _AdvertisementRequestDialogState
   void initState() {
     super.initState();
     _title = TextEditingController(
-      text:
-          widget.initial?['title']?.toString() ??
-          (widget.fullScreen ? 'عرض خاص لأول 20 مشترك' : ''),
+      text: widget.initial?['title']?.toString() ?? '',
     );
     _message = TextEditingController(
-      text:
-          widget.initial?['message']?.toString() ??
-          (widget.fullScreen ? 'خدماتك… أسهل وأذكى' : ''),
+      text: widget.initial?['message']?.toString() ?? '',
     );
     _contact = TextEditingController(
       text: widget.initial?['contact']?.toString() ?? '',
