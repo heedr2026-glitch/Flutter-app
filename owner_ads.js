@@ -127,6 +127,18 @@ function adDisplayDate(value, fallback) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? fallback : new Intl.DateTimeFormat('ar-SA-u-ca-gregory', {dateStyle:'medium',timeStyle:'short'}).format(date);
 }
+function adPreviewMarkup(ad) {
+  if (ad.image_data) {
+    return `<img src="${esc(ad.image_data)}" alt="معاينة الإعلان" style="display:block;width:100%;aspect-ratio:4/1;object-fit:cover;border-radius:12px;border:1px solid #38bdf8;background:#071b3c">`;
+  }
+  let config = {};
+  try { config = typeof ad.banner_config === 'string' ? JSON.parse(ad.banner_config || '{}') : (ad.banner_config || {}); } catch (_) {}
+  const barColor = /^#[0-9a-f]{6}$/i.test(String(config.barColor || '')) ? config.barColor : '#0b63ce';
+  const textColor = /^#[0-9a-f]{6}$/i.test(String(config.textColor || '')) ? config.textColor : '#ffffff';
+  const fontSize = Math.max(14, Math.min(48, Number(config.fontSize) || 28));
+  const align = ['right','center','left'].includes(config.textAlign) ? config.textAlign : 'center';
+  return `<div dir="rtl" style="display:flex;align-items:center;justify-content:${align==='left'?'flex-start':align==='right'?'flex-end':'center'};min-height:76px;aspect-ratio:4/1;overflow:hidden;padding:12px 18px;border-radius:12px;border:1px solid #38bdf8;background:${barColor};color:${textColor};font-size:${fontSize}px;font-weight:800;text-align:${align};white-space:pre-wrap;word-break:break-word">${esc(ad.message || ad.title || 'إعلان نصي')}</div>`;
+}
 
 if (typeof showOwnerPanel === 'function') {
   const originalShowOwnerPanel = showOwnerPanel;
@@ -152,42 +164,59 @@ async function loadAds() {
     data.sort((a,b) => Number(b.id) - Number(a.id));
     const labels = {pending:'قيد المراجعة', published:'منشور', rejected:'مرفوض', expired:'انتهى الإعلان', paused:'متوقف'};
     const counts = Object.fromEntries(Object.keys(labels).map(status => [status, data.filter(ad => ad.status === status).length]));
-    const summary = '<div class="card"><h3>إعلانات المؤسسات — إجمالي '+data.length+'</h3>' + Object.keys(labels).map(status => '<span style="display:inline-block;margin:8px">'+labels[status]+': '+counts[status]+'</span>').join('') + '</div>';
-    box.innerHTML = summary + (data.length ? '<p>طلبات الإعلانات — الأحدث أولًا</p>' + data.map(ad => `<div class="card">
-      <b>${esc(ad.title)}</b><p>رقم طلب الإعلان: #${esc(ad.id)}</p><p>المؤسسة: ${esc(ad.organization_name)}</p>
-      <p style="white-space:pre-wrap">${esc(ad.message)}</p><p>التواصل: ${esc(ad.contact)}</p>
-      <p>الحالة: ${labels[ad.status] || 'غير معروفة'}</p>
-      <p>طلب المشترك: ${ad.requested_days == null ? 'غير محدد (إعلان سابق)' : esc(ad.requested_days)+' أيام'}</p>
-      <p>بداية العرض: <bdi>${esc(adDisplayDate(ad.approved_at, 'لم يعتمد بعد'))}</bdi></p>
-      <p>النهاية المعتمدة: <bdi>${esc(adDisplayDate(ad.expires_at, ad.approved ? 'بدون نهاية' : 'لم تعتمد بعد'))}</bdi></p>
-      <label for="ad-days-${ad.id}">مدة العرض من الآن بالأيام — للمالك دون حد 10 أيام</label>
-      <input id="ad-days-${ad.id}" type="number" min="1" step="1" value="${adUnlimited(ad) ? '' : adApprovedDays(ad)}" ${adUnlimited(ad) ? 'disabled' : ''}>
-      <small>للإعلان المعتمد تظهر مدته المحفوظة. الضغط على اعتماد يبدأ المدة المختارة من الآن.</small>
-      <label style="display:flex;align-items:center;gap:8px"><input style="width:auto" type="checkbox" id="ad-unlimited-${ad.id}" ${adUnlimited(ad) ? 'checked' : ''} onchange="document.getElementById('ad-days-${ad.id}').disabled=this.checked"> عرض بدون تاريخ نهاية</label>
-      <label for="ad-note-${ad.id}">ملاحظة تظهر للمشترك / سبب الرفض</label>
-      <textarea style="box-sizing:border-box;width:100%;min-height:70px;background:#0b1020;color:white;border:1px solid #38bdf8;border-radius:10px;padding:10px" id="ad-note-${ad.id}" maxlength="1000">${esc(ad.review_note || '')}</textarea>
-      <button onclick="reviewAd(${ad.id},'approve')">${ad.approved ? 'اعتماد المدة الجديدة ونشر' : 'قبول ونشر'}</button>
-      <button class="vip" onclick="reviewAd(${ad.id},'reject')">رفض / إيقاف</button>
-    </div>`).join('') : 'لا توجد إعلانات للمراجعة');
+    const filter = window.adRequestFilter || 'all';
+    const visible = filter === 'all' ? data : data.filter(ad => ad.status === filter);
+    const tabs = [['all','الكل'],['pending','طلبات جديدة'],['published','المنشور'],['rejected','المرفوض']].map(([key,label]) => `<button class="${filter===key?'vip':''}" onclick="setAdRequestFilter('${key}')">${label} (${filter==='all'?counts[key]||data.length:counts[key]||0})</button>`).join('');
+    const summary = `<div class="card" style="border:1px solid #1687e8;background:linear-gradient(135deg,#071b3c,#0b2e5b)">
+      <h2 style="margin-top:0">طلبات الإعلانات</h2><p style="color:#bae6fd">راجع الإعلان، عاينه، ثم اقبله أو أعده للمؤسسة للتعديل قبل النشر.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${tabs}</div>
+    </div>`;
+    const cards = visible.map(ad => {
+      const preview = adPreviewMarkup(ad);
+      const pendingActions = ad.status === 'pending' ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button onclick="reviewAd(${ad.id},'approve')">قبول ونشر</button>
+        <button style="background:#d97706" onclick="reviewAd(${ad.id},'return_edit')">إرجاع للتعديل</button>
+        <button class="vip" onclick="reviewAd(${ad.id},'reject')">رفض الطلب</button>
+      </div>` : `<p style="color:#bae6fd">يمكن مراجعة الطلب مرة أخرى أو تعديل حالته.</p>`;
+      return `<article class="card" style="border-right:4px solid ${ad.status==='pending'?'#a855f7':ad.status==='published'?'#22c55e':'#ef4444'}">
+        <div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(180px,.8fr);gap:16px;align-items:start">
+          <div><h3 style="margin-top:0">${esc(ad.title)}</h3><p><b>المؤسسة:</b> ${esc(ad.organization_name)} — <b>الطلب:</b> #${esc(ad.id)}</p>
+          <p><b>الحالة:</b> <span style="color:#7dd3fc">${labels[ad.status] || 'غير معروفة'}</span> — <b>التاريخ:</b> ${esc(adDisplayDate(ad.created_at,'غير محدد'))}</p>
+          <p style="white-space:pre-wrap">${esc(ad.message || '')}</p><p>التواصل: ${esc(ad.contact || 'غير مسجل')}</p>
+          <label for="ad-note-${ad.id}">${ad.status === 'pending' ? 'ملاحظة التعديل / سبب الرفض' : 'ملاحظة المراجعة'}</label>
+          <textarea style="box-sizing:border-box;width:100%;min-height:70px;background:#0b1020;color:white;border:1px solid #38bdf8;border-radius:10px;padding:10px" id="ad-note-${ad.id}" maxlength="1000" placeholder="اكتب المطلوب تعديله للمؤسسة">${esc(ad.review_note || '')}</textarea>
+          ${ad.status === 'pending' ? `<label for="ad-days-${ad.id}">مدة العرض عند القبول بالأيام</label><input id="ad-days-${ad.id}" type="number" min="1" step="1" value="${adApprovedDays(ad)}"><label style="display:flex;align-items:center;gap:8px"><input style="width:auto" type="checkbox" id="ad-unlimited-${ad.id}" onchange="document.getElementById('ad-days-${ad.id}').disabled=this.checked"> عرض بدون تاريخ نهاية</label>` : ''}${pendingActions}</div>
+          <div><b style="display:block;margin-bottom:8px">معاينة الإعلان</b>${preview}</div>
+        </div>
+      </article>`;
+    }).join('');
+    box.innerHTML = summary + (cards || '<div class="card">لا توجد طلبات في هذا التصنيف.</div>');
   } catch (error) { if (version === adLoadVersion) box.textContent = error.message || 'تعذر تحميل الإعلانات'; }
 }
 
+window.adRequestFilter = 'all';
+function setAdRequestFilter(filter) { window.adRequestFilter = filter; loadAds(); }
+
 async function reviewAd(id, action) {
-  const unlimited = document.getElementById('ad-unlimited-'+id).checked;
-  const days = Number(document.getElementById('ad-days-'+id).value);
+  const note = document.getElementById('ad-note-'+id)?.value.trim() || '';
+  const unlimited = document.getElementById('ad-unlimited-'+id)?.checked || false;
+  const days = Number(document.getElementById('ad-days-'+id)?.value);
+  if (action === 'return_edit' && !note) {
+    alert('اكتب ملاحظة توضح للمؤسسة المطلوب تعديله'); return;
+  }
   if (action === 'approve' && !unlimited && (!Number.isSafeInteger(days) || days < 1)) {
     alert('اكتب عدد أيام صحيحًا أكبر من صفر أو اختر بدون نهاية'); return;
   }
-  if (!confirm(action === 'approve' ? 'اعتماد المدة المختارة بدءًا من الآن ونشر الإعلان؟' : 'رفض الإعلان وإيقاف عرضه؟')) return;
+  const question = action === 'approve' ? 'اعتماد المدة المختارة ونشر الإعلان؟' : action === 'return_edit' ? 'إرجاع الطلب للمؤسسة مع إرسال ملاحظة التعديل؟' : 'رفض الإعلان وإيقاف عرضه؟';
+  if (!confirm(question)) return;
   try {
     const response = await fetch('/owner/api/ads/'+id, {
       method:'PUT', headers:headers(),
-      body:JSON.stringify({action, durationDays:unlimited ? null : days,
-        reviewNote:document.getElementById('ad-note-'+id).value.trim()})
+      body:JSON.stringify({action, durationDays:unlimited ? null : days, reviewNote:note})
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'تعذر تحديث الإعلان');
-    alert(action === 'approve' ? 'تم اعتماد المدة ونشر الإعلان' : 'تم رفض الإعلان');
+    alert(action === 'approve' ? 'تم اعتماد المدة ونشر الإعلان' : action === 'return_edit' ? 'تم إرجاع الطلب للمؤسسة للتعديل' : 'تم رفض الإعلان');
     await loadAds();
   } catch (error) { alert(error.message || 'تعذر الاتصال'); }
 }

@@ -1122,7 +1122,13 @@ def init_db() -> None:
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS requested_days INTEGER")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS review_note TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS deleted INTEGER NOT NULL DEFAULT 0")
+            connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS display_seconds INTEGER NOT NULL DEFAULT 8")
+            connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS banner_config TEXT NOT NULL DEFAULT '{}'")
+            connection.execute("ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS published_at TEXT")
             connection.execute("ALTER TABLE platform_advertisements ADD COLUMN IF NOT EXISTS image_data TEXT NOT NULL DEFAULT ''")
+            connection.execute("ALTER TABLE platform_advertisements ADD COLUMN IF NOT EXISTS display_seconds INTEGER NOT NULL DEFAULT 8")
+            connection.execute("ALTER TABLE platform_advertisements ADD COLUMN IF NOT EXISTS banner_config TEXT NOT NULL DEFAULT '{}'")
+            connection.execute("ALTER TABLE platform_advertisements ADD COLUMN IF NOT EXISTS published_at TEXT")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS code_kind TEXT NOT NULL DEFAULT 'activation'")
             connection.execute("ALTER TABLE activation_codes ADD COLUMN IF NOT EXISTS discount_percent INTEGER NOT NULL DEFAULT 0")
             session_columns = {row["column_name"] for row in connection.execute("SELECT column_name FROM information_schema.columns WHERE table_name='sessions'").fetchall()}
@@ -1496,6 +1502,12 @@ def init_db() -> None:
             connection.execute("ALTER TABLE advertisements ADD COLUMN review_note TEXT NOT NULL DEFAULT ''")
         if "deleted" not in ad_columns:
             connection.execute("ALTER TABLE advertisements ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+        if "display_seconds" not in ad_columns:
+            connection.execute("ALTER TABLE advertisements ADD COLUMN display_seconds INTEGER NOT NULL DEFAULT 8")
+        if "banner_config" not in ad_columns:
+            connection.execute("ALTER TABLE advertisements ADD COLUMN banner_config TEXT NOT NULL DEFAULT '{}'")
+        if "published_at" not in ad_columns:
+            connection.execute("ALTER TABLE advertisements ADD COLUMN published_at TEXT")
         connection.execute(
             "UPDATE advertisements SET approved_at=? WHERE approved=1 AND approved_at IS NULL",
             (now(),),
@@ -1506,6 +1518,12 @@ def init_db() -> None:
         }
         if "image_data" not in platform_ad_columns:
             connection.execute("ALTER TABLE platform_advertisements ADD COLUMN image_data TEXT NOT NULL DEFAULT ''")
+        if "display_seconds" not in platform_ad_columns:
+            connection.execute("ALTER TABLE platform_advertisements ADD COLUMN display_seconds INTEGER NOT NULL DEFAULT 8")
+        if "banner_config" not in platform_ad_columns:
+            connection.execute("ALTER TABLE platform_advertisements ADD COLUMN banner_config TEXT NOT NULL DEFAULT '{}'")
+        if "published_at" not in platform_ad_columns:
+            connection.execute("ALTER TABLE platform_advertisements ADD COLUMN published_at TEXT")
         code_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(activation_codes)")
@@ -1695,6 +1713,15 @@ def require_permission(user: Any, *permission_names: str) -> None:
     if any(permissions.get(name) is True for name in permission_names):
         return
     raise ApiError(403, "ليس لديك صلاحية لتنفيذ هذه العملية")
+
+def require_advertisement_permission(user: Any, manage: bool = False) -> None:
+    """Keep advertisement access explicit while preserving existing managers."""
+    if user["role"] == "admin":
+        return
+    required = ("manageAdvertisements", "manageSettings") if manage else (
+        "viewAdvertisements", "manageAdvertisements", "viewSettings", "manageSettings"
+    )
+    require_permission(user, *required)
 
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
@@ -2736,7 +2763,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if path == "/owner/api/platform-ads" and method == "GET":
             self._owner()
             with db() as connection:
-                rows = connection.execute("SELECT id,title,message,promo_code,image_data,active,starts_at,expires_at,created_at FROM platform_advertisements ORDER BY id DESC").fetchall()
+                rows = connection.execute("SELECT id,title,message,promo_code,image_data,active,starts_at,expires_at,created_at,display_seconds,banner_config,published_at FROM platform_advertisements ORDER BY id DESC").fetchall()
             self._send(200, [dict(row) for row in rows])
             return
         if path == "/owner/api/platform-ads" and method == "POST":
@@ -2758,10 +2785,18 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if promo_code and not all(c.isalnum() or c in "-_" for c in promo_code):
                 raise ApiError(400, "استخدم في الكود حروفًا وأرقامًا وشرطة فقط")
             duration_days = max(1, min(int(data.get("durationDays", 30)), 3650))
+            try:
+                display_seconds = max(3, min(int(data.get("displaySeconds", 8)), 60))
+            except (TypeError, ValueError):
+                raise ApiError(400, "مدة ظهور الشريط يجب أن تكون بين 3 و60 ثانية")
+            banner_config = {key: data.get(key) for key in ("textColor", "barColor", "textAlign", "fontSize", "logoScale", "height") if data.get(key) not in (None, "")}
+            if banner_config.get("textAlign") not in (None, "right", "center", "left"):
+                raise ApiError(400, "محاذاة الإعلان غير صحيحة")
             starts_at = now()
             expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat()
             with db() as connection:
-                cursor = connection.execute("INSERT INTO platform_advertisements(title,message,promo_code,image_data,active,starts_at,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?)", (title, message, promo_code, image_data, 1, starts_at, expires_at, starts_at))
+                cursor = connection.execute("INSERT INTO platform_advertisements(title,message,promo_code,image_data,active,starts_at,expires_at,created_at,display_seconds,banner_config,published_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (title, message, promo_code, image_data, 1, starts_at, expires_at, starts_at, display_seconds, json.dumps(banner_config, ensure_ascii=False), starts_at))
+                owner_admin.audit(connection, self.platform_actor["name"], "platform_advertisement_created", json.dumps({"id": cursor.lastrowid, "display_seconds": display_seconds}, ensure_ascii=False))
                 connection.commit()
             self._send(201, {"id": cursor.lastrowid, "published": True, "expiresAt": expires_at})
             return
@@ -2773,6 +2808,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 raise ApiError(400, "رقم الإعلان غير صحيح")
             with db() as connection:
                 cursor = connection.execute("DELETE FROM platform_advertisements WHERE id=?", (advertisement_id,))
+                if cursor.rowcount:
+                    owner_admin.audit(connection, self.platform_actor["name"], "platform_advertisement_deleted", advertisement_id)
                 connection.commit()
             if cursor.rowcount == 0:
                 raise ApiError(404, "الإعلان غير موجود")
@@ -2784,9 +2821,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 purge_expired_ads(connection)
                 rows = connection.execute(
                     """SELECT advertisements.id,advertisements.title,advertisements.message,
-                              advertisements.contact,advertisements.active,advertisements.approved,
+                              advertisements.contact,advertisements.image_data,advertisements.banner_config,
+                              advertisements.active,advertisements.approved,
                               advertisements.created_at,advertisements.approved_at,advertisements.expires_at,
-                              advertisements.requested_days,advertisements.review_note,organizations.name AS organization_name
+                              advertisements.requested_days,advertisements.review_note,advertisements.display_seconds,
+                              organizations.name AS organization_name
                        FROM advertisements
                        JOIN organizations ON organizations.id=advertisements.organization_id
                        ORDER BY advertisements.id DESC"""
@@ -2801,10 +2840,10 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 raise ApiError(400, "رقم الإعلان غير صحيح")
             data = self._body()
             action = str(data.get("action", "")).strip()
-            if action not in ("approve", "reject"):
-                raise ApiError(400, "اختر قبول الإعلان أو رفضه")
+            if action not in ("approve", "reject", "return_edit"):
+                raise ApiError(400, "اختر قبول الإعلان أو إرجاعه للتعديل أو رفضه")
             approved = 1 if action == "approve" else 0
-            active = 1 if action == "approve" else 0
+            active = 1 if action in ("approve", "return_edit") else 0
             try:
                 expires_at = ad_policy.owner_expiry(data.get("durationDays", 10), datetime.now(timezone.utc)) if approved else None
             except ValueError as error:
@@ -4301,14 +4340,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 rows = connection.execute(
                     """SELECT advertisements.id,advertisements.title,advertisements.message,advertisements.contact,
                               advertisements.approved_at,advertisements.expires_at,organizations.name AS advertiser,
-                              '' AS promo_code,'organization' AS ad_source,advertisements.image_data
+                              '' AS promo_code,'organization' AS ad_source,advertisements.image_data,advertisements.display_seconds,advertisements.banner_config,advertisements.published_at
                        FROM advertisements JOIN organizations ON organizations.id=advertisements.organization_id
                        WHERE advertisements.active=1 AND advertisements.approved=1
                          AND (advertisements.scheduled_at IS NULL OR advertisements.scheduled_at<=?)
                          AND (advertisements.expires_at IS NULL OR advertisements.expires_at>?)
                        UNION ALL
                        SELECT id,title,message,'' AS contact,starts_at AS approved_at,expires_at,
-                              'منصة خدووم' AS advertiser,promo_code,'platform' AS ad_source,image_data
+                              'منصة خدووم' AS advertiser,promo_code,'platform' AS ad_source,image_data,display_seconds,banner_config,published_at
                        FROM platform_advertisements
                        WHERE active=1 AND (starts_at IS NULL OR starts_at<=?)
                          AND (expires_at IS NULL OR expires_at>?)
@@ -4318,14 +4357,12 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(200, [dict(row) for row in rows])
                 return
             if path == "/api/my-ads" and method == "GET":
-                if user["role"] not in ("admin", "employee"):
-                    raise ApiError(403, "إعلانات المؤسسة متاحة للمدير وموظف المؤسسة فقط")
+                require_advertisement_permission(user)
                 rows = connection.execute("SELECT * FROM advertisements WHERE organization_id=? AND COALESCE(deleted,0)=0 ORDER BY id DESC", (organization_id,)).fetchall()
                 self._send(200, [ad_policy.project(row) for row in rows])
                 return
             if path.startswith("/api/ads/") and method == "DELETE":
-                if user["role"] != "admin":
-                    raise ApiError(403, "حذف إعلانات المؤسسة متاح للمدير فقط")
+                require_advertisement_permission(user, manage=True)
                 ad_id = int(path.rsplit("/", 1)[1])
                 ad = connection.execute("SELECT id,active,approved FROM advertisements WHERE id=? AND organization_id=? AND COALESCE(deleted,0)=0", (ad_id, organization_id)).fetchone()
                 if ad is None:
@@ -4338,8 +4375,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(200, {"deleted": True})
                 return
             if path == "/api/ads" and method == "POST":
-                if user["role"] not in ("admin", "employee"):
-                    raise ApiError(403, "إرسال الإعلان متاح للمدير وموظف المؤسسة فقط")
+                require_advertisement_permission(user, manage=True)
                 package = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()["package"]
                 if package != "vip":
                     raise ApiError(403, "إنشاء الإعلانات متاح لباقة VIP فقط")
@@ -4351,6 +4387,27 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     requested_days = ad_policy.requested_days(data.get("requestedDays", 10))
                 except ValueError as error:
                     raise ApiError(400, str(error))
+                try:
+                    display_seconds = max(3, min(int(data.get("displaySeconds", 8)), 60))
+                except (TypeError, ValueError):
+                    raise ApiError(400, "مدة ظهور الشريط يجب أن تكون بين 3 و60 ثانية")
+                banner_config = data.get("bannerConfig", {})
+                if isinstance(banner_config, str):
+                    try:
+                        banner_config = json.loads(banner_config or "{}")
+                    except (TypeError, ValueError):
+                        raise ApiError(400, "إعدادات تصميم الإعلان غير صحيحة")
+                if not isinstance(banner_config, dict):
+                    raise ApiError(400, "إعدادات تصميم الإعلان غير صحيحة")
+                banner_config = {key: banner_config.get(key) for key in ("textColor", "barColor", "textAlign", "logoPosition", "fontSize", "logoScale", "height", "textX", "textY", "logoX", "logoY") if key in banner_config}
+                if banner_config.get("textAlign") not in (None, "right", "center", "left") or banner_config.get("logoPosition") not in (None, "right", "center", "left"):
+                    raise ApiError(400, "موضع التصميم غير صحيح")
+                for key, low, high in (("fontSize", 12, 32), ("logoScale", .5, 1.5), ("height", 80, 180), ("textX", .08, .92), ("textY", .15, .85), ("logoX", .08, .92), ("logoY", .15, .85)):
+                    if key in banner_config:
+                        try:
+                            banner_config[key] = max(low, min(high, float(banner_config[key])))
+                        except (TypeError, ValueError):
+                            raise ApiError(400, "قيمة تصميم الإعلان غير صحيحة")
                 if not title or len(title) > 120:
                     raise ApiError(400, "عنوان الإعلان مطلوب وبحد أقصى 120 حرفًا")
                 if len(message) > 1000 or len(contact) > 80:
@@ -4360,9 +4417,10 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 if image_data and (len(image_data)>700000 or not re.fullmatch(r'data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+',image_data)):
                     raise ApiError(400,'صورة الإعلان غير صحيحة أو كبيرة جدًا')
                 cursor = connection.execute(
-                    "INSERT INTO advertisements(organization_id,title,message,contact,active,approved,created_at,requested_days,image_data,branch_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (organization_id, title, message, contact, 1, 0, now(), requested_days, image_data, user.get("current_branch")),
+                    "INSERT INTO advertisements(organization_id,title,message,contact,active,approved,created_at,requested_days,image_data,branch_id,display_seconds,banner_config) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (organization_id, title, message, contact, 1, 0, now(), requested_days, image_data, user.get("current_branch"), display_seconds, json.dumps(banner_config, ensure_ascii=False)),
                 )
+                audit_log(connection, organization_id, user["id"], "advertisement_created", f"تم إنشاء الإعلان رقم {cursor.lastrowid} بواسطة {user.get('name', 'المستخدم')}", "advertisement", str(cursor.lastrowid))
                 connection.commit()
                 self._send(201, {"id": cursor.lastrowid, "approved": False})
                 return
