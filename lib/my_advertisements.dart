@@ -579,6 +579,7 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
   bool _loading = true;
   bool _submitting = false;
   bool _canCreate = false;
+  bool _accessChecked = false;
   bool _fetching = false;
   DateTime? _updatedAt;
   Timer? _timer;
@@ -609,7 +610,10 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
         await prefs.setString('subscription_package', package);
       }
       if (!mounted) return;
-      setState(() => _canCreate = package == 'vip');
+      setState(() {
+        _canCreate = package == 'vip';
+        _accessChecked = true;
+      });
     } catch (_) {
       // Keep the supplied/cached value only when the server is temporarily
       // unavailable; the POST endpoint still enforces the real permission.
@@ -619,6 +623,7 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
             (prefs.getString('subscription_package') ??
                 (widget.canCreate == true ? 'vip' : 'free')) ==
             'vip';
+        _accessChecked = true;
       });
     }
   }
@@ -779,6 +784,11 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
 
   @override
   Widget build(BuildContext context) {
+    if (!_accessChecked) {
+      return const KhdoomDarkPage(
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
     if (!_canCreate) {
       return KhdoomDarkPage(
         child: Center(
