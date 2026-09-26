@@ -729,7 +729,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='support' and m=='GET':
   # Every support request must have a visible, organization-scoped AI follow-up.
   # Older requests are repaired here as well, without altering their complaint.
-  ensure_owner_tables(c,s,('technical_tasks','technical_agent_state'))
+  ensure_owner_tables(c,s,('support_tickets','technical_tasks','technical_agent_state','platform_notes','support_ticket_events'))
   args=[]; where='FROM support_tickets t JOIN organizations o ON o.id=t.organization_id LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_admins pa ON pa.id=t.assigned_admin_id WHERE 1=1'
   # Backfill readable references for legacy requests without changing their internal IDs.
   for legacy in rows(c, "SELECT id,created_at FROM support_tickets WHERE reference_code='' OR reference_code IS NULL"):
@@ -742,16 +742,17 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     ts=stamp()
     cur=c.execute('INSERT INTO technical_tasks(organization_id,branch_id,user_id,support_ticket_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(t['organization_id'],str(t.get('branch_id') or '')[:120],t.get('user_id'),t['id'],'support',f"طلب دعم #{t['id']}: {t['category']} — {t['message']}",'medium','queued','تم استلام الشكوى وتحويلها إلى موظف AI للتشخيص الآمن','فحص السجلات والصلاحيات والربط المرتبطة بالمؤسسة، دون تغيير بيانات الإنتاج','بانتظار بدء الفحص',ts,'support-repair'))
    task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(cur.fetchone()['id'],)).fetchone()
-  if task and task['status']=='queued':
-   ts=stamp(); reply='تم استلام طلبك وإسناده إلى موظف التقنية AI. بدأ الفحص الأولي، وسيظهر التقرير هنا عند اكتماله.'
-   c.execute("UPDATE technical_tasks SET status='diagnosing',action_taken=?,started_at=?,finished_at=NULL WHERE id=?",('بدأ موظف التقنية AI الفحص الأولي الآمن',ts,task['id']))
-   if t['status'] in ('open','under_review'):
-    c.execute("UPDATE support_tickets SET status='in_progress',owner_reply=?,updated_at=? WHERE id=?",(reply,ts,t['id']))
-    support_event(c,t,actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_assigned',body=reply,from_status=t['status'],to_status='in_progress')
-   task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(task['id'],)).fetchone()
-   t['technical_task']=dict(task)
-   t['technical_task_id']=task['id']
-   t['technical_status']=task['status']
+   if task and task['status']=='queued':
+    ts=stamp(); reply='تم استلام طلبك وإسناده إلى موظف التقنية AI. بدأ الفحص الأولي، وسيظهر التقرير هنا عند اكتماله.'
+    c.execute("UPDATE technical_tasks SET status='diagnosing',action_taken=?,started_at=?,finished_at=NULL WHERE id=?",('بدأ موظف التقنية AI الفحص الأولي الآمن',ts,task['id']))
+    if t['status'] in ('open','under_review'):
+     c.execute("UPDATE support_tickets SET status='in_progress',owner_reply=?,updated_at=? WHERE id=?",(reply,ts,t['id']))
+     support_event(c,t,actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_assigned',body=reply,from_status=t['status'],to_status='in_progress')
+    task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(task['id'],)).fetchone()
+   if task:
+    t['technical_task']=dict(task)
+    t['technical_task_id']=task['id']
+    t['technical_status']=task['status']
    t['notes']=rows(c,'SELECT note,actor,created_at FROM platform_notes WHERE ticket_id=? ORDER BY id DESC LIMIT 20',(t['id'],))
    t['events']=rows(c,'SELECT actor_type,actor_name,event_type,from_status,to_status,body,created_at FROM support_ticket_events WHERE ticket_id=? ORDER BY id DESC LIMIT 50',(t['id'],))
   return out
