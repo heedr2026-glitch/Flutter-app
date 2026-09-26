@@ -2830,7 +2830,23 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if banner_config.get("logoPosition") not in (None, "right", "center", "left"):
                 raise ApiError(400, "موضع الشعار غير صحيح")
             starts_at = now()
-            expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat()
+            expiry_raw = str(data.get("expiresAt", "")).strip()
+            if expiry_raw:
+                try:
+                    parsed_expiry = datetime.fromisoformat(expiry_raw.replace("Z", "+00:00"))
+                except ValueError:
+                    raise ApiError(400, "تاريخ انتهاء الإعلان غير صحيح")
+                if parsed_expiry.tzinfo is None:
+                    parsed_expiry = parsed_expiry.replace(tzinfo=timezone.utc)
+                parsed_expiry = parsed_expiry.astimezone(timezone.utc)
+                current_time = datetime.now(timezone.utc)
+                if parsed_expiry <= current_time:
+                    raise ApiError(400, "تاريخ انتهاء الإعلان يجب أن يكون في المستقبل")
+                if parsed_expiry > current_time + timedelta(days=3650):
+                    raise ApiError(400, "تاريخ انتهاء الإعلان بعيد جدًا")
+                expires_at = parsed_expiry.isoformat()
+            else:
+                expires_at = (datetime.now(timezone.utc) + timedelta(days=duration_days)).isoformat()
             with db() as connection:
                 cursor = connection.execute("INSERT INTO platform_advertisements(title,message,promo_code,image_data,active,starts_at,expires_at,created_at,display_seconds,banner_config,published_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (title, message, promo_code, image_data, 1, starts_at, expires_at, starts_at, display_seconds, json.dumps(banner_config, ensure_ascii=False), starts_at))
                 owner_admin.audit(connection, self.platform_actor["name"], "platform_advertisement_created", json.dumps({"id": cursor.lastrowid, "display_seconds": display_seconds}, ensure_ascii=False))

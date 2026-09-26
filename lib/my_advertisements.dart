@@ -714,7 +714,13 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
       useSafeArea: false,
       barrierDismissible: false,
       builder: (_) => KhdoomDarkPage(
-        child: AdvertisementRequestDialog(initial: previous, fullScreen: true),
+        child: AdvertisementRequestDialog(
+          initial: previous,
+          fullScreen: true,
+          existingAds: _ads,
+          selectedStatus: _selectedStatus,
+          onStatusChanged: (value) => setState(() => _selectedStatus = value),
+        ),
       ),
     );
     if (!mounted || request == null) return;
@@ -833,33 +839,82 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
     }
     if (!_canCreate) {
       return KhdoomDarkPage(
-        child: Center(
-          child: Card(
-            margin: const EdgeInsets.all(24),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.lock_outline,
-                    size: 48,
-                    color: Color(0xFFF59E0B),
+        child: Directionality(
+          textDirection: TextDirection.rtl,
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(18),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.lock_outline,
+                        size: 42,
+                        color: Color(0xFFF59E0B),
+                      ),
+                      SizedBox(height: 8),
+                      Text(
+                        'إنشاء الإعلان متاح في باقة VIP فقط',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(height: 6),
+                      Text(
+                        'يمكنك مشاهدة الطلبات المسترجعة والإعلانات المنشورة وتاريخ انتهائها.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'إنشاء الإعلان متاح في باقة VIP فقط',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'يمكنك مشاهدة الإعلانات المنشورة، لكن لا يمكن إنشاء إعلان جديد من الباقة الحالية.',
-                    textAlign: TextAlign.center,
-                  ),
-                ],
+                ),
               ),
-            ),
+              AdvertisementFilters(
+                ads: _ads,
+                selected: _selectedStatus,
+                onSelected: (value) => setState(() => _selectedStatus = value),
+              ),
+              const SizedBox(height: 10),
+              for (final ad in filterAdvertisements(_ads, _selectedStatus))
+                Card(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          advertisementLabel(ad),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 17,
+                          ),
+                        ),
+                        Text(
+                          ad['title']?.toString().trim().isNotEmpty == true
+                              ? ad['title'].toString()
+                              : 'إعلان',
+                        ),
+                        Text(
+                          'تاريخ الانتهاء: ${ad['expires_at'] == null ? 'يحدد بعد الموافقة' : _date(ad['expires_at'])}',
+                        ),
+                        if ((ad['review_note']?.toString() ?? '').isNotEmpty)
+                          Text('ملاحظة الإدارة: ${ad['review_note']}'),
+                        const SizedBox(height: 8),
+                        AdvertisementBannerView(ad: ad),
+                      ],
+                    ),
+                  ),
+                ),
+              if (filterAdvertisements(_ads, _selectedStatus).isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Text('لا توجد إعلانات في هذه الحالة بعد.'),
+                ),
+            ],
           ),
         ),
       );
@@ -867,6 +922,9 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
     return KhdoomDarkPage(
       child: AdvertisementRequestDialog(
         fullScreen: true,
+        existingAds: _ads,
+        selectedStatus: _selectedStatus,
+        onStatusChanged: (value) => setState(() => _selectedStatus = value),
         onCompleted: _handleRequestResult,
       ),
     );
@@ -1082,11 +1140,17 @@ class AdvertisementRequestDialog extends StatefulWidget {
   final Map<String, dynamic>? initial;
   final bool fullScreen;
   final ValueChanged<Map<String, dynamic>>? onCompleted;
+  final List<Map<String, dynamic>> existingAds;
+  final String selectedStatus;
+  final ValueChanged<String>? onStatusChanged;
   const AdvertisementRequestDialog({
     super.key,
     this.initial,
     this.fullScreen = false,
     this.onCompleted,
+    this.existingAds = const [],
+    this.selectedStatus = 'all',
+    this.onStatusChanged,
   });
   @override
   State<AdvertisementRequestDialog> createState() =>
@@ -2684,6 +2748,8 @@ class _AdvertisementRequestDialogState
             ],
           ),
           const SizedBox(height: 12),
+          if (widget.existingAds.isNotEmpty) _existingAdsSection(),
+          if (widget.existingAds.isNotEmpty) const SizedBox(height: 14),
           designCard,
           const SizedBox(height: 14),
           _referenceCard(
@@ -2806,6 +2872,76 @@ class _AdvertisementRequestDialogState
             child: settings,
           ),
         ),
+      ),
+    );
+  }
+
+  String _formatExpiry(dynamic raw) {
+    if (raw == null || raw.toString().trim().isEmpty)
+      return 'يحدد بعد الموافقة';
+    final parsed = DateTime.tryParse(raw.toString());
+    if (parsed == null) return raw.toString();
+    final local = parsed.toLocal();
+    return '${local.year}/${local.month.toString().padLeft(2, '0')}/${local.day.toString().padLeft(2, '0')}';
+  }
+
+  Widget _existingAdsSection() {
+    final visible = filterAdvertisements(
+      widget.existingAds,
+      widget.selectedStatus,
+    );
+    return _referenceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'طلباتك والمنشور',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            children: [
+              for (final group in advertisementGroups.entries)
+                ChoiceChip(
+                  label: Text(
+                    '${group.value} (${filterAdvertisements(widget.existingAds, group.key).length})',
+                  ),
+                  selected: widget.selectedStatus == group.key,
+                  onSelected: (_) => widget.onStatusChanged?.call(group.key),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (visible.isEmpty) const Text('لا توجد إعلانات في هذه الحالة بعد.'),
+          for (final ad in visible)
+            Card(
+              margin: const EdgeInsets.only(bottom: 10),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      advertisementLabel(ad),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      ad['title']?.toString().trim().isNotEmpty == true
+                          ? ad['title'].toString()
+                          : 'إعلان',
+                    ),
+                    Text('تاريخ الانتهاء: ${_formatExpiry(ad['expires_at'])}'),
+                    if ((ad['review_note']?.toString() ?? '').isNotEmpty)
+                      Text('ملاحظة الإدارة: ${ad['review_note']}'),
+                    const SizedBox(height: 8),
+                    AdvertisementBannerView(ad: ad),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
