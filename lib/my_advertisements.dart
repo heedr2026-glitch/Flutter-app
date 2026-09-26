@@ -1431,15 +1431,7 @@ class _AdvertisementRequestDialogState
                       ? Stack(
                           clipBehavior: Clip.hardEdge,
                           children: [
-                            Positioned(
-                              left:
-                                  constraints.maxWidth * _bannerX -
-                                  constraints.maxWidth * _bannerWidth / 2,
-                              top:
-                                  constraints.maxHeight * _bannerY -
-                                  constraints.maxHeight * _bannerHeight / 2,
-                              width: constraints.maxWidth * _bannerWidth,
-                              height: constraints.maxHeight * _bannerHeight,
+                            Positioned.fill(
                               child: GestureDetector(
                                 onTap: showTools
                                     ? () => setState(
@@ -1450,29 +1442,20 @@ class _AdvertisementRequestDialogState
                                     ? (details) {
                                         setState(() {
                                           _selectedElement = 'banner';
-                                          _bannerX = _bounded(
-                                            _bannerX +
-                                                details.focalPointDelta.dx /
-                                                    constraints.maxWidth,
-                                            0.08,
-                                            0.92,
-                                          );
-                                          _bannerY = _bounded(
-                                            _bannerY +
-                                                details.focalPointDelta.dy /
-                                                    constraints.maxHeight,
-                                            0.08,
-                                            0.92,
-                                          );
+                                          // الصورة الكاملة هي خلفية الشريط؛
+                                          // لا نسمح بتصغيرها أو إزاحتها بحيث
+                                          // يظهر لون الشريط حولها.
+                                          _bannerX = .5;
+                                          _bannerY = .5;
                                           if (details.scale != 1) {
                                             _bannerWidth = _bounded(
                                               _bannerWidth * details.scale,
-                                              .2,
+                                              1,
                                               1.5,
                                             );
                                             _bannerHeight = _bounded(
                                               _bannerHeight * details.scale,
-                                              .2,
+                                              1,
                                               1.5,
                                             );
                                           }
