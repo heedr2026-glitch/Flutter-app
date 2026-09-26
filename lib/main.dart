@@ -55,6 +55,32 @@ Uint8List? _organizationLogoBytes(String? data) {
   }
 }
 
+Color _bannerColor(String? value, Color fallback) {
+  final text = (value ?? '').trim();
+  if (!RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(text)) return fallback;
+  return Color(int.parse('FF${text.substring(1)}', radix: 16));
+}
+
+int _bannerSeconds(String? value, {int fallback = 8}) {
+  final parsed = int.tryParse(value ?? '');
+  return parsed == null ? fallback : parsed.clamp(3, 60);
+}
+
+int _bannerRotationIndex(List<Map<String, String>> ads) {
+  if (ads.isEmpty) return 0;
+  final total = ads.fold<int>(
+    0,
+    (sum, ad) => sum + _bannerSeconds(ad['displaySeconds']),
+  );
+  var elapsed = (DateTime.now().millisecondsSinceEpoch ~/ 1000) % total;
+  for (var index = 0; index < ads.length; index++) {
+    final seconds = _bannerSeconds(ads[index]['displaySeconds']);
+    if (elapsed < seconds) return index;
+    elapsed -= seconds;
+  }
+  return 0;
+}
+
 /// Security choices belong to the signed-in account on this device. They are
 /// deliberately local; biometric data itself always stays with Android/iOS.
 String _securityUserScope(BranchPreferences prefs) {
@@ -2456,13 +2482,36 @@ class _DashboardPageState extends State<DashboardPage> {
               final cloudAdvertisements = ads
                   .map((item) {
                     final ad = Map<String, dynamic>.from(item as Map);
+                    Map<String, dynamic> banner = const {};
+                    try {
+                      final raw = ad['banner_config'];
+                      if (raw is Map) banner = Map<String, dynamic>.from(raw);
+                      if (raw is String && raw.isNotEmpty) {
+                        banner = Map<String, dynamic>.from(
+                          jsonDecode(raw) as Map,
+                        );
+                      }
+                    } catch (_) {}
                     return <String, String>{
                       'title': ad['title']?.toString() ?? '',
                       'message': ad['message']?.toString() ?? '',
                       'contact': ad['contact']?.toString() ?? '',
                       'advertiser': ad['advertiser']?.toString() ?? '',
+                      'advertiserPhone':
+                          ad['advertiser_phone']?.toString() ?? '',
                       'promoCode': ad['promo_code']?.toString() ?? '',
                       'imageData': ad['image_data']?.toString() ?? '',
+                      'displaySeconds':
+                          ad['display_seconds']?.toString() ?? '8',
+                      'barColor': banner['barColor']?.toString() ?? '#172554',
+                      'textColor': banner['textColor']?.toString() ?? '#FFFFFF',
+                      'textAlign': banner['textAlign']?.toString() ?? 'right',
+                      'fontSize': banner['fontSize']?.toString() ?? '18',
+                      'logoScale': banner['logoScale']?.toString() ?? '1',
+                      'height': banner['height']?.toString() ?? '145',
+                      'adType': banner['adType']?.toString() ?? 'text',
+                      'bannerImageData':
+                          banner['bannerImageData']?.toString() ?? '',
                       'promotion': ad['ad_source']?.toString() == 'platform'
                           ? 'packages'
                           : '',
@@ -2656,10 +2705,7 @@ class _DashboardPageState extends State<DashboardPage> {
     // devices display the same approved advertisement at the same time.
     void alignToClock() {
       if (!mounted || _vipAdvertisements.isEmpty) return;
-      final expected =
-          DateTime.now().millisecondsSinceEpoch ~/
-          8000 %
-          _vipAdvertisements.length;
+      final expected = _bannerRotationIndex(_vipAdvertisements);
       if (_currentAdIndex != expected) {
         setState(() => _currentAdIndex = expected);
       }
@@ -2683,6 +2729,10 @@ class _DashboardPageState extends State<DashboardPage> {
             Text(
               'المؤسسة: ${ad['advertiser']?.isNotEmpty == true ? ad['advertiser'] : 'غير محددة'}',
             ),
+            if (ad['advertiserPhone']?.isNotEmpty == true) ...[
+              const SizedBox(height: 10),
+              SelectableText('رقم جوال المؤسسة: ${ad['advertiserPhone']}'),
+            ],
             const SizedBox(height: 10),
             if (ad['message']?.isNotEmpty == true) Text(ad['message']!),
             if (ad['contact']?.isNotEmpty == true) ...[
@@ -2709,10 +2759,16 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Widget _buildAdvertisementBanner() {
     final ad = _vipAdvertisements[_currentAdIndex % _vipAdvertisements.length];
+    final bannerHeight = ((double.tryParse(ad['height'] ?? '') ?? 145).clamp(
+      80,
+      180,
+    )).toDouble();
+    final fullBannerImage =
+        ad['adType'] == 'image' && (ad['bannerImageData']?.isNotEmpty == true);
     return Padding(
       padding: const EdgeInsets.only(top: 12),
       child: Material(
-        color: const Color(0xFF172554),
+        color: _bannerColor(ad['barColor'], const Color(0xFF172554)),
         borderRadius: BorderRadius.circular(16),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
@@ -2732,7 +2788,7 @@ class _DashboardPageState extends State<DashboardPage> {
           },
           child: Container(
             width: double.infinity,
-            constraints: const BoxConstraints(minHeight: 145),
+            constraints: BoxConstraints(minHeight: bannerHeight),
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(16),
@@ -2750,82 +2806,130 @@ class _DashboardPageState extends State<DashboardPage> {
                   child: child,
                 ),
               ),
-              child: Row(
-                key: ValueKey('${ad['title']}-$_currentAdIndex'),
-                children: [
-                  if (ad['imageData']?.isNotEmpty == true) ...[
-                    ClipRRect(
+              child: fullBannerImage
+                  ? ClipRRect(
+                      key: ValueKey('${ad['title']}-image-$_currentAdIndex'),
                       borderRadius: BorderRadius.circular(10),
                       child: Image.memory(
-                        base64Decode(ad['imageData']!.split(',').last),
-                        width: 72,
-                        height: 72,
+                        base64Decode(ad['bannerImageData']!.split(',').last),
+                        width: double.infinity,
+                        height: bannerHeight - 36,
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => const Icon(
-                          Icons.campaign,
-                          color: Color(0xFFF59E0B),
-                          size: 46,
-                        ),
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                  ] else ...[
-                    const Icon(
-                      Icons.campaign,
-                      color: Color(0xFFF59E0B),
-                      size: 46,
-                    ),
-                    const SizedBox(width: 10),
-                  ],
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    )
+                  : Row(
+                      key: ValueKey('${ad['title']}-$_currentAdIndex'),
                       children: [
-                        Text(
-                          ad['title'] ?? 'إعلان',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 19,
-                            fontWeight: FontWeight.bold,
+                        if (ad['imageData']?.isNotEmpty == true) ...[
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.memory(
+                              base64Decode(ad['imageData']!.split(',').last),
+                              width:
+                                  ((72 *
+                                              (double.tryParse(
+                                                    ad['logoScale'] ?? '',
+                                                  ) ??
+                                                  1))
+                                          .clamp(40, 108))
+                                      .toDouble(),
+                              height:
+                                  ((72 *
+                                              (double.tryParse(
+                                                    ad['logoScale'] ?? '',
+                                                  ) ??
+                                                  1))
+                                          .clamp(40, 108))
+                                      .toDouble(),
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => const Icon(
+                                Icons.campaign,
+                                color: Color(0xFFF59E0B),
+                                size: 46,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                        ] else ...[
+                          const Icon(
+                            Icons.campaign,
+                            color: Color(0xFFF59E0B),
+                            size: 46,
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                ad['title'] ?? 'إعلان',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: _bannerColor(
+                                    ad['textColor'],
+                                    Colors.white,
+                                  ),
+                                  fontSize:
+                                      ((double.tryParse(ad['fontSize'] ?? '') ??
+                                                  19)
+                                              .clamp(12, 32))
+                                          .toDouble(),
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                ad['message']?.isNotEmpty == true
+                                    ? ad['message']!
+                                    : (ad['advertiser'] ?? ''),
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: ad['textAlign'] == 'left'
+                                    ? TextAlign.left
+                                    : ad['textAlign'] == 'center'
+                                    ? TextAlign.center
+                                    : TextAlign.right,
+                                style: TextStyle(
+                                  color: _bannerColor(
+                                    ad['textColor'],
+                                    Colors.white,
+                                  ).withValues(alpha: .82),
+                                  fontSize:
+                                      (((double.tryParse(
+                                                        ad['fontSize'] ?? '',
+                                                      ) ??
+                                                      19) -
+                                                  3)
+                                              .clamp(12, 28))
+                                          .toDouble(),
+                                  height: 1.4,
+                                ),
+                              ),
+                              const SizedBox(height: 7),
+                              Text(
+                                ad['promotion']?.isNotEmpty == true
+                                    ? 'عرض الباقات والاستفادة من الكود'
+                                    : 'عرض تفاصيل الإعلان',
+                                style: const TextStyle(
+                                  color: Color(0xFFFBBF24),
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 3),
-                        Text(
-                          ad['message']?.isNotEmpty == true
-                              ? ad['message']!
-                              : (ad['advertiser'] ?? ''),
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 15,
-                            height: 1.4,
-                          ),
-                        ),
-                        const SizedBox(height: 7),
-                        Text(
-                          ad['promotion']?.isNotEmpty == true
-                              ? 'عرض الباقات والاستفادة من الكود'
-                              : 'عرض تفاصيل الإعلان',
-                          style: const TextStyle(
-                            color: Color(0xFFFBBF24),
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                          ),
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          color: Color(0xFFFBBF24),
+                          size: 18,
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(width: 6),
-                  const Icon(
-                    Icons.arrow_forward_ios_rounded,
-                    color: Color(0xFFFBBF24),
-                    size: 18,
-                  ),
-                ],
-              ),
             ),
           ),
         ),
@@ -3042,13 +3146,23 @@ class _DashboardPageState extends State<DashboardPage> {
         final details = record['details']?.toString().trim() ?? '';
         final website = record['website']?.toString().trim() ?? '';
         final date = record['date']?.toString() ?? '';
+        final normalizedTitle = _normalizeAssistantText(title);
+        final isCommercialRecord = normalizedTitle.contains('سجل تجاري');
+        final compactDetails = details.replaceAll(RegExp(r'\s+'), ' ').trim();
+        final shortDetails = compactDetails.length > 140
+            ? '${compactDetails.substring(0, 140)}…'
+            : compactDetails;
+        final hasPreview =
+            (record['imagePath']?.toString().trim().isNotEmpty ?? false) ||
+            (record['imageData']?.toString().trim().isNotEmpty ?? false);
         attachedRecords.add(record);
         answer = [
-          'معلومات $title:',
-          if (details.isNotEmpty) details,
-          'الحالة: ${_assistantDateStatus(date)}',
+          'ملخص ${isCommercialRecord ? 'السجل التجاري' : title}:',
+          'تاريخ الانتهاء: ${_assistantDateStatus(date)}',
+          if (shortDetails.isNotEmpty) 'ملاحظة: $shortDetails',
+          if (hasPreview) 'توجد صورة للمعاينة أسفل الرد.',
           if (website.isNotEmpty)
-            'يمكنك فتح الموقع الرسمي من الزر أدناه لمشاهدة بقية المستندات.',
+            'يوجد رابط التجديد أو الموقع الرسمي أسفل الرد.',
         ].join('\n');
         action = website.isNotEmpty
             ? () => openDocumentWebsite(context, website)
@@ -3756,9 +3870,12 @@ class _DashboardPageState extends State<DashboardPage> {
                 _buildOrganizationAssistant(),
                 const SizedBox(height: 16),
 
-                if (_vipAdvertisements.isNotEmpty) _buildAdvertisementBanner(),
-                if (_subscriptionPackage == 'vip')
+                if (_subscriptionPackage == 'vip' && _isAdmin) ...[
                   const VipAdvertisementCard(),
+                  const SizedBox(height: 16),
+                ],
+
+                if (_vipAdvertisements.isNotEmpty) _buildAdvertisementBanner(),
               ],
             ),
           ),
@@ -4285,27 +4402,51 @@ class _VehiclesPageState extends State<VehiclesPage> {
     if (token == null || token.isEmpty) return null;
     return KhdoomCloudApi(
       scope: prefs,
-      baseUrl: prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
     )..token = token;
   }
 
   Future<void> _trackVehicle(Map<String, dynamic> vehicle) async {
     if (!await Geolocator.isLocationServiceEnabled()) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فعّل خدمة الموقع من الجهاز أولاً.')));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('فعّل خدمة الموقع من الجهاز أولاً.')),
+        );
       return;
     }
     var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) permission = await Geolocator.requestPermission();
-    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('يلزم السماح بالموقع لتحديث موقع المركبة.')));
+    if (permission == LocationPermission.denied)
+      permission = await Geolocator.requestPermission();
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('يلزم السماح بالموقع لتحديث موقع المركبة.'),
+          ),
+        );
       return;
     }
     try {
-      final position = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+        ),
+      );
       final api = await _trackingApi();
-      if (api == null) throw const CloudApiException(401, 'سجّل الدخول أولاً لتحديث موقع المركبة');
+      if (api == null)
+        throw const CloudApiException(
+          401,
+          'سجّل الدخول أولاً لتحديث موقع المركبة',
+        );
       try {
-        await api.updateVehicleTracking(vehicleKey: _trackingKey(vehicle), latitude: position.latitude, longitude: position.longitude, accuracyMeters: position.accuracy);
+        await api.updateVehicleTracking(
+          vehicleKey: _trackingKey(vehicle),
+          latitude: position.latitude,
+          longitude: position.longitude,
+          accuracyMeters: position.accuracy,
+        );
       } finally {
         api.close();
       }
@@ -4313,28 +4454,46 @@ class _VehiclesPageState extends State<VehiclesPage> {
       vehicle['lastLongitude'] = position.longitude;
       vehicle['lastLocationAt'] = DateTime.now().toIso8601String();
       await _save();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تحديث موقع المركبة وحفظه للمؤسسة.')));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم تحديث موقع المركبة وحفظه للمؤسسة.')),
+        );
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذر تحديث الموقع: $error')));
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('تعذر تحديث الموقع: $error')));
     }
   }
 
   Future<void> _showVehicleLocation(Map<String, dynamic> vehicle) async {
     try {
       final api = await _trackingApi();
-      if (api == null) throw const CloudApiException(401, 'سجّل الدخول أولاً لعرض موقع المركبة');
+      if (api == null)
+        throw const CloudApiException(
+          401,
+          'سجّل الدخول أولاً لعرض موقع المركبة',
+        );
       final location = await api.vehicleTracking(_trackingKey(vehicle));
       api.close();
       final latitude = (location['latitude'] as num?)?.toDouble();
       final longitude = (location['longitude'] as num?)?.toDouble();
       if (latitude == null || longitude == null) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لا يوجد موقع مسجل لهذه المركبة بعد.')));
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('لا يوجد موقع مسجل لهذه المركبة بعد.'),
+            ),
+          );
         return;
       }
-      final map = Uri.parse('https://www.openstreetmap.org/?mlat=$latitude&mlon=$longitude#map=16/$latitude/$longitude');
+      final map = Uri.parse(
+        'https://www.openstreetmap.org/?mlat=$latitude&mlon=$longitude#map=16/$latitude/$longitude',
+      );
       await launchUrl(map, mode: LaunchMode.externalApplication);
     } catch (error) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذر عرض الموقع: $error')));
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('تعذر عرض الموقع: $error')));
     }
   }
 
@@ -4661,21 +4820,93 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _addCamera() async {
-    final name = TextEditingController(); final location = TextEditingController(); final endpoint = TextEditingController();
-    final values = await showDialog<Map<String,String>>(context: context, builder: (context) => AlertDialog(title: const Text('إضافة كاميرا'), content: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller:name, decoration:const InputDecoration(labelText:'اسم الكاميرا')),TextField(controller:location, decoration:const InputDecoration(labelText:'الموقع أو الفرع')),TextField(controller:endpoint, decoration:const InputDecoration(labelText:'رابط RTSP أو ONVIF بدون بيانات دخول'))]), actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('إلغاء')),FilledButton(onPressed:()=>Navigator.pop(context,{'name':name.text.trim(),'location':location.text.trim(),'endpoint':endpoint.text.trim()}),child:const Text('حفظ'))]));
-    name.dispose(); location.dispose(); endpoint.dispose();
+    final name = TextEditingController();
+    final location = TextEditingController();
+    final endpoint = TextEditingController();
+    final values = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('إضافة كاميرا'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: name,
+              decoration: const InputDecoration(labelText: 'اسم الكاميرا'),
+            ),
+            TextField(
+              controller: location,
+              decoration: const InputDecoration(labelText: 'الموقع أو الفرع'),
+            ),
+            TextField(
+              controller: endpoint,
+              decoration: const InputDecoration(
+                labelText: 'رابط RTSP أو ONVIF بدون بيانات دخول',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, {
+              'name': name.text.trim(),
+              'location': location.text.trim(),
+              'endpoint': endpoint.text.trim(),
+            }),
+            child: const Text('حفظ'),
+          ),
+        ],
+      ),
+    );
+    name.dispose();
+    location.dispose();
+    endpoint.dispose();
     if (values == null || values['name']!.isEmpty) return;
-    final prefs=await BranchPreferences.getInstance(); const storage=FlutterSecureStorage(); final token=await storage.read(key:'cloud_session_token'); if(token==null||token.isEmpty)return;
-    final api=KhdoomCloudApi(scope:prefs,baseUrl:prefs.getString('cloud_api_url')??'https://khdoom-api.onrender.com')..token=token;
-    try { await api.createCamera({'name':values['name'],'location':values['location'],'endpoint':values['endpoint'],'connectionType':'rtsp'}); if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('تم حفظ الكاميرا'))); } on CloudApiException catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message)));} finally {api.close();}
+    final prefs = await BranchPreferences.getInstance();
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'cloud_session_token');
+    if (token == null || token.isEmpty) return;
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
+    try {
+      await api.createCamera({
+        'name': values['name'],
+        'location': values['location'],
+        'endpoint': values['endpoint'],
+        'connectionType': 'rtsp',
+      });
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('تم حفظ الكاميرا')));
+    } on CloudApiException catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      api.close();
+    }
   }
 
   Future<void> _openCameras() async {
-    final prefs = await BranchPreferences.getInstance(); const storage = FlutterSecureStorage(); final token = await storage.read(key: 'cloud_session_token');
+    final prefs = await BranchPreferences.getInstance();
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'cloud_session_token');
     if (token == null || token.isEmpty) return;
-    final api = KhdoomCloudApi(scope: prefs, baseUrl: prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com')..token = token;
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
     try {
-      final cameras = await api.cameras(); if (!mounted) return;
+      final cameras = await api.cameras();
+      if (!mounted) return;
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -4686,28 +4917,43 @@ class _SettingsPageState extends State<SettingsPage> {
                 ? const Text('لا توجد كاميرات مسجلة.')
                 : ListView(
                     shrinkWrap: true,
-                    children: cameras.map((camera) => ListTile(
-                      leading: const Icon(Icons.videocam_outlined),
-                      title: Text(camera['name']?.toString() ?? 'كاميرا'),
-                      subtitle: Text('${camera['location'] ?? ''} — ${camera['status'] ?? 'not_connected'}'),
-                    )).toList(),
+                    children: cameras
+                        .map(
+                          (camera) => ListTile(
+                            leading: const Icon(Icons.videocam_outlined),
+                            title: Text(camera['name']?.toString() ?? 'كاميرا'),
+                            subtitle: Text(
+                              '${camera['location'] ?? ''} — ${camera['status'] ?? 'not_connected'}',
+                            ),
+                          ),
+                        )
+                        .toList(),
                   ),
           ),
           actions: [
-            if (_canManageSettings) TextButton(
-              onPressed: () async {
-                Navigator.pop(dialogContext);
-                await _addCamera();
-                if (mounted) _openCameras();
-              },
-              child: const Text('إضافة كاميرا'),
+            if (_canManageSettings)
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(dialogContext);
+                  await _addCamera();
+                  if (mounted) _openCameras();
+                },
+                child: const Text('إضافة كاميرا'),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('إغلاق'),
             ),
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('إغلاق')),
           ],
         ),
       );
-    } on CloudApiException catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message))); }
-    finally { api.close(); }
+    } on CloudApiException catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      api.close();
+    }
   }
 
   Future<void> _openTechnicalSupport() async {
@@ -5331,7 +5577,21 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   const SizedBox(height: 22),
                   if (_canViewSettings)
-                    ListTile(leading: const Icon(Icons.videocam_outlined, color: Color(0xFF7DD3FC)), title: const Text('كاميرات المؤسسة', style: TextStyle(color: Colors.white)), subtitle: const Text('عرض الكاميرات المسجلة وحالة الاتصال', style: TextStyle(color: Colors.white60)), onTap: _openCameras),
+                    ListTile(
+                      leading: const Icon(
+                        Icons.videocam_outlined,
+                        color: Color(0xFF7DD3FC),
+                      ),
+                      title: const Text(
+                        'كاميرات المؤسسة',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      subtitle: const Text(
+                        'عرض الكاميرات المسجلة وحالة الاتصال',
+                        style: TextStyle(color: Colors.white60),
+                      ),
+                      onTap: _openCameras,
+                    ),
                   if (_canManageSettings) ...[
                     _sectionTitle('الإشعارات'),
                     const SizedBox(height: 10),
@@ -5454,6 +5714,20 @@ class _SettingsPageState extends State<SettingsPage> {
                           context,
                           MaterialPageRoute(
                             builder: (_) => const SubscriptionPackagesPage(),
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    _settingsInfoTile(
+                      icon: Icons.campaign_outlined,
+                      title: 'إعلانات المؤسسة',
+                      subtitle: 'إضافة إعلانك ومعاينته ومتابعة الموافقة من مكان مستقل',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const MyAdvertisementsPage(),
                           ),
                         );
                       },
@@ -5923,7 +6197,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                       ),
                       items: availableOffers.map((offer) {
                         return DropdownMenuItem<String>(
-                           value: offer['selection_id']?.toString(),
+                          value: offer['selection_id']?.toString(),
                           alignment: Alignment.centerRight,
                           child: Text(
                             '${offer['paid_months']} شهر — ${offer['has_offer'] == true ? 'عرض: ' : ''}${offer['price_sar']} ريال',
@@ -5936,8 +6210,8 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                       }).toList(),
                       onChanged: (value) => setDialogState(() {
                         selectedOffer = availableOffers.firstWhere(
-                           (offer) => offer['selection_id']?.toString() == value,
-                         );
+                          (offer) => offer['selection_id']?.toString() == value,
+                        );
                         discountResult = null;
                       }),
                     ),
@@ -6094,10 +6368,16 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                                 });
                                 try {
                                   final result = await api.previewDiscountCode(
-                                     code,
-                                     id,
-                                     durationMonths: int.tryParse(selectedOffer?['paid_months']?.toString() ?? '') ?? 1,
-                                   );
+                                    code,
+                                    id,
+                                    durationMonths:
+                                        int.tryParse(
+                                          selectedOffer?['paid_months']
+                                                  ?.toString() ??
+                                              '',
+                                        ) ??
+                                        1,
+                                  );
                                   if (!dialogContext.mounted) return;
                                   setDialogState(() {
                                     discountResult = result;
@@ -6192,8 +6472,15 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                             transferName: transferNameController.text,
                             transferReceipt: transferReceipt,
                             discountCode: discountCode,
-                            offerId: int.tryParse(selectedOffer?['offer_id']?.toString() ?? ''),
-                             durationMonths: int.tryParse(selectedOffer?['paid_months']?.toString() ?? '') ?? 1,
+                            offerId: int.tryParse(
+                              selectedOffer?['offer_id']?.toString() ?? '',
+                            ),
+                            durationMonths:
+                                int.tryParse(
+                                  selectedOffer?['paid_months']?.toString() ??
+                                      '',
+                                ) ??
+                                1,
                           );
                           requestSent = true;
                           if (dialogContext.mounted) {
@@ -6256,15 +6543,6 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
         backgroundColor: const Color(0xFF111B35),
         foregroundColor: Colors.white,
       ),
-      floatingActionButton: _currentPackage == 'vip'
-          ? FloatingActionButton.extended(
-              onPressed: _manageVipAdvertisement,
-              backgroundColor: const Color(0xFFF59E0B),
-              foregroundColor: const Color(0xFF0B1020),
-              icon: const Icon(Icons.campaign),
-              label: const Text('إدارة إعلاني'),
-            )
-          : null,
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView.separated(
@@ -9726,6 +10004,7 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
   }
 
   Future<void> _loadAlertRecords() async {
+    final watch = Stopwatch()..start();
     final prefs = await _branchPrefs;
     final saved = prefs.getString(_recordsKey);
     if (saved != null && saved.isNotEmpty) {
@@ -9751,7 +10030,6 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
       }
       await _saveAlertRecords();
     }
-    await _syncAlertRecordsWithCloud(prefs);
     savedDates.clear();
     for (final alert in alerts.where((item) => item['type'] != 'monthlyBill')) {
       final date = alert['date']?.toString() ?? '';
@@ -9772,7 +10050,24 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
         throw StateError('تعذر حفظ التصنيفات');
     }
     _ready = true;
+    watch.stop();
+    debugPrint(
+      '[performance] organization_alerts_open ${watch.elapsedMilliseconds}ms records=${alerts.length}',
+    );
     if (mounted) setState(() {});
+
+    // Render the locally cached records first. A cloud sync can take several
+    // seconds (and may also include images), so it must not block opening the
+    // alerts page. Apply the remote copy when it arrives and refresh only the
+    // affected page.
+    unawaited(() async {
+      try {
+        await _syncAlertRecordsWithCloud(prefs);
+        if (mounted) setState(() {});
+      } catch (_) {
+        // The cached records remain usable when the network is unavailable.
+      }
+    }());
   }
 
   Future<List<Map<String, dynamic>>> _recordsForCloud() async {
@@ -9848,6 +10143,7 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
   }
 
   Future<void> _saveAlertRecords() async {
+    final watch = Stopwatch()..start();
     final prefs = await _branchPrefs;
     final records = await _recordsForCloud();
     if (!await prefs.setString(_recordsKey, jsonEncode(records))) {
@@ -9855,6 +10151,10 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
     }
     await _syncAlertRecordsWithCloud(prefs);
     await KhdoomNotifications.syncStoredAlerts();
+    watch.stop();
+    debugPrint(
+      '[performance] organization_alerts_save ${watch.elapsedMilliseconds}ms records=${records.length}',
+    );
   }
 
   Future<void> _editAlert(Map<String, dynamic>? existing) async {
@@ -11369,11 +11669,14 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
   bool _voiceReady = false;
   bool _isListening = false;
   bool _speakReplies = true;
+  String _voiceDraft = '';
+  String? _lastContext;
   final Map<int, List<Map<String, dynamic>>> _messageAttachments = {};
-  final List<({String text, bool fromUser})> _messages = [
+  final List<({String text, bool fromUser, bool voice})> _messages = [
     (
       text: 'مرحبًا 👋 أنا موظف خدوم الذكي. اسألني عن استخدام التطبيق، الباقات، الموظفين، المركبات، الفواتير، التنبيهات أو أكواد التفعيل.',
       fromUser: false,
+      voice: false,
     ),
   ];
 
@@ -11395,7 +11698,31 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       },
     );
     await _tts.setLanguage('ar-SA');
-    await _tts.setSpeechRate(0.48);
+    await _tts.setSpeechRate(0.42);
+    await _tts.setPitch(0.82);
+    await _tts.setVolume(1.0);
+    try {
+      final voices = await _tts.getVoices;
+      if (voices is List) {
+        final maleVoice = voices.cast<dynamic>().firstWhere((voice) {
+          final name = voice is Map ? '${voice['name']}' : '$voice';
+          final locale = voice is Map ? '${voice['locale']}' : '';
+          final normalized = name.toLowerCase();
+          return locale.toLowerCase().startsWith('ar') &&
+              (normalized.contains('male') ||
+                  normalized.contains('man') ||
+                  normalized.contains('m1'));
+        }, orElse: () => null);
+        if (maleVoice is Map && maleVoice['name'] != null) {
+          await _tts.setVoice({
+            'name': maleVoice['name'].toString(),
+            'locale': (maleVoice['locale'] ?? 'ar-SA').toString(),
+          });
+        }
+      }
+    } catch (_) {
+      // Keep the device Arabic voice if a male Arabic voice is unavailable.
+    }
     if (mounted) setState(() => _voiceReady = available);
   }
 
@@ -11421,6 +11748,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       return;
     }
     await _tts.stop();
+    _voiceDraft = '';
     if (mounted) setState(() => _isListening = true);
     await _speech.listen(
       listenOptions: stt.SpeechListenOptions(
@@ -11430,14 +11758,14 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
         listenMode: stt.ListenMode.dictation,
       ),
       onResult: (result) async {
-        if (result.recognizedWords.isNotEmpty && mounted) {
-          setState(() => _messageController.text = result.recognizedWords);
+        if (result.recognizedWords.isNotEmpty) {
+          _voiceDraft = result.recognizedWords;
         }
-        if (result.finalResult && result.recognizedWords.trim().isNotEmpty) {
+        if (result.finalResult && _voiceDraft.trim().isNotEmpty) {
           await _speech.stop();
           if (mounted) {
             setState(() => _isListening = false);
-            await _sendMessage();
+            await _sendMessage(_voiceDraft, true);
           }
         }
       },
@@ -11447,7 +11775,10 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
   Future<void> _speak(String text) async {
     if (!_speakReplies || !_voiceReady) return;
     await _tts.stop();
-    await _tts.speak(text);
+    final speechText = text.length > 420
+        ? '${text.substring(0, 420).trim()}... التفاصيل والصورة والرابط ظاهرة في المحادثة.'
+        : text;
+    await _tts.speak(speechText);
   }
 
   @override
@@ -11459,12 +11790,12 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     super.dispose();
   }
 
-  Future<void> _sendMessage([String? suggested]) async {
+  Future<void> _sendMessage([String? suggested, bool voice = false]) async {
     final question = (suggested ?? _messageController.text).trim();
     if (question.isEmpty || _conversation.busy) return;
     _messageController.clear();
     setState(() {
-      _messages.add((text: question, fromUser: true));
+      _messages.add((text: question, fromUser: true, voice: voice));
     });
     final attachments = <Map<String, dynamic>>[];
     final answer = await _answer(question, attachments: attachments);
@@ -11472,7 +11803,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     if (!mounted) return;
     setState(() {
       _messageAttachments[_messages.length] = attachments;
-      _messages.add((text: answer, fromUser: false));
+      _messages.add((text: answer, fromUser: false, voice: false));
     });
     unawaited(_speak(answer));
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -11496,6 +11827,19 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
 
+  String _assistantDateStatus(dynamic rawDate) {
+    final date = DateTime.tryParse(rawDate?.toString() ?? '');
+    if (date == null) return 'تاريخ الانتهاء غير مضاف';
+    final today = DateTime.now();
+    final startToday = DateTime(today.year, today.month, today.day);
+    final days = date.difference(startToday).inDays;
+    final formatted =
+        '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+    if (days < 0) return '$formatted — منتهي منذ ${days.abs()} يوم';
+    if (days == 0) return '$formatted — ينتهي اليوم';
+    return '$formatted — متبقي $days يوم';
+  }
+
   bool _hasAny(String text, List<String> words) => words.any(text.contains);
 
   Future<String> _answer(
@@ -11503,6 +11847,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     List<Map<String, dynamic>>? attachments,
   }) async {
     final text = _normalizeArabic(question);
+    final context = _lastContext;
     final prefs = await _branchPrefs;
     _conversation.bind(prefs.branchId);
     if (_hasAny(text, ['فرع', 'فروع'])) {
@@ -11538,6 +11883,20 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     ]);
     final wantsDelete = _hasAny(text, ['احذف', 'حذف', 'ازاله', 'الغاء']);
     final wantsView = _hasAny(text, ['اشوف', 'عرض', 'اظهر', 'اين', 'وين']);
+
+    if (_hasAny(text, ['تامين', 'التامين']) &&
+        context?.startsWith('vehicle:') == true) {
+      final vehicleName = context!.substring('vehicle:'.length);
+      final vehicle = vehicles.firstWhere(
+        (item) =>
+            _normalizeArabic(item['name']?.toString() ?? '') == vehicleName,
+        orElse: () => <String, dynamic>{},
+      );
+      if (vehicle.isNotEmpty) {
+        attachments?.add(vehicle);
+        return 'حاضر. تأمين ${vehicle['name'] ?? 'المركبة'}: ${_assistantDateStatus(vehicle['insurance'])}. إذا كان قريبًا من الانتهاء ابدأ التجديد الآن.';
+      }
+    }
 
     // Keep common how-to instructions available even if the API is temporarily
     // unavailable. These paths mirror actual screens and buttons in the app.
@@ -11600,6 +11959,8 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       }
     }
     if (matchedEmployee != null) {
+      _lastContext =
+          'employee:${_normalizeArabic(matchedEmployee['name']?.toString() ?? '')}';
       attachments?.add(matchedEmployee);
       final name = matchedEmployee['name']?.toString() ?? 'الموظف';
       Map<String, dynamic>? alert;
@@ -11644,20 +12005,18 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       }
     }
     if (matchedRecord != null) {
+      _lastContext =
+          'record:${_normalizeArabic(matchedRecord['title']?.toString() ?? '')}';
       attachments?.add(matchedRecord);
       final title = matchedRecord['title']?.toString() ?? 'المستند';
-      final details = matchedRecord['details']?.toString().trim() ?? '';
       final date = DateTime.tryParse(matchedRecord['date']?.toString() ?? '');
-      final website = matchedRecord['website']?.toString().trim() ?? '';
       final dateText = date == null
           ? 'تاريخ الانتهاء غير مضاف'
-          : 'تاريخ الانتهاء: ${date.day}/${date.month}/${date.year}';
+          : _assistantDateStatus(date.toIso8601String());
       return [
-        'بيانات $title:',
-        if (details.isNotEmpty) details,
+        'هذه $title.',
         dateText,
-        if (website.isNotEmpty) 'الموقع الرسمي: $website',
-        'يمكنك التعديل أو إضافة صورة من «التنبيهات ← تنبيهات المؤسسة».',
+        'الأفضل تبدأ إجراءات التجديد قريبًا إذا كان التاريخ قريبًا.',
       ].join('\n');
     }
 
@@ -11672,7 +12031,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     }
     if (_hasAny(text, ['اعلان', 'اعلانات', 'ترويج'])) {
       if (wantsAdd) {
-        return 'إنشاء الإعلان متاح لـVIP: افتح «الإعدادات ← الباقات ← إدارة إعلاني»، أدخل العنوان والتفاصيل والتواصل ثم أرسل. يصل للمالك للموافقة، وبعد القبول يُنشر 48 ساعة.';
+        return 'افتح «الإعدادات ← إعلانات المؤسسة» لإضافة إعلانك، اختيار الصورة والألوان ومعاينة الشريط ثم إرساله للمراجعة. بعد الموافقة يظهر حسب مدة النشر المعتمدة.';
       }
       if (wantsView) {
         return 'الإعلان المقبول يظهر كشريط أسفل خيارات الرئيسية للمجانية والأساسية. اضغط عليه لعرض المؤسسة والتفاصيل ورقم التواصل. VIP لا تظهر له الإعلانات.';
@@ -11712,6 +12071,10 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       }).toList();
       final selected = matching.isEmpty ? vehicles.take(5) : matching;
       attachments?.addAll(selected);
+      if (selected.length == 1) {
+        _lastContext =
+            'vehicle:${_normalizeArabic(selected.first['name']?.toString() ?? '')}';
+      }
       return selected
           .map((vehicle) {
             final name = vehicle['name']?.toString() ?? 'مركبة';
@@ -11791,7 +12154,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       return 'يمكن استخدام خدووم على عدة أجهزة متصلة بالخادم نفسه. للاستخدام خارج الشبكة المحلية نحتاج نشر الخادم على رابط HTTPS عام.';
     }
     if (_hasAny(text, ['سلام', 'مرحبا', 'هلا', 'اهلا'])) {
-      return 'أهلًا بك 🌟 اسألني عن الفواتير، الإعلانات، المركبات، الموظفين، موظفي AI، الباقات، التنبيهات أو بيانات المؤسسة.';
+      return 'وعليكم السلام، حياك الله. وش حاب أطلع لك اليوم؟';
     }
     if (_hasAny(text, ['مساعده', 'ساعدني', 'مميزات', 'وش تعرف'])) {
       return 'أشرح لك بيانات المؤسسة، الموظفين، المركبات، الفواتير، التنبيهات، الباقات والأكواد، الإعلانات، موظفي AI، الدخول والخادم. اكتب اسم الميزة فقط أو سؤالك كاملًا.';
@@ -11884,13 +12247,23 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            SelectableText(
-                              message.text,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                height: 1.45,
+                            if (message.fromUser && message.voice)
+                              const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 3),
+                                child: Icon(
+                                  Icons.graphic_eq,
+                                  color: Colors.white,
+                                  size: 28,
+                                ),
+                              )
+                            else
+                              SelectableText(
+                                message.text,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  height: 1.45,
+                                ),
                               ),
-                            ),
                             RecordAttachments(
                               records: _messageAttachments[index] ?? const [],
                             ),
@@ -14157,6 +14530,8 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
     'deleteEmployees': 'الموظفون — حذف نهائي',
     'viewSettings': 'إعدادات المؤسسة — مشاهدة',
     'manageSettings': 'إعدادات المؤسسة — تعديل',
+    'viewAdvertisements': 'الإعلانات — مشاهدة ومعاينة',
+    'manageAdvertisements': 'الإعلانات — إنشاء وتعديل وإرسال',
     'viewAuditLog': 'سجل العمليات — مشاهدة',
   };
 
@@ -14181,6 +14556,8 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
       'deleteEmployees',
       'viewSettings',
       'manageSettings',
+      'viewAdvertisements',
+      'manageAdvertisements',
       'viewAuditLog',
     ],
   };
@@ -14195,6 +14572,7 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
     'manageEmployees': 'viewEmployees',
     'deleteEmployees': 'viewEmployees',
     'manageSettings': 'viewSettings',
+    'manageAdvertisements': 'viewAdvertisements',
   };
 
   static const Map<String, Set<String>> _rolePresets = {
@@ -14216,6 +14594,8 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
       'deleteEmployees',
       'viewSettings',
       'manageSettings',
+      'viewAdvertisements',
+      'manageAdvertisements',
       'viewAuditLog',
     },
     'مشرف': {
@@ -14231,6 +14611,8 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
       'viewInvoices',
       'viewEmployees',
       'viewSettings',
+      'viewAdvertisements',
+      'manageAdvertisements',
     },
     'استقبال': {
       'viewCustomers',
@@ -14880,23 +15262,80 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('دعوة موظف'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: name, decoration: const InputDecoration(labelText: 'اسم الموظف')),
-          TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الجوال مع رمز الدولة')),
-        ]),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('إلغاء')), FilledButton(onPressed: () => Navigator.pop(context, {'name':name.text.trim(),'phone':phone.text.trim()}), child: const Text('إنشاء الرابط'))],
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: name,
+              decoration: const InputDecoration(labelText: 'اسم الموظف'),
+            ),
+            TextField(
+              controller: phone,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'رقم الجوال مع رمز الدولة',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, {
+              'name': name.text.trim(),
+              'phone': phone.text.trim(),
+            }),
+            child: const Text('إنشاء الرابط'),
+          ),
+        ],
       ),
     );
-    name.dispose(); phone.dispose();
-    if (result == null || result['name']!.isEmpty || result['phone']!.length < 8) return;
-    final prefs = await _branchPrefs; final api = await _employeeApi(prefs);
-    if (api == null) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('سجل دخولك أولًا لإنشاء الدعوة'))); return; }
+    name.dispose();
+    phone.dispose();
+    if (result == null ||
+        result['name']!.isEmpty ||
+        result['phone']!.length < 8)
+      return;
+    final prefs = await _branchPrefs;
+    final api = await _employeeApi(prefs);
+    if (api == null) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('سجل دخولك أولًا لإنشاء الدعوة')),
+        );
+      return;
+    }
     try {
-      final invite = await api.createEmployeeInvitation({'name':result['name'],'phone':result['phone'],'role':'موظف','permissions':<String,dynamic>{}});
+      final invite = await api.createEmployeeInvitation({
+        'name': result['name'],
+        'phone': result['phone'],
+        'role': 'موظف',
+        'permissions': <String, dynamic>{},
+      });
       if (!mounted) return;
-      await showDialog<void>(context: context, builder: (context) => AlertDialog(title: const Text('رابط دعوة الموظف'), content: SelectableText(invite['link']?.toString() ?? ''), actions:[FilledButton(onPressed:()=>Navigator.pop(context),child:const Text('تم'))]));
-    } on CloudApiException catch (error) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message))); }
-    finally { api.close(); }
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('رابط دعوة الموظف'),
+          content: SelectableText(invite['link']?.toString() ?? ''),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('تم'),
+            ),
+          ],
+        ),
+      );
+    } on CloudApiException catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+    } finally {
+      api.close();
+    }
   }
 
   Future<void> _deleteEmployee(int index) async {
@@ -14953,7 +15392,14 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
           backgroundColor: const Color(0xFF111B35),
           foregroundColor: Colors.white,
           title: const Text('الموظفون والصلاحيات'),
-          actions: [IconButton(icon: const Icon(Icons.link), tooltip: 'دعوة موظف', onPressed: _inviteEmployee), PageRefreshButton(onRefresh: _loadEmployees)],
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.link),
+              tooltip: 'دعوة موظف',
+              onPressed: _inviteEmployee,
+            ),
+            PageRefreshButton(onRefresh: _loadEmployees),
+          ],
         ),
         floatingActionButton: FloatingActionButton.extended(
           onPressed: _showEmployeeForm,
