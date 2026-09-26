@@ -2428,6 +2428,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             day_start = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
             week_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
             with db() as connection:
+                connection.execute(f"CREATE TABLE IF NOT EXISTS blocked_devices (organization_id BIGINT NOT NULL,device_id TEXT NOT NULL,device_name TEXT NOT NULL DEFAULT 'جهاز غير معروف',blocked_at TEXT NOT NULL,PRIMARY KEY(organization_id,device_id))")
+                connection.execute("CREATE TABLE IF NOT EXISTS service_maintenance (organization_id BIGINT NOT NULL,service TEXT NOT NULL,expires_at TEXT,message TEXT NOT NULL DEFAULT 'الخدمة متوقفة مؤقتًا',PRIMARY KEY(organization_id,service))")
+                connection.execute("CREATE TABLE IF NOT EXISTS maintenance_modes (organization_id BIGINT PRIMARY KEY,chat_until TEXT,appointments_until TEXT,message TEXT NOT NULL DEFAULT 'الخدمة تحت الصيانة مؤقتًا')")
                 # Keep older production databases compatible with the security
                 # dashboard by applying only the additive owner schema before
                 # any security/service queries run.
