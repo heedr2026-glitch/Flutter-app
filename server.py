@@ -2818,7 +2818,13 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 display_seconds = max(3, min(int(data.get("displaySeconds", 8)), 60))
             except (TypeError, ValueError):
                 raise ApiError(400, "مدة ظهور الشريط يجب أن تكون بين 3 و60 ثانية")
-            banner_config = {key: data.get(key) for key in ("textColor", "barColor", "textAlign", "fontSize", "logoScale", "height") if data.get(key) not in (None, "")}
+            ad_mode = str(data.get("adMode", "logo_text")).strip()
+            if ad_mode not in ("logo_text", "full_image"):
+                raise ApiError(400, "نوع الإعلان غير صحيح")
+            banner_config = {key: data.get(key) for key in ("textColor", "barColor", "textAlign", "fontSize", "logoScale", "height", "imageWidth", "imageHeight", "textLayers") if data.get(key) not in (None, "")}
+            banner_config["adType"] = "image" if ad_mode == "full_image" else "text"
+            if ad_mode == "full_image" and image_data:
+                banner_config["bannerImageData"] = image_data
             if banner_config.get("textAlign") not in (None, "right", "center", "left"):
                 raise ApiError(400, "محاذاة الإعلان غير صحيحة")
             starts_at = now()
