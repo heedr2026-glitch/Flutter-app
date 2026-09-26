@@ -2010,7 +2010,7 @@ class _AdvertisementRequestDialogState
                   label: Text(
                     _fullImageMode
                         ? 'إضافة صورة الإعلان الكاملة'
-                    : 'إضافة صورة أو شعار',
+                        : 'إضافة صورة أو شعار',
                   ),
                 ),
                 if (_fullImageMode && _bannerImageData.isNotEmpty) ...[
