@@ -489,7 +489,9 @@ class AdvertisementBannerView extends StatelessWidget {
     final logoBytes = _safeAdvertisementBytes(
       ad['image_data'] ?? ad['imageData'],
     );
-    final bannerBytes = _safeAdvertisementBytes(config['bannerImageData']);
+    final bannerBytes = _safeAdvertisementBytes(
+      config['bannerImageData'] ?? config['banner_image_data'],
+    );
     final fullBannerImage =
         config['adType']?.toString() == 'image' && bannerBytes != null;
     if (fullBannerImage) {

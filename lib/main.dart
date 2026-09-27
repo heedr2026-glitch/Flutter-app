@@ -2511,7 +2511,10 @@ class _DashboardPageState extends State<DashboardPage> {
                       'height': banner['height']?.toString() ?? '145',
                       'adType': banner['adType']?.toString() ?? 'text',
                       'bannerImageData':
-                          banner['bannerImageData']?.toString() ?? '',
+                          (banner['bannerImageData'] ??
+                                  banner['banner_image_data'] ??
+                                  '')
+                              .toString(),
                       'promotion': ad['ad_source']?.toString() == 'platform'
                           ? 'packages'
                           : '',
@@ -2759,10 +2762,6 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Widget _buildAdvertisementBanner() {
     final ad = _vipAdvertisements[_currentAdIndex % _vipAdvertisements.length];
-    final bannerHeight = ((double.tryParse(ad['height'] ?? '') ?? 145).clamp(
-      80,
-      180,
-    )).toDouble();
     final fullBannerImage =
         ad['adType'] == 'image' && (ad['bannerImageData']?.isNotEmpty == true);
     return Padding(
@@ -2786,152 +2785,156 @@ class _DashboardPageState extends State<DashboardPage> {
             }
             _showAdvertisementDetails(ad);
           },
-          child: Container(
-            width: double.infinity,
-            constraints: BoxConstraints(minHeight: bannerHeight),
-            padding: fullBannerImage
-                ? EdgeInsets.zero
-                : const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
-            ),
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 1200),
-              transitionBuilder: (child, animation) => FadeTransition(
-                opacity: animation,
-                child: SlideTransition(
-                  position: Tween<Offset>(
-                    begin: const Offset(0.15, 0),
-                    end: Offset.zero,
-                  ).animate(animation),
-                  child: child,
-                ),
+          child: AspectRatio(
+            aspectRatio: 4,
+            child: Container(
+              width: double.infinity,
+              padding: fullBannerImage
+                  ? EdgeInsets.zero
+                  : const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
               ),
-              child: fullBannerImage
-                  ? ClipRRect(
-                      key: ValueKey('${ad['title']}-image-$_currentAdIndex'),
-                      borderRadius: BorderRadius.circular(10),
-                      child: Image.memory(
-                        base64Decode(ad['bannerImageData']!.split(',').last),
-                        width: double.infinity,
-                        height: bannerHeight,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                      ),
-                    )
-                  : Row(
-                      key: ValueKey('${ad['title']}-$_currentAdIndex'),
-                      children: [
-                        if (ad['imageData']?.isNotEmpty == true) ...[
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: Image.memory(
-                              base64Decode(ad['imageData']!.split(',').last),
-                              width:
-                                  ((72 *
-                                              (double.tryParse(
-                                                    ad['logoScale'] ?? '',
-                                                  ) ??
-                                                  1))
-                                          .clamp(40, 108))
-                                      .toDouble(),
-                              height:
-                                  ((72 *
-                                              (double.tryParse(
-                                                    ad['logoScale'] ?? '',
-                                                  ) ??
-                                                  1))
-                                          .clamp(40, 108))
-                                      .toDouble(),
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, _, _) => const Icon(
-                                Icons.campaign,
-                                color: Color(0xFFF59E0B),
-                                size: 46,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 1200),
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0.15, 0),
+                      end: Offset.zero,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                ),
+                child: fullBannerImage
+                    ? ClipRRect(
+                        key: ValueKey('${ad['title']}-image-$_currentAdIndex'),
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.memory(
+                          base64Decode(ad['bannerImageData']!.split(',').last),
+                          width: double.infinity,
+                          height: double.infinity,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                        ),
+                      )
+                    : Row(
+                        key: ValueKey('${ad['title']}-$_currentAdIndex'),
+                        children: [
+                          if (ad['imageData']?.isNotEmpty == true) ...[
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Image.memory(
+                                base64Decode(ad['imageData']!.split(',').last),
+                                width:
+                                    ((72 *
+                                                (double.tryParse(
+                                                      ad['logoScale'] ?? '',
+                                                    ) ??
+                                                    1))
+                                            .clamp(40, 108))
+                                        .toDouble(),
+                                height:
+                                    ((72 *
+                                                (double.tryParse(
+                                                      ad['logoScale'] ?? '',
+                                                    ) ??
+                                                    1))
+                                            .clamp(40, 108))
+                                        .toDouble(),
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => const Icon(
+                                  Icons.campaign,
+                                  color: Color(0xFFF59E0B),
+                                  size: 46,
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 10),
-                        ] else ...[
-                          const Icon(
-                            Icons.campaign,
-                            color: Color(0xFFF59E0B),
-                            size: 46,
-                          ),
-                          const SizedBox(width: 10),
-                        ],
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                ad['title'] ?? 'إعلان',
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: _bannerColor(
-                                    ad['textColor'],
-                                    Colors.white,
+                            const SizedBox(width: 10),
+                          ] else ...[
+                            const Icon(
+                              Icons.campaign,
+                              color: Color(0xFFF59E0B),
+                              size: 46,
+                            ),
+                            const SizedBox(width: 10),
+                          ],
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  ad['title'] ?? 'إعلان',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: _bannerColor(
+                                      ad['textColor'],
+                                      Colors.white,
+                                    ),
+                                    fontSize:
+                                        ((double.tryParse(
+                                                      ad['fontSize'] ?? '',
+                                                    ) ??
+                                                    19)
+                                                .clamp(12, 32))
+                                            .toDouble(),
+                                    fontWeight: FontWeight.bold,
                                   ),
-                                  fontSize:
-                                      ((double.tryParse(ad['fontSize'] ?? '') ??
-                                                  19)
-                                              .clamp(12, 32))
-                                          .toDouble(),
-                                  fontWeight: FontWeight.bold,
                                 ),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                ad['message']?.isNotEmpty == true
-                                    ? ad['message']!
-                                    : (ad['advertiser'] ?? ''),
-                                maxLines: 3,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: ad['textAlign'] == 'left'
-                                    ? TextAlign.left
-                                    : ad['textAlign'] == 'center'
-                                    ? TextAlign.center
-                                    : TextAlign.right,
-                                style: TextStyle(
-                                  color: _bannerColor(
-                                    ad['textColor'],
-                                    Colors.white,
-                                  ).withValues(alpha: .82),
-                                  fontSize:
-                                      (((double.tryParse(
-                                                        ad['fontSize'] ?? '',
-                                                      ) ??
-                                                      19) -
-                                                  3)
-                                              .clamp(12, 28))
-                                          .toDouble(),
-                                  height: 1.4,
+                                const SizedBox(height: 3),
+                                Text(
+                                  ad['message']?.isNotEmpty == true
+                                      ? ad['message']!
+                                      : (ad['advertiser'] ?? ''),
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: ad['textAlign'] == 'left'
+                                      ? TextAlign.left
+                                      : ad['textAlign'] == 'center'
+                                      ? TextAlign.center
+                                      : TextAlign.right,
+                                  style: TextStyle(
+                                    color: _bannerColor(
+                                      ad['textColor'],
+                                      Colors.white,
+                                    ).withValues(alpha: .82),
+                                    fontSize:
+                                        (((double.tryParse(
+                                                          ad['fontSize'] ?? '',
+                                                        ) ??
+                                                        19) -
+                                                    3)
+                                                .clamp(12, 28))
+                                            .toDouble(),
+                                    height: 1.4,
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(height: 7),
-                              Text(
-                                ad['promotion']?.isNotEmpty == true
-                                    ? 'عرض الباقات والاستفادة من الكود'
-                                    : 'عرض تفاصيل الإعلان',
-                                style: const TextStyle(
-                                  color: Color(0xFFFBBF24),
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
+                                const SizedBox(height: 7),
+                                Text(
+                                  ad['promotion']?.isNotEmpty == true
+                                      ? 'عرض الباقات والاستفادة من الكود'
+                                      : 'عرض تفاصيل الإعلان',
+                                  style: const TextStyle(
+                                    color: Color(0xFFFBBF24),
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 6),
-                        const Icon(
-                          Icons.arrow_forward_ios_rounded,
-                          color: Color(0xFFFBBF24),
-                          size: 18,
-                        ),
-                      ],
-                    ),
+                          const SizedBox(width: 6),
+                          const Icon(
+                            Icons.arrow_forward_ios_rounded,
+                            color: Color(0xFFFBBF24),
+                            size: 18,
+                          ),
+                        ],
+                      ),
+              ),
             ),
           ),
         ),
