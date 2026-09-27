@@ -2091,7 +2091,9 @@ class _AdvertisementRequestDialogState
               const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: widget.onStatusChanged == null
+                      ? null
+                      : () => widget.onStatusChanged!.call('pending'),
                   icon: const Icon(Icons.receipt_long_outlined),
                   label: const Text('الطلبات'),
                   style: OutlinedButton.styleFrom(
@@ -2104,7 +2106,9 @@ class _AdvertisementRequestDialogState
               const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: widget.onStatusChanged == null
+                      ? null
+                      : () => widget.onStatusChanged!.call('published'),
                   icon: const Icon(Icons.campaign_outlined),
                   label: const Text('المنشور'),
                   style: OutlinedButton.styleFrom(
@@ -2117,6 +2121,8 @@ class _AdvertisementRequestDialogState
             ],
           ),
           const SizedBox(height: 12),
+          if (widget.existingAds.isNotEmpty) _existingAdsSection(),
+          if (widget.existingAds.isNotEmpty) const SizedBox(height: 14),
           _referenceCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
