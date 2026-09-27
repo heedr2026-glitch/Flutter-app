@@ -2786,7 +2786,7 @@ class _DashboardPageState extends State<DashboardPage> {
             _showAdvertisementDetails(ad);
           },
           child: AspectRatio(
-            aspectRatio: 4,
+            aspectRatio: 3,
             child: Container(
               width: double.infinity,
               padding: fullBannerImage

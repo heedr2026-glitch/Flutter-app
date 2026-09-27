@@ -503,7 +503,7 @@ class AdvertisementBannerView extends StatelessWidget {
           border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
         ),
         child: AspectRatio(
-          aspectRatio: 4,
+          aspectRatio: 3,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(14),
             child: Image.memory(
@@ -596,7 +596,7 @@ class AdvertisementBannerView extends StatelessWidget {
         border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
       ),
       child: AspectRatio(
-        aspectRatio: 4,
+        aspectRatio: 3,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(14),
           child: Stack(
@@ -1582,7 +1582,7 @@ class _AdvertisementRequestDialogState
       children: [
         LayoutBuilder(
           builder: (context, outer) => AspectRatio(
-            aspectRatio: 4,
+            aspectRatio: 3,
             child: Container(
               width: double.infinity,
               clipBehavior: Clip.hardEdge,
