@@ -13,6 +13,7 @@ import sqlite3
 import re
 import threading
 import time
+import unicodedata
 from collections import defaultdict, deque
 import community_admin
 from contextvars import ContextVar
@@ -94,6 +95,11 @@ def normalize_phone(value: object) -> str:
     """Canonical E.164-like digits used for tenant routing (without '+')."""
     phone = re.sub(r"[^0-9]", "", str(value or ""))
     return phone[2:] if phone.startswith("00") else phone
+
+
+def normalize_username(value: object) -> str:
+    """Use one canonical username for registration, login, and invitations."""
+    return unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
 
 def support_reference(ticket_id: int, created_at: str = '') -> str:
     """Stable, user-visible support reference; internal numeric IDs remain unchanged."""
@@ -1987,7 +1993,7 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                 if invitation is None:
                     self._send_html(employee_invite_page(token, None))
                     return
-                data = self._body(); username = str(data.get("username", "")).strip().lower(); password = str(data.get("password", "")); confirm = str(data.get("confirmPassword", ""))
+                data = self._body(); username = normalize_username(data.get("username")); password = str(data.get("password", "")); confirm = str(data.get("confirmPassword", ""))
                 if len(username) < 3 or not re.fullmatch(r"[a-z0-9_.-]{3,80}", username):
                     self._send_html(employee_invite_page(token, invitation, "اكتب اسم مستخدم صحيحًا باللغة الإنجليزية.")); return
                 if len(password) < 8 or password != confirm:
@@ -3215,6 +3221,9 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             missing = [key for key in required if not str(data.get(key, "")).strip()]
             if missing:
                 raise ApiError(400, "حقول مطلوبة ناقصة: " + ", ".join(missing))
+            username = normalize_username(data.get("username"))
+            if len(username) < 3:
+                raise ApiError(400, "اسم المستخدم يجب أن يكون 3 أحرف على الأقل")
             if len(str(data["password"])) < 8:
                 raise ApiError(400, "كلمة المرور يجب أن تكون 8 خانات على الأقل")
             password_hash, salt = hash_password(str(data["password"]))
@@ -3231,7 +3240,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         ).fetchone()
                         if code is None:
                             raise ApiError(400, "كود التفعيل غير صحيح أو منتهي")
-                        if code["assigned_username"] and code["assigned_username"].lower() != str(data["username"]).strip().lower():
+                        if code["assigned_username"] and normalize_username(code["assigned_username"]) != normalize_username(data["username"]):
                             raise ApiError(403, "هذا الكود مخصص لمستخدم آخر")
                     cursor = connection.execute(
                         "INSERT INTO organizations(name,activity,phone,public_chat_token,created_at,entity_type,commercial_registration,unified_number,city,address,organization_email,verification_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -3261,7 +3270,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     cursor = connection.execute(
                         """INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,permissions,created_at)
                            VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                        (organization_id, str(data["name"]).strip(), str(data["username"]).strip().lower(), str(data["phone"]).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "admin", "{}", now()),
+                        (organization_id, str(data["name"]).strip(), username, str(data["phone"]).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "admin", "{}", now()),
                     )
                     package = code["package"] if code else "free"
                     package_expires = (datetime.now(timezone.utc) + timedelta(days=code["duration_days"])).isoformat() if code else None
@@ -3288,7 +3297,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             with db() as connection:
                 if downgrade_expired_subscriptions(connection):
                     connection.commit()
-                login_identity = str(data.get("username", "")).strip().lower()
+                login_identity = normalize_username(data.get("username"))
                 user = connection.execute(
                     "SELECT * FROM users WHERE (username=? COLLATE NOCASE OR (email<>'' AND email=? COLLATE NOCASE))",
                     (login_identity, login_identity),
@@ -3356,7 +3365,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             return
         if method == "POST" and path == "/api/activate-code-public":
             data = self._body()
-            username = str(data.get("username", "")).strip().lower()
+            username = normalize_username(data.get("username"))
             raw_code = str(data.get("code", "")).strip().upper()
             if not username or not raw_code:
                 raise ApiError(400, "اكتب اسم المستخدم وكود التفعيل")
@@ -3375,7 +3384,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 ).fetchone()
                 if code is None:
                     raise ApiError(400, "كود التفعيل غير صحيح أو منتهي")
-                if code["assigned_username"] and code["assigned_username"].lower() != username:
+                if code["assigned_username"] and normalize_username(code["assigned_username"]) != username:
                     raise ApiError(403, "هذا الكود مخصص لمستخدم آخر")
                 package_expires = (datetime.now(timezone.utc) + timedelta(days=code["duration_days"])).isoformat()
                 connection.execute("UPDATE activation_codes SET used_count=used_count+1 WHERE id=?", (code["id"],))
@@ -4123,12 +4132,15 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     raise ApiError(403, message)
                 if len(str(data.get("password", ""))) < 8:
                     raise ApiError(400, "كلمة مرور الموظف 8 خانات على الأقل")
+                username = normalize_username(data.get("username"))
+                if len(username) < 3:
+                    raise ApiError(400, "اكتب اسم الموظف واسم مستخدم واضح")
                 password_hash, salt = hash_password(str(data["password"]))
                 try:
                     cursor = connection.execute(
                         """INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,job_title,permissions,active,created_at)
                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (organization_id, str(data.get("name", "")).strip(), str(data.get("username", "")).strip().lower(), str(data.get("phone", "")).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "employee", str(data.get("role", "موظف")).strip(), json.dumps(data.get("permissions", {}), ensure_ascii=False), 1 if data.get("active", True) else 0, now()),
+                        (organization_id, str(data.get("name", "")).strip(), username, str(data.get("phone", "")).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "employee", str(data.get("role", "موظف")).strip(), json.dumps(data.get("permissions", {}), ensure_ascii=False), 1 if data.get("active", True) else 0, now()),
                     )
                     audit_log(connection, organization_id, user["id"], "employee_created", f"تمت إضافة الموظف {str(data.get('name', '')).strip()}", "employee", cursor.lastrowid)
                     connection.commit()
@@ -4141,7 +4153,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 employee_id = int(path.rsplit("/", 1)[1])
                 data = self._body()
                 name = str(data.get("name", "")).strip()
-                username = str(data.get("username", "")).strip().lower()
+                username = normalize_username(data.get("username"))
                 if not name or len(username) < 3:
                     raise ApiError(400, "اكتب اسم الموظف واسم مستخدم واضح")
                 password = str(data.get("password", ""))

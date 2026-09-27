@@ -959,6 +959,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _hidePassword = true;
   bool _loading = false;
   String? _error;
+  String? _cloudLoginError;
 
   @override
   void initState() {
@@ -988,6 +989,7 @@ class _LoginPageState extends State<LoginPage> {
     setState(() {
       _loading = true;
       _error = null;
+      _cloudLoginError = null;
     });
     final prefs = await BranchPreferences.getInstance();
 
@@ -1163,6 +1165,8 @@ class _LoginPageState extends State<LoginPage> {
         (_) => false,
       );
       return;
+    } on CloudApiException catch (error) {
+      _cloudLoginError = error.message;
     } catch (_) {
       // تعرض رسالة الدخول المعتادة إذا لم ينجح الدخول المحلي أو السحابي.
     } finally {
@@ -1171,7 +1175,7 @@ class _LoginPageState extends State<LoginPage> {
     if (!mounted) return;
     setState(() {
       _loading = false;
-      _error = 'اسم المستخدم أو كلمة المرور غير صحيحة';
+      _error = _cloudLoginError ?? 'اسم المستخدم أو كلمة المرور غير صحيحة';
     });
   }
 
@@ -1261,6 +1265,9 @@ class _LoginPageState extends State<LoginPage> {
         (_) => false,
       );
       return true;
+    } on CloudApiException catch (error) {
+      _cloudLoginError = error.message;
+      return false;
     } catch (_) {
       return false;
     } finally {
