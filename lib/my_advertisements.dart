@@ -1971,6 +1971,111 @@ class _AdvertisementRequestDialogState
     child: child,
   );
 
+  Widget _mobileAdsListPage(BuildContext context) {
+    final published = widget.selectedStatus == 'published';
+    final visible = widget.existingAds.where((ad) {
+      final status = advertisementStatus(ad);
+      return published
+          ? status == 'published'
+          : const {'pending', 'rejected', 'paused'}.contains(status);
+    }).toList();
+    final active = published ? 'published' : 'pending';
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(published ? 'الإعلانات المنشورة' : 'طلبات الإعلانات'),
+          leading: IconButton(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.arrow_back),
+          ),
+        ),
+        body: ListView(
+          padding: const EdgeInsets.all(14),
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => widget.onStatusChanged?.call('all'),
+                    icon: const Icon(Icons.add_circle_outline),
+                    label: const Text('إنشاء إعلان'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: active == 'pending'
+                        ? null
+                        : () => widget.onStatusChanged?.call('pending'),
+                    icon: const Icon(Icons.receipt_long_outlined),
+                    label: const Text('الطلبات'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: active == 'published'
+                        ? null
+                        : () => widget.onStatusChanged?.call('published'),
+                    icon: const Icon(Icons.campaign_outlined),
+                    label: const Text('المنشور'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text(
+              published
+                  ? 'الإعلانات التي تم اعتمادها ونشرها فقط'
+                  : 'الطلبات الجديدة والمسترجعة للتعديل فقط',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 10),
+            if (visible.isEmpty)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Text('لا توجد إعلانات في هذا القسم حاليًا.'),
+                ),
+              ),
+            for (final ad in visible)
+              Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        advertisementLabel(ad),
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        ad['title']?.toString().trim().isNotEmpty == true
+                            ? ad['title'].toString()
+                            : 'إعلان',
+                      ),
+                      Text(
+                        'تاريخ الانتهاء: ${_formatExpiry(ad['expires_at'])}',
+                      ),
+                      if ((ad['review_note']?.toString() ?? '').isNotEmpty)
+                        Text('ملاحظة الإدارة: ${ad['review_note']}'),
+                      const SizedBox(height: 8),
+                      AdvertisementBannerView(ad: ad),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _referencePosition({
     required String label,
     required String selected,
@@ -2121,8 +2226,6 @@ class _AdvertisementRequestDialogState
             ],
           ),
           const SizedBox(height: 12),
-          if (widget.existingAds.isNotEmpty) _existingAdsSection(),
-          if (widget.existingAds.isNotEmpty) const SizedBox(height: 14),
           _referenceCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2965,7 +3068,13 @@ class _AdvertisementRequestDialogState
 
   @override
   Widget build(BuildContext context) {
-    if (widget.fullScreen) return _newMobileEditorPage(context);
+    if (widget.fullScreen) {
+      if (widget.selectedStatus == 'pending' ||
+          widget.selectedStatus == 'published') {
+        return _mobileAdsListPage(context);
+      }
+      return _newMobileEditorPage(context);
+    }
     final editor = Form(
       key: _form,
       child: Column(
