@@ -1629,15 +1629,7 @@ class _AdvertisementRequestDialogState
                       ? Stack(
                           clipBehavior: Clip.hardEdge,
                           children: [
-                            Positioned(
-                              left:
-                                  constraints.maxWidth * _bannerX -
-                                  constraints.maxWidth * _bannerWidth / 2,
-                              top:
-                                  constraints.maxHeight * _bannerY -
-                                  constraints.maxHeight * _bannerHeight / 2,
-                              width: constraints.maxWidth * _bannerWidth,
-                              height: constraints.maxHeight * _bannerHeight,
+                            Positioned.fill(
                               child: GestureDetector(
                                 onTap: showTools
                                     ? () => setState(
@@ -1679,16 +1671,21 @@ class _AdvertisementRequestDialogState
                                       : null,
                                   child: fullBannerBytes == null
                                       ? const SizedBox.shrink()
-                                      : SizedBox.expand(
-                                          child: Image.memory(
-                                            fullBannerBytes,
-                                            // أبعاد الصورة مستقلة عن بعضها حتى
-                                            // يمكن تمديدها أفقيًا أو رأسيًا
-                                            // لتطابق مساحة الشريط بالكامل.
-                                            fit: BoxFit.fill,
-                                            alignment: Alignment.center,
-                                            errorBuilder: (_, _, _) =>
-                                                const SizedBox.shrink(),
+                                      : Transform.scale(
+                                          scaleX: _bannerWidth,
+                                          scaleY: _bannerHeight,
+                                          alignment: Alignment.center,
+                                          child: SizedBox.expand(
+                                            child: Image.memory(
+                                              fullBannerBytes,
+                                              // يبدأ الإعلان ممتدًا على الشريط
+                                              // بالكامل، والتكبير يقص الزوائد
+                                              // داخل الشريط بدل الفراغ الأزرق.
+                                              fit: BoxFit.cover,
+                                              alignment: Alignment.center,
+                                              errorBuilder: (_, _, _) =>
+                                                  const SizedBox.shrink(),
+                                            ),
                                           ),
                                         ),
                                 ),
@@ -1696,11 +1693,8 @@ class _AdvertisementRequestDialogState
                             ),
                             if (showTools && _selectedElement == 'banner') ...[
                               _bannerResizeHandle(
-                                left:
-                                    constraints.maxWidth * _bannerX +
-                                    constraints.maxWidth * _bannerWidth / 2 -
-                                    11,
-                                top: constraints.maxHeight * _bannerY - 11,
+                                left: constraints.maxWidth - 22,
+                                top: constraints.maxHeight / 2 - 11,
                                 icon: Icons.swap_horiz,
                                 onDrag: (details) => setState(() {
                                   _bannerWidth = _bounded(
@@ -1714,8 +1708,8 @@ class _AdvertisementRequestDialogState
                                 }),
                               ),
                               _bannerResizeHandle(
-                                left: constraints.maxWidth * _bannerX - 11,
-                                top: constraints.maxHeight * _bannerY - 11,
+                                left: 0,
+                                top: constraints.maxHeight / 2 - 11,
                                 icon: Icons.swap_horiz,
                                 onDrag: (details) => setState(() {
                                   _bannerWidth = _bounded(
@@ -1729,11 +1723,8 @@ class _AdvertisementRequestDialogState
                                 }),
                               ),
                               _bannerResizeHandle(
-                                left: constraints.maxWidth * _bannerX - 11,
-                                top:
-                                    constraints.maxHeight * _bannerY +
-                                    constraints.maxHeight * _bannerHeight / 2 -
-                                    11,
+                                left: constraints.maxWidth / 2 - 11,
+                                top: constraints.maxHeight - 22,
                                 icon: Icons.swap_vert,
                                 onDrag: (details) => setState(() {
                                   _bannerHeight = _bounded(
@@ -1747,8 +1738,8 @@ class _AdvertisementRequestDialogState
                                 }),
                               ),
                               _bannerResizeHandle(
-                                left: constraints.maxWidth * _bannerX - 11,
-                                top: constraints.maxHeight * _bannerY - 11,
+                                left: constraints.maxWidth / 2 - 11,
+                                top: 0,
                                 icon: Icons.swap_vert,
                                 onDrag: (details) => setState(() {
                                   _bannerHeight = _bounded(
