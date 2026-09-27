@@ -1440,6 +1440,30 @@ class _AdvertisementRequestDialogState
   double _bounded(double value, double min, double max) =>
       value.clamp(min, max).toDouble();
 
+  Widget _bannerResizeHandle({
+    required double left,
+    required double top,
+    required IconData icon,
+    required ValueChanged<DragUpdateDetails> onDrag,
+  }) => Positioned(
+    left: left,
+    top: top,
+    width: 22,
+    height: 22,
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onPanUpdate: onDrag,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFF25D2FF),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 1),
+        ),
+        child: Icon(icon, size: 14, color: const Color(0xFF03264B)),
+      ),
+    ),
+  );
+
   Widget _buildBannerPreview({bool showTools = true}) {
     final text = _message.text.trim();
     final logoWidth = (_imageWidth * _logoScale).clamp(40, 600).toDouble();
@@ -1632,13 +1656,13 @@ class _AdvertisementRequestDialogState
                                           if (details.scale != 1) {
                                             _bannerWidth = _bounded(
                                               _bannerWidth * details.scale,
-                                              1,
-                                              1.5,
+                                              .25,
+                                              2,
                                             );
                                             _bannerHeight = _bounded(
                                               _bannerHeight * details.scale,
-                                              1,
-                                              1.5,
+                                              .25,
+                                              2,
                                             );
                                           }
                                         });
@@ -1670,6 +1694,74 @@ class _AdvertisementRequestDialogState
                                 ),
                               ),
                             ),
+                            if (showTools && _selectedElement == 'banner') ...[
+                              _bannerResizeHandle(
+                                left:
+                                    constraints.maxWidth * _bannerX +
+                                    constraints.maxWidth * _bannerWidth / 2 -
+                                    11,
+                                top: constraints.maxHeight * _bannerY - 11,
+                                icon: Icons.swap_horiz,
+                                onDrag: (details) => setState(() {
+                                  _bannerWidth = _bounded(
+                                    _bannerWidth +
+                                        details.delta.dx /
+                                            constraints.maxWidth *
+                                            2,
+                                    .25,
+                                    2,
+                                  );
+                                }),
+                              ),
+                              _bannerResizeHandle(
+                                left: constraints.maxWidth * _bannerX - 11,
+                                top: constraints.maxHeight * _bannerY - 11,
+                                icon: Icons.swap_horiz,
+                                onDrag: (details) => setState(() {
+                                  _bannerWidth = _bounded(
+                                    _bannerWidth -
+                                        details.delta.dx /
+                                            constraints.maxWidth *
+                                            2,
+                                    .25,
+                                    2,
+                                  );
+                                }),
+                              ),
+                              _bannerResizeHandle(
+                                left: constraints.maxWidth * _bannerX - 11,
+                                top:
+                                    constraints.maxHeight * _bannerY +
+                                    constraints.maxHeight * _bannerHeight / 2 -
+                                    11,
+                                icon: Icons.swap_vert,
+                                onDrag: (details) => setState(() {
+                                  _bannerHeight = _bounded(
+                                    _bannerHeight +
+                                        details.delta.dy /
+                                            constraints.maxHeight *
+                                            2,
+                                    .25,
+                                    2,
+                                  );
+                                }),
+                              ),
+                              _bannerResizeHandle(
+                                left: constraints.maxWidth * _bannerX - 11,
+                                top: constraints.maxHeight * _bannerY - 11,
+                                icon: Icons.swap_vert,
+                                onDrag: (details) => setState(() {
+                                  _bannerHeight = _bounded(
+                                    _bannerHeight -
+                                        details.delta.dy /
+                                            constraints.maxHeight *
+                                            2,
+                                    .25,
+                                    2,
+                                  );
+                                }),
+                              ),
+                            ],
                           ],
                         )
                       : Stack(
@@ -1823,11 +1915,11 @@ class _AdvertisementRequestDialogState
         .5;
     _bannerWidth =
         double.tryParse(config['bannerWidth']?.toString() ?? '')
-            ?.clamp(.2, 1.5) ??
+            ?.clamp(.25, 2) ??
         .96;
     _bannerHeight =
         double.tryParse(config['bannerHeight']?.toString() ?? '')
-            ?.clamp(.2, 1.5) ??
+            ?.clamp(.25, 2) ??
         .96;
     _imageData = widget.initial?['image_data']?.toString() ?? '';
     _bannerImageData =
@@ -2468,20 +2560,12 @@ class _AdvertisementRequestDialogState
                           : '${_imageWidth.round()}',
                       onMinus: () => setState(
                         () => _fullImageMode
-                            ? _bannerWidth = _bounded(
-                                _bannerWidth - .05,
-                                .2,
-                                1.5,
-                              )
+                            ? _bannerWidth = _bounded(_bannerWidth - .05, .2, 2)
                             : _imageWidth = _bounded(_imageWidth - 10, 40, 600),
                       ),
                       onPlus: () => setState(
                         () => _fullImageMode
-                            ? _bannerWidth = _bounded(
-                                _bannerWidth + .05,
-                                .2,
-                                1.5,
-                              )
+                            ? _bannerWidth = _bounded(_bannerWidth + .05, .2, 2)
                             : _imageWidth = _bounded(_imageWidth + 10, 40, 600),
                       ),
                     );
@@ -2498,7 +2582,7 @@ class _AdvertisementRequestDialogState
                             ? _bannerHeight = _bounded(
                                 _bannerHeight - .05,
                                 .2,
-                                1.5,
+                                2,
                               )
                             : _imageHeight = _bounded(
                                 _imageHeight - 10,
@@ -2511,7 +2595,7 @@ class _AdvertisementRequestDialogState
                             ? _bannerHeight = _bounded(
                                 _bannerHeight + .05,
                                 .2,
-                                1.5,
+                                2,
                               )
                             : _imageHeight = _bounded(
                                 _imageHeight + 10,
