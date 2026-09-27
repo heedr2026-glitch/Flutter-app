@@ -1596,7 +1596,15 @@ class _AdvertisementRequestDialogState
                       ? Stack(
                           clipBehavior: Clip.hardEdge,
                           children: [
-                            Positioned.fill(
+                            Positioned(
+                              left:
+                                  constraints.maxWidth * _bannerX -
+                                  constraints.maxWidth * _bannerWidth / 2,
+                              top:
+                                  constraints.maxHeight * _bannerY -
+                                  constraints.maxHeight * _bannerHeight / 2,
+                              width: constraints.maxWidth * _bannerWidth,
+                              height: constraints.maxHeight * _bannerHeight,
                               child: GestureDetector(
                                 onTap: showTools
                                     ? () => setState(
@@ -1641,10 +1649,10 @@ class _AdvertisementRequestDialogState
                                       : SizedBox.expand(
                                           child: Image.memory(
                                             fullBannerBytes,
-                                            // الصورة الكاملة تغطي الشريط نفسه
-                                            // بلا مساحة زرقاء حولها. إذا اختلفت
-                                            // النسبة، يتم القص الآمن من الأطراف.
-                                            fit: BoxFit.cover,
+                                            // أبعاد الصورة مستقلة عن بعضها حتى
+                                            // يمكن تمديدها أفقيًا أو رأسيًا
+                                            // لتطابق مساحة الشريط بالكامل.
+                                            fit: BoxFit.fill,
                                             alignment: Alignment.center,
                                             errorBuilder: (_, _, _) =>
                                                 const SizedBox.shrink(),
@@ -2026,7 +2034,10 @@ class _AdvertisementRequestDialogState
                   child: FilledButton.icon(
                     onPressed: () => widget.onStatusChanged?.call('all'),
                     icon: const Icon(Icons.add_circle_outline),
-                    label: const Text('إنشاء إعلان'),
+                    label: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text('إنشاء إعلان', maxLines: 1),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -2036,7 +2047,10 @@ class _AdvertisementRequestDialogState
                         ? null
                         : () => widget.onStatusChanged?.call('pending'),
                     icon: const Icon(Icons.receipt_long_outlined),
-                    label: const Text('الطلبات'),
+                    label: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text('الطلبات', maxLines: 1),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -2046,7 +2060,10 @@ class _AdvertisementRequestDialogState
                         ? null
                         : () => widget.onStatusChanged?.call('published'),
                     icon: const Icon(Icons.campaign_outlined),
-                    label: const Text('المنشور'),
+                    label: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text('المنشور', maxLines: 1),
+                    ),
                   ),
                 ),
               ],
@@ -2212,7 +2229,10 @@ class _AdvertisementRequestDialogState
                 child: FilledButton.icon(
                   onPressed: null,
                   icon: const Icon(Icons.add_circle_outline),
-                  label: const Text('إنشاء إعلان'),
+                  label: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text('إنشاء إعلان', maxLines: 1),
+                  ),
                   style: FilledButton.styleFrom(
                     minimumSize: const Size(0, 36),
                     padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -2227,7 +2247,10 @@ class _AdvertisementRequestDialogState
                       ? null
                       : () => widget.onStatusChanged!.call('pending'),
                   icon: const Icon(Icons.receipt_long_outlined),
-                  label: const Text('الطلبات'),
+                  label: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text('الطلبات', maxLines: 1),
+                  ),
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(0, 36),
                     padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -2242,7 +2265,10 @@ class _AdvertisementRequestDialogState
                       ? null
                       : () => widget.onStatusChanged!.call('published'),
                   icon: const Icon(Icons.campaign_outlined),
-                  label: const Text('المنشور'),
+                  label: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text('المنشور', maxLines: 1),
+                  ),
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(0, 36),
                     padding: const EdgeInsets.symmetric(horizontal: 4),
