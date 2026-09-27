@@ -752,6 +752,13 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
     );
     if (!mounted || request == null) return;
     final action = request['_action']?.toString() ?? 'submit';
+    if (action == 'edit') {
+      final rawAd = request['_editAd'];
+      if (rawAd is Map) {
+        await _request(Map<String, dynamic>.from(rawAd));
+      }
+      return;
+    }
     if (action == 'save') {
       final draft = Map<String, dynamic>.from(request)..remove('_action');
       final prefs = await BranchPreferences.getInstance();
@@ -1829,11 +1836,12 @@ class _AdvertisementRequestDialogState
     _fullImageMode =
         config['adType']?.toString() == 'image' && _bannerImageData.isNotEmpty;
     if (_fullImageMode) {
-      // A full-banner image is the bar itself, not a smaller object inside it.
+      // Keep the saved size when editing a returned request. New images are
+      // initialized at 100% in _pickFullBannerImage.
       _bannerX = .5;
       _bannerY = .5;
-      _bannerWidth = 1;
-      _bannerHeight = 1;
+      if (!config.containsKey('bannerWidth')) _bannerWidth = 1;
+      if (!config.containsKey('bannerHeight')) _bannerHeight = 1;
     }
     if (widget.initial == null && widget.fullScreen) {
       _textAlign = 'center';
@@ -2110,6 +2118,24 @@ class _AdvertisementRequestDialogState
                         Text('ملاحظة الإدارة: ${ad['review_note']}'),
                       const SizedBox(height: 8),
                       AdvertisementBannerView(ad: ad),
+                      if (!published) ...[
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: AlignmentDirectional.centerStart,
+                          child: FilledButton.icon(
+                            onPressed: () => Navigator.pop(context, {
+                              '_action': 'edit',
+                              '_editAd': ad,
+                            }),
+                            icon: const Icon(Icons.edit_outlined),
+                            label: Text(
+                              advertisementStatus(ad) == 'returned'
+                                  ? 'تعديل وإعادة الإرسال'
+                                  : 'تعديل الطلب',
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
