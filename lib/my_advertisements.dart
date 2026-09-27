@@ -55,12 +55,20 @@ String advertisementStatus(Map<String, dynamic> ad, {DateTime? at}) {
       end != null &&
       !end.isAfter(at ?? DateTime.now()))
     return 'expired';
+  // The API keeps returned requests as pending and stores the reason in the
+  // review note. Expose that state explicitly so the owner does not see a
+  // returned request as if it were still waiting for its first review.
+  if (status == 'pending' &&
+      ad['review_note']?.toString().trim().isNotEmpty == true) {
+    return 'returned';
+  }
   return status;
 }
 
 String advertisementLabel(Map<String, dynamic> ad) =>
     const {
       'pending': 'قيد المراجعة',
+      'returned': 'تم الإرجاع للتعديل',
       'published': 'منشور',
       'rejected': 'مرفوض',
       'expired': 'انتهى الإعلان',
@@ -141,9 +149,17 @@ const advertisementGroups = <String, String>{
 List<Map<String, dynamic>> filterAdvertisements(
   List<Map<String, dynamic>> ads,
   String status,
-) => status == 'all'
-    ? ads
-    : ads.where((ad) => advertisementStatus(ad) == status).toList();
+) {
+  if (status == 'all') return ads;
+  if (status == 'pending') {
+    // Requests includes both new requests and requests returned for edits.
+    return ads.where((ad) {
+      final current = advertisementStatus(ad);
+      return current == 'pending' || current == 'returned';
+    }).toList();
+  }
+  return ads.where((ad) => advertisementStatus(ad) == status).toList();
+}
 
 class AdvertisementFilters extends StatelessWidget {
   final List<Map<String, dynamic>> ads;
@@ -1096,6 +1112,7 @@ class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
                             if ([
                               'expired',
                               'rejected',
+                              'returned',
                               'paused',
                             ].contains(advertisementStatus(ad)))
                               Wrap(
@@ -1550,6 +1567,7 @@ class _AdvertisementRequestDialogState
       ),
     );
     final fullBannerImage = _fullImageMode && _bannerImageData.isNotEmpty;
+    final fullBannerBytes = _safeAdvertisementBytes(_bannerImageData);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1618,16 +1636,20 @@ class _AdvertisementRequestDialogState
                                           ),
                                         )
                                       : null,
-                                  child: Image.memory(
-                                    base64Decode(
-                                      _bannerImageData.split(',').last,
-                                    ),
-                                    // يحافظ على نسبة الصورة ويملأ مساحة الشريط
-                                    // مع قص الحواف الزائدة بدل تشويهها.
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, _, _) =>
-                                        const SizedBox.shrink(),
-                                  ),
+                                  child: fullBannerBytes == null
+                                      ? const SizedBox.shrink()
+                                      : SizedBox.expand(
+                                          child: Image.memory(
+                                            fullBannerBytes,
+                                            // الصورة الكاملة تغطي الشريط نفسه
+                                            // بلا مساحة زرقاء حولها. إذا اختلفت
+                                            // النسبة، يتم القص الآمن من الأطراف.
+                                            fit: BoxFit.cover,
+                                            alignment: Alignment.center,
+                                            errorBuilder: (_, _, _) =>
+                                                const SizedBox.shrink(),
+                                          ),
+                                        ),
                                 ),
                               ),
                             ),
@@ -1977,7 +1999,12 @@ class _AdvertisementRequestDialogState
       final status = advertisementStatus(ad);
       return published
           ? status == 'published'
-          : const {'pending', 'rejected', 'paused'}.contains(status);
+          : const {
+              'pending',
+              'returned',
+              'rejected',
+              'paused',
+            }.contains(status);
     }).toList();
     final active = published ? 'published' : 'pending';
     return Directionality(
