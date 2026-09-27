@@ -6488,7 +6488,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                           );
                           requestSent = true;
                           if (dialogContext.mounted) {
-                            setDialogState(() => applyingDiscount = false);
+                            FocusManager.instance.primaryFocus?.unfocus();
                             Navigator.pop(dialogContext);
                           }
                         } on CloudApiException catch (error) {
@@ -6515,7 +6515,9 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
       );
     } finally {
       api.close();
-      transferNameController.dispose();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        transferNameController.dispose();
+      });
     }
     if (!mounted) return;
     if (requestSent) {
