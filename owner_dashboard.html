@@ -3,12 +3,8 @@
 </style><style>
 /* Khdoom blue across administration; the advertisements workspace keeps its own design. */
 body:has(> #login:not([hidden])){min-height:100vh;background:linear-gradient(155deg,#0b1020 0%,#111b35 58%,#172554 100%);color:#eef8ff;padding:1px 16px}
-#login.login{background:transparent;color:#eef8ff;border:0;box-shadow:none;padding:0}
-#login #staffLogin,#login details{background:linear-gradient(145deg,#123b74,#172554);color:#eef8ff;border:1px solid #3579ba;border-radius:18px;padding:22px;box-shadow:0 18px 48px #020b2070}
-#login details{margin-top:14px}
-#login details[open] summary{margin-bottom:12px}
-#login #ownerLogin{margin-top:8px}
-#login h1,#login h2,#login h3{color:#fff}
+#login.login{background:linear-gradient(145deg,#123b74,#172554);color:#eef8ff;border:1px solid #3579ba;box-shadow:0 18px 48px #020b2070}
+#login h1,#login h2{color:#fff}
 #login .muted{color:#c6e3fa}
 #login input{background:#fff;color:#142b43;border-color:#9fb5ca}
 #login button.primary{background:#1a5c98;color:#fff;border:1px solid #38bdf8}
@@ -45,6 +41,6 @@ body:has(> #login:not([hidden])){min-height:100vh;background:linear-gradient(155
 #app main.admin-blue .panel .tablewrap{color:#eef8ff}
 #app main.admin-blue .panel .error{color:#991b1b;background:#fff1f2}
 </style><style>.community-feed{display:grid;gap:14px;max-width:850px}.community-card{background:white;border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 3px 12px #16223808}.community-card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}.community-card-head button{border:0;background:transparent;color:var(--brand);font-weight:bold;padding:4px}.community-card-head span{color:#64748b;font-size:12px}.community-body{white-space:pre-wrap;line-height:1.9;min-height:55px}.community-card-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f5}.community-card-actions .likes{color:#db2777;font-weight:bold;margin-left:auto}@media(max-width:600px){.community-card-actions .likes{margin-left:0;width:100%}}</style></head><body>
-<section id="login" class="login"><h1>خدووم</h1><h2>لوحة الإدارة</h2><p class="muted">حساب مستقل لكل موظف، وصلاحيات تناسب عمله.</p><form id="staffLogin"><h3>حساب الموظف</h3><label>اسم المستخدم<input name="username" autocomplete="username" required></label><label>كلمة المرور<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">دخول الموظف</button></form><details><summary>دخول المالك</summary><form id="ownerLogin"><label>مفتاح المالك<input name="key" type="password" required autocomplete="off"></label><button class="primary">دخول المالك</button></form></details><p id="loginError" role="alert"></p></section>
+<section id="login" class="login"><h1>خدووم</h1><h2>لوحة الإدارة</h2><p class="muted">حساب مستقل لكل موظف، وصلاحيات تناسب عمله.</p><form id="staffLogin"><label>اسم المستخدم<input name="username" autocomplete="username" required></label><label>كلمة المرور<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">دخول الموظف</button></form><details><summary>دخول المالك</summary><form id="ownerLogin"><label>مفتاح المالك<input name="key" type="password" required autocomplete="off"></label><button class="primary">دخول المالك</button></form></details><p id="loginError" role="alert"></p></section>
 <div id="app" class="shell" hidden><aside><h1>خدووم</h1><p>الإدارة والمتابعة</p><nav id="nav"></nav></aside><main><header class="top"><div><p class="muted" id="breadcrumb">لوحة الإدارة</p><h2 id="title">الرئيسية</h2></div><div><span id="identity" class="muted"></span> <button id="communityPost">منشور خدوم</button> <button id="refresh">تحديث</button> <button id="logout">خروج</button></div></header><section id="content" aria-live="polite"></section></main></div>
 <dialog id="modal"><h2 id="modalTitle"></h2><form id="editor"><div id="fields" class="formgrid"></div><p id="formError" class="error" hidden></p><div class="toolbar"><button class="primary" type="submit">حفظ</button><button type="button" id="cancel">إلغاء</button></div></form></dialog><div id="flash" role="status" hidden></div><script>window.check=window.check||(()=>true);</script><script src="/owner/dashboard.js?v=20260928-admin-all-blue"></script><script src="/owner/addons.js?v=20260924-ad-image-compress-fix"></script></body></html>
