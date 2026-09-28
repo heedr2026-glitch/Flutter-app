@@ -346,7 +346,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     for org in rows(c,'SELECT id FROM organizations'):
      credits=credits_summary(c,org['id'],s)
      if any(v['base']>0 and v['remaining']<=max(1,math.ceil(v['base']*.1)) for v in credits['services'].values()): out['lowBalanceOrganizations']+=1
-  if 'support' in p: out['support']=scalar(c,"SELECT COUNT(*) n FROM support_tickets WHERE status IN ('open','in_progress')")
+  if 'support' in p: out['support']=scalar(c,"SELECT COUNT(*) n FROM support_tickets WHERE status IN ('open','under_review','in_progress','awaiting_user')")
   if 'ads' in p: out['ads']=scalar(c,'SELECT COUNT(*) n FROM advertisements WHERE active=1 AND approved=1 AND (scheduled_at IS NULL OR scheduled_at<=?) AND (expires_at IS NULL OR expires_at>?)',(stamp(),stamp()))
   if 'security' in p:
    out['logins']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action IN ('login','failed_login','new_device') AND created_at>=?",(today,)); out['alerts']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action IN ('failed_login','blocked_device_login','new_device','owner_account_status') AND created_at>=?",(today,)); out['passwordResets']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action='password_reset' AND created_at>=?",(today,))+scalar(c,"SELECT COUNT(*) n FROM platform_audit WHERE action='password_reset' AND created_at>=?",(today,))
@@ -741,7 +741,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    if not task:
     ts=stamp()
     cur=c.execute('INSERT INTO technical_tasks(organization_id,branch_id,user_id,support_ticket_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(t['organization_id'],str(t.get('branch_id') or '')[:120],t.get('user_id'),t['id'],'support',f"طلب دعم #{t['id']}: {t['category']} — {t['message']}",'medium','queued','تم استلام الشكوى وتحويلها إلى موظف AI للتشخيص الآمن','فحص السجلات والصلاحيات والربط المرتبطة بالمؤسسة، دون تغيير بيانات الإنتاج','بانتظار بدء الفحص',ts,'support-repair'))
-   task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(cur.fetchone()['id'],)).fetchone()
+    task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(cur.fetchone()['id'],)).fetchone()
    if task and task['status']=='queued':
     ts=stamp(); reply='تم استلام طلبك وإسناده إلى موظف التقنية AI. بدأ الفحص الأولي، وسيظهر التقرير هنا عند اكتماله.'
     c.execute("UPDATE technical_tasks SET status='diagnosing',action_taken=?,started_at=?,finished_at=NULL WHERE id=?",('بدأ موظف التقنية AI الفحص الأولي الآمن',ts,task['id']))

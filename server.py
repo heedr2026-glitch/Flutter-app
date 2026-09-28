@@ -3564,7 +3564,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 add_support_event(connection, ticket_id=ticket_id, organization_id=organization_id, user_id=user["id"], actor_type="technical_ai", actor_name="موظف التقنية AI", event_type="technical_assigned", body=technical_reply, from_status="in_progress", to_status="in_progress")
                 audit_log(connection, organization_id, user["id"], "support_request", "تم إرسال طلب دعم فني: " + category, "security", str(row["id"]))
                 connection.commit()
-                self._send(201, {"saved": True, "id": ticket_id, "referenceCode": reference_code, "status": "open"})
+                self._send(201, {"saved": True, "id": ticket_id, "referenceCode": reference_code, "status": "in_progress"})
                 return
             if path == "/api/maintenance-status" and method == "GET":
                 self._send(200, {service: service_maintenance_status(connection, organization_id, service) for service in ('assistant', 'appointments', 'chat')})
