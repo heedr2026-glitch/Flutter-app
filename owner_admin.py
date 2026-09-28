@@ -320,7 +320,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if scope=='support' and 'support' in a['permissions']:
    where='FROM support_tickets t WHERE 1=1'; args=[]
    if q.get('status'): where+=' AND t.status=?'; args.append(q['status'])
-   items=rows(c,"SELECT t.id,t.status,t.updated_at,(SELECT tt.status FROM technical_tasks tt WHERE tt.support_ticket_id=t.id ORDER BY tt.id DESC LIMIT 1) technical_status "+where+' ORDER BY t.id DESC LIMIT 30 OFFSET ?',[*args,(page-1)*30])
+   items=rows(c,"SELECT t.id,t.status,t.updated_at,(SELECT tt.status FROM technical_tasks tt WHERE tt.support_ticket_id=t.id OR (tt.support_ticket_id IS NULL AND tt.service='support' AND tt.problem LIKE ('طلب دعم #' || t.id || ':%')) ORDER BY tt.id DESC LIMIT 1) technical_status "+where+' ORDER BY t.id DESC LIMIT 30 OFFSET ?',[*args,(page-1)*30])
    return {'signature':items,'total':scalar(c,'SELECT COUNT(*) n '+where,args)}
   if scope=='ads' and 'ads' in a['permissions']:
    condition="CASE WHEN approved=1 AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' WHEN active=0 AND approved=0 THEN 'rejected' WHEN active=0 THEN 'stopped' WHEN approved=0 THEN 'pending' WHEN scheduled_at>? THEN 'scheduled' ELSE 'published' END"

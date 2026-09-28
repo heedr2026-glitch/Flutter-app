@@ -49,6 +49,14 @@ class OwnerSupportFlowTest(unittest.TestCase):
                 live = request('/owner/api/v2/live-changes?scope=support&status=in_progress', owner=True)
                 self.assertEqual(live['total'], 1)
                 self.assertEqual(live['signature'][0]['id'], ticket_id)
+                # Legacy technical tasks used the request reference inside problem
+                # before support_ticket_id was added. The live signature must still
+                # match the full support response or the page refreshes forever.
+                with server.db() as connection:
+                    connection.execute('UPDATE technical_tasks SET support_ticket_id=NULL WHERE support_ticket_id=?', (ticket_id,))
+                legacy_live = request('/owner/api/v2/live-changes?scope=support&status=in_progress', owner=True)
+                legacy_full = request('/owner/api/v2/support?status=in_progress', owner=True)
+                self.assertEqual(legacy_live['signature'][0]['technical_status'], legacy_full['items'][0]['technical_status'])
                 for status in ('', 'in_progress'):
                     result = request('/owner/api/v2/support?status=' + status, owner=True)
                     self.assertEqual(result['total'], 1)
