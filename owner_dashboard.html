@@ -5,27 +5,31 @@
 #app main.admin-blue{background:linear-gradient(155deg,#0b1020 0%,#111b35 58%,#172554 100%);color:#eaf6ff;min-height:100vh}
 #app main.admin-blue .top h2,#app main.admin-blue #breadcrumb,#app main.admin-blue #identity{color:#eaf6ff}
 #app main.admin-blue #content>.muted,#app main.admin-blue #content>.toolbar{color:#c6dff4}
-#app main.admin-blue .panel,#app main.admin-blue .metric{background:linear-gradient(145deg,#123b74,#172554);color:#eef8ff;border:1px solid #3579ba;box-shadow:0 8px 24px #020b2050}
+#app main.admin-blue .panel,#app main.admin-blue .metric,#app main.admin-blue .community-card,#app main.admin-blue .technical-chat-message{background:linear-gradient(145deg,#123b74,#172554);color:#eef8ff;border:1px solid #3579ba;box-shadow:0 8px 24px #020b2050}
 #app main.admin-blue .panel h2,#app main.admin-blue .panel h3,#app main.admin-blue .panel h4,#app main.admin-blue .metric strong{color:#fff}
-#app main.admin-blue .panel .muted,#app main.admin-blue .panel p.muted{color:#c6e3fa}
+#app main.admin-blue .panel p,#app main.admin-blue .panel label,#app main.admin-blue .panel output,#app main.admin-blue .community-card,#app main.admin-blue .community-card-head span,#app main.admin-blue .technical-chat-message{color:#eef8ff}
+#app main.admin-blue .panel .muted,#app main.admin-blue .panel p.muted,#app main.admin-blue .community-card .muted{color:#c6e3fa}
+#app main.admin-blue .community-card-actions{border-top-color:#3579ba}
+#app main.admin-blue .community-card-head button{color:#a6e4ff}
+#app main.admin-blue .community-card .likes{color:#ffd4e8}
 #app main.admin-blue .metric{transition:transform .18s,background .18s,border-color .18s;text-align:right}
 #app main.admin-blue .metric:hover,#app main.admin-blue .metric:focus-visible{background:linear-gradient(145deg,#18549a,#17366b);border-color:#38bdf8;transform:translateY(-2px)}
 #app main.admin-blue .metric:focus-visible{outline:3px solid #38bdf8;outline-offset:2px}
-#app main.admin-blue .metric.alert{border-color:#fb7185;background:linear-gradient(145deg,#70254b,#172554);color:#fff}
+#app main.admin-blue .metric.alert{border-color:#fb7185;background:linear-gradient(145deg,#123b74,#172554);color:#fff}
 #app main.admin-blue .metric.alert strong{color:#fff}
-#app main.admin-blue .tablewrap{background:#f8fbff;color:#142b43;border-color:#bfd5eb}
+#app main.admin-blue .tablewrap{background:#123b74;color:#eef8ff;border-color:#3579ba}
 #app main.admin-blue .top button{background:#17365e;color:#eaf6ff;border-color:#3673a8}
 #app main.admin-blue .top button:hover{background:#245181}
 #app main.admin-blue #content>h2,#app main.admin-blue #content>h3,#app main.admin-blue #content>h4{color:#eef8ff}
 #app main.admin-blue #content>.muted,#app main.admin-blue #content>.toolbar,#app main.admin-blue #content>.stats{color:#c6dff4}
-#app main.admin-blue .tablewrap th{background:#dceaf5;color:#173b5c}
-#app main.admin-blue .tablewrap td{background:#f8fbff;color:#142b43}
+#app main.admin-blue .tablewrap th{background:#17477f;color:#fff}
+#app main.admin-blue .tablewrap td{background:#102f62;color:#eef8ff;border-bottom-color:#3579ba}
 #app main.admin-blue .panel input,#app main.admin-blue .panel select,#app main.admin-blue .panel textarea{background:#fff;color:#142b43;border-color:#9fb5ca}
 #app main.admin-blue .panel button:not(.metric),#app main.admin-blue .toolbar button:not(.metric),#app main.admin-blue .tabs button{background:#1a5c98;color:#fff;border-color:#38bdf8}
 #app main.admin-blue .panel button:hover,#app main.admin-blue .toolbar button:hover,#app main.admin-blue .tabs button:hover{background:#2475ba}
 #app main.admin-blue .note{background:#0f3468;color:#eaf6ff;border-right-color:#38bdf8}
 #app main.admin-blue .tag{background:#17477f;color:#fff}
-#app main.admin-blue .panel .tablewrap{color:#142b43}
+#app main.admin-blue .panel .tablewrap{color:#eef8ff}
 #app main.admin-blue .panel .error{color:#991b1b;background:#fff1f2}
 </style><style>.community-feed{display:grid;gap:14px;max-width:850px}.community-card{background:white;border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 3px 12px #16223808}.community-card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}.community-card-head button{border:0;background:transparent;color:var(--brand);font-weight:bold;padding:4px}.community-card-head span{color:#64748b;font-size:12px}.community-body{white-space:pre-wrap;line-height:1.9;min-height:55px}.community-card-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid #edf0f5}.community-card-actions .likes{color:#db2777;font-weight:bold;margin-left:auto}@media(max-width:600px){.community-card-actions .likes{margin-left:0;width:100%}}</style></head><body>
 <section id="login" class="login"><h1>خدووم</h1><h2>لوحة الإدارة</h2><p class="muted">حساب مستقل لكل موظف، وصلاحيات تناسب عمله.</p><form id="staffLogin"><label>اسم المستخدم<input name="username" autocomplete="username" required></label><label>كلمة المرور<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">دخول الموظف</button></form><details><summary>دخول المالك</summary><form id="ownerLogin"><label>مفتاح المالك<input name="key" type="password" required autocomplete="off"></label><button class="primary">دخول المالك</button></form></details><p id="loginError" role="alert"></p></section>
