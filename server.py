@@ -99,7 +99,59 @@ def normalize_phone(value: object) -> str:
 
 def normalize_username(value: object) -> str:
     """Use one canonical username for registration, login, and invitations."""
-    return unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    value = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    return re.sub(r"\s+", " ", value)
+
+
+def find_login_user(connection: Any, value: object):
+    """Resolve current and legacy login identifiers without weakening passwords.
+
+    The application promises username or manager phone login. Older Arabic
+    usernames may also predate canonical Unicode and whitespace handling.
+    Ambiguous phone numbers are never accepted silently.
+    """
+    identity = normalize_username(value)
+    user = connection.execute(
+        """SELECT * FROM users
+           WHERE username=? COLLATE NOCASE OR (email<>'' AND email=? COLLATE NOCASE)
+           LIMIT 1""",
+        (identity, identity),
+    ).fetchone()
+    if user is not None:
+        return user
+
+    user = connection.execute(
+        """SELECT * FROM users
+           WHERE TRIM(username)=? COLLATE NOCASE
+              OR (email<>'' AND TRIM(email)=? COLLATE NOCASE)
+           LIMIT 1""",
+        (identity, identity),
+    ).fetchone()
+    if user is not None:
+        return user
+
+    if identity and (any(ord(char) > 127 for char in identity) or " " in identity):
+        matches = [
+            row for row in connection.execute("SELECT * FROM users WHERE username<>''").fetchall()
+            if normalize_username(row["username"]) == identity
+        ]
+        if len(matches) == 1:
+            return matches[0]
+
+    raw_value = str(value or "").strip()
+    phone = normalize_phone(raw_value)
+    looks_like_phone = len(phone) >= 7 and not re.search(r"[A-Za-z\u0600-\u06ff]", raw_value)
+    if looks_like_phone:
+        matches = [
+            row for row in connection.execute("SELECT * FROM users WHERE phone<>''").fetchall()
+            if normalize_phone(row["phone"]) == phone
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        managers = [row for row in matches if str(row["role"] or "") in ("admin", "manager", "owner")]
+        if len(managers) == 1:
+            return managers[0]
+    return None
 
 def support_reference(ticket_id: int, created_at: str = '') -> str:
     """Stable, user-visible support reference; internal numeric IDs remain unchanged."""
@@ -3298,10 +3350,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 if downgrade_expired_subscriptions(connection):
                     connection.commit()
                 login_identity = normalize_username(data.get("username"))
-                user = connection.execute(
-                    "SELECT * FROM users WHERE (username=? COLLATE NOCASE OR (email<>'' AND email=? COLLATE NOCASE))",
-                    (login_identity, login_identity),
-                ).fetchone()
+                user = find_login_user(connection, data.get("username"))
                 if user is None:
                     connection.execute('INSERT INTO platform_unknown_logins(account,created_at) VALUES(?,?)',(str(data.get('username',''))[:100],now()))
                     record_login_failure(connection, self, organization_id=None, user_id=None, username=login_identity, code=401, reason='user_not_found', data=data)
@@ -3355,13 +3404,20 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     str(data.get("deviceId", "")).strip(),
                     str(data.get("deviceName", "جهاز غير معروف")).strip(),
                 )
-                package = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (user["organization_id"],)).fetchone()["package"]
+                package_row = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (user["organization_id"],)).fetchone()
+                package = package_row["package"] if package_row else "free"
+                try:
+                    permissions = json.loads(user["permissions"] or "{}")
+                    if not isinstance(permissions, dict):
+                        permissions = {}
+                except (TypeError, json.JSONDecodeError):
+                    permissions = {}
                 if known_device is None:
                     audit_log(connection, user["organization_id"], user["id"], "new_device", f"دخول من جهاز جديد: {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "security")
                 else:
                     audit_log(connection, user["organization_id"], user["id"], "login", f"تسجيل دخول من {str(data.get('deviceName', 'جهاز غير معروف')).strip()}", "session")
                 connection.commit()
-                self._send(200, {"token": token, "user": {"id": user["id"], "name": user["name"], "role": user["role"], "permissions": json.loads(user["permissions"])}, "organizationId": user["organization_id"], "package": package})
+                self._send(200, {"token": token, "user": {"id": user["id"], "name": user["name"], "role": user["role"], "permissions": permissions}, "organizationId": user["organization_id"], "package": package})
             return
         if method == "POST" and path == "/api/activate-code-public":
             data = self._body()
