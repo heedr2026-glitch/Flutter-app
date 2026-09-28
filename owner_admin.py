@@ -90,7 +90,7 @@ def permission(path,method):
  p=path.removeprefix('/owner/api/')
  if p.startswith('v2/'):
   p=p[3:]
-  if p in ('me','logout','summary'): return None
+  if p in ('me','logout','summary','live-changes'): return None
   if p=='addons': return 'packages'
   if p.startswith('community/rewards/'): return 'rewards'
   if p.startswith('addon-offers'): return 'offers'
@@ -312,6 +312,23 @@ def handle(h,method,s):
  except (ValueError,TypeError,KeyError) as e: raise s.ApiError(400,str(e))
 
 def dispatch(c,r,m,d,q,page,a,h,s):
+ if r=='live-changes' and m=='GET':
+  scope=q.get('scope','')
+  if scope=='home':
+   return {'support':scalar(c,"SELECT COUNT(*) n FROM support_tickets WHERE status IN ('open','under_review','in_progress','awaiting_user')") if 'support' in a['permissions'] else None,
+           'ads':scalar(c,'SELECT COUNT(*) n FROM advertisements WHERE active=1 AND approved=1 AND (scheduled_at IS NULL OR scheduled_at<=?) AND (expires_at IS NULL OR expires_at>?)',(stamp(),stamp())) if 'ads' in a['permissions'] else None}
+  if scope=='support' and 'support' in a['permissions']:
+   where='FROM support_tickets t WHERE 1=1'; args=[]
+   if q.get('status'): where+=' AND t.status=?'; args.append(q['status'])
+   items=rows(c,"SELECT t.id,t.status,t.updated_at,(SELECT tt.status FROM technical_tasks tt WHERE tt.support_ticket_id=t.id ORDER BY tt.id DESC LIMIT 1) technical_status "+where+' ORDER BY t.id DESC LIMIT 30 OFFSET ?',[*args,(page-1)*30])
+   return {'signature':items,'total':scalar(c,'SELECT COUNT(*) n '+where,args)}
+  if scope=='ads' and 'ads' in a['permissions']:
+   condition="CASE WHEN approved=1 AND expires_at IS NOT NULL AND expires_at<=? THEN 'expired' WHEN active=0 AND approved=0 THEN 'rejected' WHEN active=0 THEN 'stopped' WHEN approved=0 THEN 'pending' WHEN scheduled_at>? THEN 'scheduled' ELSE 'published' END"
+   src='FROM (SELECT id,active,approved,expires_at,scheduled_at,published_at,review_note,'+condition+' status FROM advertisements WHERE COALESCE(deleted,0)=0) ads WHERE 1=1'; args=[stamp(),stamp()]
+   if q.get('status'): src+=' AND status=?'; args.append(q['status'])
+   items=rows(c,'SELECT id,active,approved,expires_at,scheduled_at,published_at,review_note,status '+src+' ORDER BY id DESC LIMIT 30 OFFSET ?',[*args,(page-1)*30])
+   return {'signature':items,'total':scalar(c,'SELECT COUNT(*) n '+src,args)}
+  raise s.ApiError(403,'لا تملك صلاحية عرض التحديثات')
  if r=='addons' or r.startswith(('addon-offers','accounts','branches/','organization-verifications')):
   import organization_addons
   return organization_addons.owner(c,r,m,d,q,page,a,s)

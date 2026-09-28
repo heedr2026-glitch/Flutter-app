@@ -46,6 +46,9 @@ class OwnerSupportFlowTest(unittest.TestCase):
                     task = connection.execute('SELECT organization_id,support_ticket_id,status FROM technical_tasks WHERE support_ticket_id=?', (ticket_id,)).fetchone()
                     self.assertEqual((task['organization_id'], task['support_ticket_id'], task['status']), (1, ticket_id, 'diagnosing'))
                 self.assertEqual(request('/owner/api/v2/summary', owner=True)['support'], 1)
+                live = request('/owner/api/v2/live-changes?scope=support&status=in_progress', owner=True)
+                self.assertEqual(live['total'], 1)
+                self.assertEqual(live['signature'][0]['id'], ticket_id)
                 for status in ('', 'in_progress'):
                     result = request('/owner/api/v2/support?status=' + status, owner=True)
                     self.assertEqual(result['total'], 1)
@@ -54,7 +57,13 @@ class OwnerSupportFlowTest(unittest.TestCase):
                     connection.execute("UPDATE support_tickets SET status='under_review' WHERE id=?", (ticket_id,))
                 review = request('/owner/api/v2/support?status=under_review', owner=True)
                 self.assertEqual(review['items'][0]['id'], ticket_id)
+                self.assertEqual(request('/owner/api/v2/live-changes?scope=support&status=in_progress', owner=True)['total'], 0)
                 self.assertEqual(request('/owner/api/v2/summary', owner=True)['support'], 1)
+                with server.db() as connection:
+                    connection.execute("INSERT INTO advertisements(organization_id,title,message,created_at) VALUES(1,'Ad request','Banner',?)", (server.now(),))
+                ads = request('/owner/api/v2/live-changes?scope=ads&status=pending', owner=True)
+                self.assertEqual(ads['total'], 1)
+                self.assertEqual(ads['signature'][0]['status'], 'pending')
             finally:
                 httpd.shutdown()
                 httpd.server_close()
