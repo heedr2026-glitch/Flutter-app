@@ -72,6 +72,18 @@ class TrainingContextTests(unittest.TestCase):
         answer=tc.direct_answer('طيب وين؟',tc.context(self.c,1,None),previous)
         self.assertIn('التنبيهات',answer)
 
+    def test_assistant_language_is_natural_clear_and_free_of_broken_text(self):
+        info=tc.context(self.c,1,{'branchName':'الرياض'})
+        answers=[
+            tc.direct_answer('وش باقتي؟',info),
+            tc.direct_answer('الفرع',info),
+            tc.direct_answer('وين المركبات؟',info),
+        ]
+        self.assertIn('باقتك الحالية هي',answers[0])
+        self.assertIn('الفرع المفتوح حاليًا',answers[1])
+        for answer in answers:
+            self.assertNotRegex(answer,r'[âظ][€„ˆ]')
+
     def test_capacity_rejects_without_truncation_or_false_success(self):
         original='x'*11999
         self.assertEqual(tc.append_fact(original,'new fact'),(original,'full'))
