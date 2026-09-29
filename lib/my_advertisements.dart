@@ -1,3 +1,5 @@
+import 'advertisement_banner.dart';
+export 'advertisement_banner.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -451,195 +453,6 @@ class MyAdvertisementsPage extends StatefulWidget {
   });
   @override
   State<MyAdvertisementsPage> createState() => _MyAdvertisementsPageState();
-}
-
-class AdvertisementBannerView extends StatelessWidget {
-  final Map<String, dynamic> ad;
-  const AdvertisementBannerView({super.key, required this.ad});
-
-  Map<String, dynamic> get _config {
-    final raw = ad['banner_config'];
-    if (raw is Map) return Map<String, dynamic>.from(raw);
-    if (raw is String && raw.isNotEmpty) {
-      try {
-        return Map<String, dynamic>.from(jsonDecode(raw) as Map);
-      } catch (_) {}
-    }
-    return const {};
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final config = _config;
-    final textColor = _safeAdvertisementColor(
-      config['textColor']?.toString() ?? '#FFFFFF',
-      Colors.white,
-    );
-    final barColor = _safeAdvertisementColor(
-      config['barColor']?.toString() ?? '#172554',
-      const Color(0xFF172554),
-    );
-    final fontSize =
-        (double.tryParse(config['fontSize']?.toString() ?? '') ?? 19)
-            .clamp(12, 32)
-            .toDouble();
-    final scale = (double.tryParse(config['logoScale']?.toString() ?? '') ?? 1)
-        .clamp(.5, 1.5)
-        .toDouble();
-    final logoBytes = _safeAdvertisementBytes(
-      ad['image_data'] ?? ad['imageData'],
-    );
-    final bannerBytes = _safeAdvertisementBytes(
-      config['bannerImageData'] ?? config['banner_image_data'],
-    );
-    final fullBannerImage =
-        config['adType']?.toString() == 'image' && bannerBytes != null;
-    if (fullBannerImage) {
-      return Container(
-        width: double.infinity,
-        decoration: BoxDecoration(
-          color: barColor,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
-        ),
-        child: AspectRatio(
-          aspectRatio: 3,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(14),
-            child: Image.memory(
-              bannerBytes,
-              width: double.infinity,
-              height: double.infinity,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => Center(
-                child: Icon(Icons.broken_image_outlined, color: textColor),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-    final logoPosition = config['logoPosition']?.toString() ?? 'left';
-    final textAlignValue = config['textAlign']?.toString() ?? 'right';
-    final textAlign = textAlignValue == 'left'
-        ? TextAlign.left
-        : textAlignValue == 'center'
-        ? TextAlign.center
-        : TextAlign.right;
-    final logo = logoBytes == null
-        ? const Icon(Icons.campaign, color: Color(0xFFF59E0B), size: 46)
-        : ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: Image.memory(
-              logoBytes,
-              width: (72 * scale).clamp(40, 108).toDouble(),
-              height: (72 * scale).clamp(40, 108).toDouble(),
-              fit: BoxFit.contain,
-              errorBuilder: (_, _, _) => const Icon(
-                Icons.campaign,
-                color: Color(0xFFF59E0B),
-                size: 46,
-              ),
-            ),
-          );
-    final textBlock = Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: textAlign == TextAlign.left
-          ? CrossAxisAlignment.start
-          : textAlign == TextAlign.center
-          ? CrossAxisAlignment.center
-          : CrossAxisAlignment.end,
-      children: [
-        Text(
-          ad['title']?.toString().trim().isNotEmpty == true
-              ? ad['title'].toString()
-              : 'إعلان',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          textAlign: textAlign,
-          style: TextStyle(
-            color: textColor,
-            fontSize: fontSize,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 3),
-        Text(
-          ad['message']?.toString().trim().isNotEmpty == true
-              ? ad['message'].toString()
-              : 'نص الإعلان سيظهر هنا',
-          maxLines: 3,
-          overflow: TextOverflow.ellipsis,
-          textAlign: textAlign,
-          style: TextStyle(
-            color: textColor.withValues(alpha: .82),
-            fontSize: (fontSize - 3).clamp(12, 28),
-            height: 1.4,
-          ),
-        ),
-        const SizedBox(height: 7),
-        const Text(
-          'عرض تفاصيل الإعلان',
-          style: TextStyle(
-            color: Color(0xFFFBBF24),
-            fontSize: 13,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ],
-    );
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: barColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
-      ),
-      child: AspectRatio(
-        aspectRatio: 3,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 8,
-                  ),
-                  child: Align(
-                    alignment: textAlignValue == 'left'
-                        ? Alignment.centerLeft
-                        : textAlignValue == 'center'
-                        ? Alignment.center
-                        : Alignment.centerRight,
-                    child: FractionallySizedBox(
-                      widthFactor: .72,
-                      child: textBlock,
-                    ),
-                  ),
-                ),
-              ),
-              if (logoBytes != null)
-                Positioned.fill(
-                  child: Align(
-                    alignment: logoPosition == 'right'
-                        ? Alignment.centerRight
-                        : logoPosition == 'center'
-                        ? Alignment.center
-                        : Alignment.centerLeft,
-                    child: FractionallySizedBox(
-                      widthFactor: .23,
-                      child: Center(child: logo),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _MyAdvertisementsPageState extends State<MyAdvertisementsPage>
@@ -1465,6 +1278,11 @@ class _AdvertisementRequestDialogState
   );
 
   Widget _buildBannerPreview({bool showTools = true}) {
+    final request = _payload('preview');
+    final preview = AdvertisementBannerView(ad: {
+      ...request, 'banner_config': request['bannerConfig'],
+    });
+    if (!showTools) return preview;
     final text = _message.text.trim();
     final logoWidth = (_imageWidth * _logoScale).clamp(40, 600).toDouble();
     final logoHeight = (_imageHeight * _logoScale).clamp(30, 300).toDouble();
@@ -1606,7 +1424,7 @@ class _AdvertisementRequestDialogState
       children: [
         LayoutBuilder(
           builder: (context, outer) => AspectRatio(
-            aspectRatio: 3,
+            aspectRatio: advertisementBannerAspectRatio,
             child: Container(
               width: double.infinity,
               clipBehavior: Clip.hardEdge,
@@ -1831,9 +1649,11 @@ class _AdvertisementRequestDialogState
           ),
         const SizedBox(height: 4),
         Text(
-          'هذه هي الهيئة التي ستظهر للمستخدم بعد الموافقة.',
+          'المعاينة النهائية المطابقة لشريط المشترك:',
           style: Theme.of(context).textTheme.bodySmall,
         ),
+        const SizedBox(height: 8),
+        preview,
         const SizedBox(height: 12),
       ],
     );

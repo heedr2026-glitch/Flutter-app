@@ -839,6 +839,10 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   actions="'login','failed_login','new_device'" if category=='login' else "'failed_login','new_device','blocked_device_login','owner_account_status','suspicious_login'"
   out=paged(c,'SELECT a.action,a.summary,a.created_at,o.name organization_name,a.organization_id',f'FROM audit_logs a JOIN organizations o ON o.id=a.organization_id WHERE a.action IN ({actions})',[],'a.id DESC',page); out['unknownLogins']=rows(c,'SELECT account,created_at FROM platform_unknown_logins ORDER BY id DESC LIMIT 30');out['adminLogins']=rows(c,'SELECT account,success,created_at FROM platform_login_events ORDER BY id DESC LIMIT 30'); return out
  if r=='usage' and m=='GET': return usage(c,q,page,s)
+ if r=='ads/live' and m=='GET':
+  import ad_policy
+  ensure_owner_tables(c,s,('advertisements','platform_advertisements'))
+  return ad_policy.public_ads(c,stamp())
  if r=='ads' and m=='GET':
   ensure_owner_tables(c,s,('advertisements',))
   condition="CASE WHEN a.approved=1 AND a.expires_at IS NOT NULL AND a.expires_at<=? THEN 'expired' WHEN a.active=0 AND a.approved=0 THEN 'rejected' WHEN a.active=0 THEN 'stopped' WHEN a.approved=0 THEN 'pending' WHEN a.scheduled_at>? THEN 'scheduled' ELSE 'published' END"
@@ -865,18 +869,26 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   ensure_owner_tables(c,s,('advertisements',))
   ident=int(r.split('/')[1]); old=c.execute('SELECT * FROM advertisements WHERE id=? AND COALESCE(deleted,0)=0',(ident,)).fetchone()
   if not old: raise s.ApiError(404,'الإعلان غير موجود')
-  status=d.get('status'); start=date(d.get('scheduled_at')); end=date(d.get('expires_at'))
+  status=d.get('status'); start=date(d.get('scheduled_at',old['scheduled_at'])); end=date(d.get('expires_at',old['expires_at']))
   if status not in ('published','scheduled','rejected','stopped','pending') or (start and end and end<=start): raise ValueError('تحقق من الحالة والتاريخ')
   seconds=number(d.get('display_seconds',old['display_seconds'] if 'display_seconds' in old.keys() else 8),3,60,True)
-  config=d.get('banner_config',old['banner_config'] if 'banner_config' in old.keys() else '{}')
+  previous=old['banner_config'] if 'banner_config' in old.keys() else '{}'
+  try: previous=json.loads(previous) if isinstance(previous,str) else dict(previous or {})
+  except (TypeError,ValueError): previous={}
+  config=d.get('banner_config',previous)
   if isinstance(config,str):
    try: config=json.loads(config or '{}')
    except (TypeError,ValueError): raise ValueError('إعدادات تصميم الشريط غير صحيحة')
   if not isinstance(config,dict): raise ValueError('إعدادات تصميم الشريط غير صحيحة')
+  config={**previous,**config}
   for key in ('textColor','barColor','textAlign','logoPosition','fontSize','logoScale','height','textX','textY','logoX','logoY'):
    if key in d and d[key] not in (None,''): config[key]=d[key]
-  safe={key:config.get(key) for key in ('textColor','barColor','textAlign','logoPosition','fontSize','logoScale','height','textX','textY','logoX','logoY') if key in config}
-  if safe.get('textAlign') not in (None,'right','center','left') or safe.get('logoPosition') not in (None,'right','left'): raise ValueError('موضع التصميم غير صحيح')
+  safe={key:config.get(key) for key in ('textColor','barColor','textAlign','logoPosition','fontSize','logoScale','height','textX','textY','messageX','messageY','logoX','logoY','bannerX','bannerY','bannerWidth','bannerHeight','adType','mode','bannerImageData','banner_image_data','imageWidth','imageHeight','textLayers') if key in config}
+  if safe.get('adType') not in (None,'text','image'): raise ValueError('نوع الإعلان غير صحيح')
+  for image_key in ('bannerImageData','banner_image_data'):
+   value=safe.get(image_key)
+   if value and (not isinstance(value,str) or len(value)>850000 or not value.startswith(('data:image/jpeg;base64,','data:image/png;base64,','data:image/webp;base64,'))): raise ValueError('صيغة صورة الإعلان غير مدعومة أو حجمها كبير')
+  if safe.get('textAlign') not in (None,'right','center','left') or safe.get('logoPosition') not in (None,'right','center','left'): raise ValueError('موضع التصميم غير صحيح')
   for key,low,high in (('fontSize',12,32),('logoScale',0.5,1.5),('height',44,180),('textX',0.08,0.92),('textY',0.15,0.85),('logoX',0.08,0.92),('logoY',0.15,0.85)):
    if key in safe: safe[key]=number(safe[key],low,high,False)
   for key in ('textColor','barColor'):
@@ -884,9 +896,12 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   title=str(d.get('title',old['title']))[:120]; message=str(d.get('message',old['message']))[:1000]; contact=str(d.get('contact',old['contact']))[:80]; image=str(d.get('image_data','')) or str(old['image_data'] if 'image_data' in old.keys() else '')
   if image and (len(image)>850000 or not image.startswith(('data:image/jpeg;base64,','data:image/png;base64,','data:image/webp;base64,'))): raise ValueError('صيغة الصورة غير مدعومة أو حجمها كبير')
   active=int(status not in ('rejected','stopped')); approved=int(status in ('published','scheduled','stopped'))
-  published_at=stamp() if status in ('published','scheduled') else None if status=='pending' else old['published_at'] if 'published_at' in old.keys() else None
-  published_by=a['name'] if status in ('published','scheduled') else '' if status=='pending' else old['published_by'] if 'published_by' in old.keys() else ''
-  c.execute('UPDATE advertisements SET title=?,message=?,contact=?,image_data=?,active=?,approved=?,scheduled_at=?,expires_at=?,approved_at=?,published_at=?,published_by=?,review_note=?,display_seconds=?,banner_config=? WHERE id=?',(title,message,contact,image,active,approved,start,end,stamp(),published_at,published_by,str(d.get('review_note',''))[:500],seconds,json.dumps(safe,ensure_ascii=False),ident))
+  previous_published=old['published_at'] if 'published_at' in old.keys() else None
+  published_at=(previous_published or stamp()) if status in ('published','scheduled') else None if status=='pending' else previous_published
+  previous_actor=old['published_by'] if 'published_by' in old.keys() else ''
+  published_by=(previous_actor or a['name']) if status in ('published','scheduled') else '' if status=='pending' else previous_actor
+  approved_at=old['approved_at'] if old['approved'] else stamp()
+  c.execute('UPDATE advertisements SET title=?,message=?,contact=?,image_data=?,active=?,approved=?,scheduled_at=?,expires_at=?,approved_at=?,published_at=?,published_by=?,review_note=?,display_seconds=?,banner_config=? WHERE id=?',(title,message,contact,image,active,approved,start,end,approved_at,published_at,published_by,str(d.get('review_note',old['review_note'] or ''))[:500],seconds,json.dumps(safe,ensure_ascii=False),ident))
   audit(c,a['name'],'advertisement_'+status,json.dumps({'ad_id':ident,'before':{'status':old['approved'],'active':old['active'],'display_seconds':old['display_seconds'] if 'display_seconds' in old.keys() else 8},'after':{'status':status,'display_seconds':seconds}},ensure_ascii=False))
   previous_config=old['banner_config'] if 'banner_config' in old.keys() else '{}'
   audit(c,a['name'],'advertisement_design',json.dumps({'ad_id':ident,'before':previous_config,'after':safe},ensure_ascii=False))

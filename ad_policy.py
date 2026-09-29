@@ -45,3 +45,25 @@ def project(row, at=None):
     result['status'] = status
     result['remaining_days'] = max(0, math.ceil((end-at).total_seconds()/86400)) if end else None
     return result
+
+
+def public_ads(connection, at):
+    """Use the subscriber feed unchanged for the owner live simulation."""
+    return [dict(row) for row in connection.execute(
+        """SELECT advertisements.id,advertisements.title,advertisements.message,advertisements.contact,
+                              advertisements.approved_at,advertisements.expires_at,organizations.name AS advertiser,
+                              organizations.phone AS advertiser_phone,
+                              '' AS promo_code,'organization' AS ad_source,advertisements.image_data,advertisements.display_seconds,advertisements.banner_config,advertisements.published_at
+                       FROM advertisements JOIN organizations ON organizations.id=advertisements.organization_id
+                       WHERE advertisements.active=1 AND advertisements.approved=1
+                         AND (advertisements.scheduled_at IS NULL OR advertisements.scheduled_at<=?)
+                         AND (advertisements.expires_at IS NULL OR advertisements.expires_at>?)
+                       UNION ALL
+                       SELECT id,title,message,'' AS contact,starts_at AS approved_at,expires_at,
+                              'منصة خدووم' AS advertiser,'' AS advertiser_phone,promo_code,'platform' AS ad_source,image_data,display_seconds,banner_config,published_at
+                       FROM platform_advertisements
+                       WHERE active=1 AND (starts_at IS NULL OR starts_at<=?)
+                         AND (expires_at IS NULL OR expires_at>?)
+                       ORDER BY approved_at DESC""",
+        (at, at, at, at),
+    ).fetchall()]
