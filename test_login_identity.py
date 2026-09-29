@@ -19,10 +19,10 @@ class LoginIdentityTest(unittest.TestCase):
     def tearDown(self):
         self.connection.close()
 
-    def add_user(self, ident, username, phone="", role="admin"):
+    def add_user(self, ident, username, phone="", role="admin", name=None):
         self.connection.execute(
             "INSERT INTO users VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (ident, ident, username, username, "", phone, role, 1, "h", "s", "{}"),
+            (ident, ident, name or username, username, "", phone, role, 1, "h", "s", "{}"),
         )
 
     def test_arabic_username_accepts_legacy_spacing_and_unicode(self):
@@ -45,6 +45,16 @@ class LoginIdentityTest(unittest.TestCase):
         self.add_user(2, "employee", "0500000000", "employee")
         user = server.find_login_user(self.connection, "0500000000")
         self.assertEqual(user["id"], 1)
+
+    def test_unique_full_arabic_name_can_login(self):
+        self.add_user(1, "mahdi-account", name="  مهدي  بن عشوان ")
+        user = server.find_login_user(self.connection, "مهدي بن عشوان")
+        self.assertEqual(user["id"], 1)
+
+    def test_duplicate_full_name_does_not_select_random_account(self):
+        self.add_user(1, "mahdi-one", name="مهدي بن عشوان")
+        self.add_user(2, "mahdi-two", name="مهدي بن عشوان")
+        self.assertIsNone(server.find_login_user(self.connection, "مهدي بن عشوان"))
 
 
 if __name__ == "__main__":

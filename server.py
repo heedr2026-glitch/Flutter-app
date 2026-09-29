@@ -106,9 +106,10 @@ def normalize_username(value: object) -> str:
 def find_login_user(connection: Any, value: object):
     """Resolve current and legacy login identifiers without weakening passwords.
 
-    The application promises username or manager phone login. Older Arabic
-    usernames may also predate canonical Unicode and whitespace handling.
-    Ambiguous phone numbers are never accepted silently.
+    The application promises username or manager phone login. For legacy
+    accounts, people also commonly enter the full Arabic name shown elsewhere
+    in the app. Older values may predate canonical Unicode and whitespace
+    handling. Ambiguous names or phone numbers are never accepted silently.
     """
     identity = normalize_username(value)
     user = connection.execute(
@@ -137,6 +138,13 @@ def find_login_user(connection: Any, value: object):
         ]
         if len(matches) == 1:
             return matches[0]
+
+        name_matches = [
+            row for row in connection.execute("SELECT * FROM users WHERE name<>''").fetchall()
+            if normalize_username(row["name"]) == identity
+        ]
+        if len(name_matches) == 1:
+            return name_matches[0]
 
     raw_value = str(value or "").strip()
     phone = normalize_phone(raw_value)
