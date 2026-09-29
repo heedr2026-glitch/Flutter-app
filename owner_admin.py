@@ -402,7 +402,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if ticket_match:
    ticket=c.execute('SELECT id,organization_id,status,category,message,last_error FROM support_tickets WHERE id=?',(int(ticket_match.group(1)),)).fetchone()
    if ticket and not org: org=c.execute('SELECT id,name FROM organizations WHERE id=?',(ticket['organization_id'],)).fetchone()
-  service='whatsapp' if any(x in question_fold for x in ('واتساب','whatsapp')) else 'calls' if any(x in question_fold for x in ('مكالمة','المكالمات','calls')) else 'ai' if any(x in question_fold for x in ('ai','ذكاء','موظف')) else 'login' if any(x in question_fold for x in ('دخول','تسجيل','401','كلمة المرور','تسجيل الدخول')) else 'ads' if any(x in question_fold for x in ('إعلان','اعلان','الإعلانات','اعلانات')) else 'performance' if any(x in question_fold for x in ('بطء','بطيء','سرعة','صفحة')) else 'support' if any(x in question_fold for x in ('دعم','شكوى','بلاغ')) else 'platform'
+  service='whatsapp' if any(x in question_fold for x in ('واتساب','whatsapp')) else 'calls' if any(x in question_fold for x in ('مكالمة','المكالمات','calls')) else 'login' if any(x in question_fold for x in ('دخول','تسجيل','401','كلمة المرور','تسجيل الدخول')) else 'ai' if any(x in question_fold for x in ('ai','ذكاء','اسألني','اسالني','المساعد')) else 'ads' if any(x in question_fold for x in ('إعلان','اعلان','الإعلانات','اعلانات')) else 'performance' if any(x in question_fold for x in ('بطء','بطيء','سرعة','صفحة')) else 'support' if any(x in question_fold for x in ('دعم','شكوى','بلاغ')) else 'platform'
   checks=[]; affected='عامة'; scope='global'
   if org:
    affected=org['name']; scope='organization'
@@ -412,6 +412,10 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    failures=scalar(c,'SELECT COUNT(*) n FROM login_failures WHERE organization_id=? AND created_at>=?',(org['id'],(datetime.now(timezone.utc)-timedelta(hours=24)).isoformat()))
    credits=credits_summary(c,org['id'],s)
    checks.extend([{'key':'package','label':'الباقة','status':'ok' if sub else 'warning','details':sub['package'] if sub else 'غير موجودة'}, {'key':'users','label':'المستخدمون','status':'ok' if users else 'warning','details':f'{users} مستخدم نشط'}, {'key':'support','label':'طلبات الدعم','status':'warning' if open_support else 'ok','details':f'{open_support} طلب مفتوح'}, {'key':'login','label':'الأخطاء الأخيرة','status':'warning' if failures else 'ok','details':f'{failures} محاولة/خطأ خلال 24 ساعة'}, {'key':'balance','label':'الاستخدام والرصيد','status':'warning' if any(v['base'] and v['remaining']<=max(1,math.ceil(v['base']*.1)) for v in credits['services'].values()) else 'ok','details':f"{credits['total_remaining']} وحدة متبقية"}])
+   if service=='ai':
+    ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip())
+    ai_uses=scalar(c,'SELECT COUNT(*) n FROM ai_usage WHERE organization_id=? AND created_at>=?',(org['id'],stamp()[:10]))
+    checks.append({'key':'ai','label':'خدمة اسألني','status':'ok' if ai_ready else 'warning','details':('الخدمة مهيأة' if ai_ready else 'مفتاح AI غير مهيأ')+f' · {ai_uses} استخدام اليوم'})
    if ticket:
     checks.append({'key':'ticket','label':'طلب الدعم','status':'warning' if ticket['status'] not in ('resolved','closed') else 'ok','details':f"#{ticket['id']} · {ticket['status']} · {ticket['category']}"})
   else:
@@ -420,6 +424,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     checks.append({'key':'performance','label':'الأداء','status':'warning' if perf['max_ms']>=1500 or perf['failures'] else 'ok','details':f"{perf['samples']} قياس · متوسط {int(perf['avg_ms'])}ms · أعلى {int(perf['max_ms'])}ms · فشل {int(perf['failures'])}"})
    checks.append({'key':'database','label':'قاعدة البيانات','status':'ok','details':'استعلام الفحص نجح'})
    checks.append({'key':'server','label':'السيرفر','status':'ok','details':'واجهة الإدارة استجابت'})
+   if service=='ai':
+    ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip())
+    checks.append({'key':'ai','label':'خدمة اسألني','status':'ok' if ai_ready else 'warning','details':'إعداد خدمة AI على الخادم' if ai_ready else 'مفتاح AI غير مهيأ على الخادم'})
   warnings=[x for x in checks if x['status']=='warning']
   diagnosis=('تم فحص المؤسسة فعليًا من السجلات الحالية' if org else 'تم فحص مؤشرات المنصة والأداء الحالية')+('، وظهرت '+str(len(warnings))+' ملاحظات تحتاج متابعة' if warnings else '، ولم تظهر ملاحظات حرجة في القياسات المتاحة')
   proposal=('مراجعة عناصر التحذير أعلاه ثم تنفيذ إصلاح آمن بعد الموافقة' if warnings else 'الاستمرار بالمراقبة وجمع قياسات أكثر قبل أي تغيير')
@@ -482,16 +489,19 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   state=c.execute('SELECT * FROM technical_agent_state WHERE id=1').fetchone()
   heartbeat=state['last_heartbeat'] if state else None
-  live=bool(heartbeat and (datetime.now(timezone.utc)-datetime.fromisoformat(heartbeat)).total_seconds()<=180)
+  last_check=state['last_check'] if state else None
+  internal_live=bool(last_check and (datetime.now(timezone.utc)-datetime.fromisoformat(last_check)).total_seconds()<=180)
+  external_live=bool(heartbeat and (datetime.now(timezone.utc)-datetime.fromisoformat(heartbeat)).total_seconds()<=180)
+  live=internal_live or external_live
   configured=bool(os.environ.get('KHDOOM_TECHNICAL_AI_SECRET','').strip())
-  state_out={'status':'working' if live and state['last_task'] else 'online' if live else 'offline' if configured else 'not_configured','lastHeartbeat':heartbeat,'lastCheck':state['last_check'] if state else None,'lastTask':state['last_task'] if state else '','lastError':state['last_error'] if state else '','lastSuccess':state['last_success'] if state else ''}
+  state_out={'status':'working' if live and state['status']=='working' else 'online' if live else 'offline','lastHeartbeat':heartbeat,'lastCheck':last_check,'lastTask':state['last_task'] if state else '','lastError':state['last_error'] if state else '','lastSuccess':state['last_success'] if state else '','internalMonitoring':internal_live,'externalAgentConfigured':configured,'externalAgentOnline':external_live}
   tasks=rows(c,"SELECT t.*,o.name organization_name,u.name user_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id LEFT JOIN users u ON u.id=t.user_id ORDER BY t.id DESC LIMIT 100")
   task_stats={key:0 for key in ('queued','diagnosing','proposed','approved','completed','failed','not_executed')}
   for task in tasks:
    task_stats[task['status']]=task_stats.get(task['status'],0)+1
   failures=rows(c,"SELECT f.*,o.name organization_name,u.name user_name FROM login_failures f LEFT JOIN organizations o ON o.id=f.organization_id LEFT JOIN users u ON u.id=f.user_id ORDER BY f.id DESC LIMIT 100")
   recent_failures=scalar(c,"SELECT COUNT(*) n FROM login_failures WHERE created_at>=?",((datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat(),))
-  return {'state':state_out,'monitoring':True,'tasks':tasks,'taskStats':task_stats,'loginFailures':failures,'loginAlert':recent_failures>=3,'items':rows(c,"SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id ORDER BY i.id DESC LIMIT 100"),'note':'المراقبة تجمع الحالة وتكتب التقارير؛ لا تعديل إنتاج أو نشر تلقائيًا.'}
+  return {'state':state_out,'monitoring':internal_live,'tasks':tasks,'taskStats':task_stats,'loginFailures':failures,'loginAlert':recent_failures>=3,'items':rows(c,"SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id ORDER BY i.id DESC LIMIT 100"),'note':'المراقبة تجمع الحالة وتكتب التقارير؛ لا تعديل إنتاج أو نشر تلقائيًا.'}
  if r=='technical-ai/heartbeat' and m=='POST':
   secret=h.headers.get('X-Technical-AI-Secret','')
   expected=os.environ.get('KHDOOM_TECHNICAL_AI_SECRET','').strip()

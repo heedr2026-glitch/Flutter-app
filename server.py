@@ -237,6 +237,15 @@ def technical_auto_monitor() -> None:
     while True:
         try:
             with db() as connection:
+                ts = now()
+                connection.execute(
+                    """INSERT INTO technical_agent_state(
+                       id,status,last_check,last_task,last_error,last_success,updated_at)
+                       VALUES(1,'online',?,'مراقبة تلقائية','','المراقبة الداخلية تعمل',?)
+                       ON CONFLICT(id) DO UPDATE SET status=CASE WHEN technical_agent_state.status='working' THEN 'working' ELSE 'online' END,last_check=excluded.last_check,
+                       last_error='',last_success=excluded.last_success,updated_at=excluded.updated_at""",
+                    (ts, ts),
+                )
                 cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
                 failures = connection.execute(
                     """SELECT COUNT(DISTINCT COALESCE(
@@ -249,7 +258,6 @@ def technical_auto_monitor() -> None:
                     (cutoff,),
                 ).fetchone()
                 if failures >= 3 and recent_task is None:
-                    ts = now()
                     connection.execute(
                         """INSERT INTO technical_tasks(
                            service,problem,severity,status,diagnosis,proposal,
@@ -269,7 +277,7 @@ def technical_auto_monitor() -> None:
                          "تشخيص الجلسات والصلاحيات وكلمات المرور دون تغيير تلقائي",
                          "high", "not_tested", "proposed", 0, ts, ts),
                     )
-                    connection.commit()
+                connection.commit()
         except Exception as error:
             print(f"TECHNICAL MONITOR ERROR: {type(error).__name__}", flush=True)
         time.sleep(60)
@@ -3937,7 +3945,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 info["deviceSnapshotCounts"] = {key: value for key, value in snapshot.items()
                     if key in {"vehicles", "employees", "appointments", "documents"}
                     and type(value) is int and 0 <= value <= 1000000}
-                text = training_context.direct_answer(message, info)
+                text = training_context.direct_answer(message, info, previous)
                 if not text:
                     ai_allowance(connection, organization_id)
                     text = ai_agent_reply(
@@ -3950,6 +3958,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         runtime={
                             "account": info,
                             "approved_training": ai_training_text(connection, organization_id, "assistant"),
+                            "conversationTopic": training_context.conversation_topic(previous),
                         },
                     )
                     connection.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)", (organization_id,user["id"],"assistant",now(),user.get("current_branch")))

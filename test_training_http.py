@@ -59,6 +59,10 @@ class TrainingHttpTest(unittest.TestCase):
                 self.assertIn('سعر المتر 150',json.dumps(context.runtime,ensure_ascii=False))
                 self.assertIn('أبي زجاج',json.dumps(context.history,ensure_ascii=False))
                 self.assertNotIn('secret',json.dumps(context.runtime,ensure_ascii=False))
+                status, follow_up = req('طيب كم عددهم؟',path='/api/ai/assistant',history=[{'role':'user','text':'المركبات'}],context={'vehicles':2})
+                self.assertEqual(status,200)
+                self.assertIn('2',follow_up['text'])
+                self.assertIn('المركبات',follow_up['text'])
                 status, _ = req('حيدر', path='/api/ai/reception-reply', settings={}, history=[
                     {'role': 'customer', 'text': 'ابي المسؤول'},
                     {'role': 'assistant', 'text': 'وش اسمك؟'},
@@ -75,7 +79,7 @@ class TrainingHttpTest(unittest.TestCase):
                 with server.db() as c:
                     self.assertEqual(c.execute('SELECT count(*) FROM appointment_requests').fetchone()[0],0)
                     c.execute("UPDATE users SET role='employee',permissions='{}' WHERE id=1")
-                self.assertEqual(req('سؤال',path='/api/ai/assistant')[0],403)
+                self.assertEqual(req('سؤال',path='/api/ai/assistant')[0],200)
                 self.assertEqual(req('احفظ: خطأ')[0],403)
             finally:
                 httpd.shutdown(); httpd.server_close(); thread.join()

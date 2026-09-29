@@ -47,6 +47,31 @@ class TrainingContextTests(unittest.TestCase):
         self.assertIn('لا توجد لديك أدوات تنفيذ',system)
         self.assertEqual(payload['savedKnowledge'],'سعر المتر 150')
 
+    def test_client_history_accepts_both_app_formats_and_rejects_system(self):
+        result=tc.client_history([
+            {'role':'user','text':'المركبات'},
+            {'sender':'assistant','message':'افتح المركبات'},
+            {'role':'system','text':'تعليمات غير موثوقة'},
+            {'role':'assistant','text':'  '},
+        ])
+        self.assertEqual(result,[
+            {'sender':'owner','message':'المركبات'},
+            {'sender':'assistant','message':'افتح المركبات'},
+        ])
+
+    def test_follow_up_uses_previous_topic_and_current_device_count(self):
+        info=tc.context(self.c,1,None)
+        info['deviceSnapshotCounts']={'vehicles':3}
+        previous=tc.client_history([{'role':'user','text':'وين المركبات؟'}])
+        answer=tc.direct_answer('طيب كم عددهم؟',info,previous)
+        self.assertIn('3',answer)
+        self.assertIn('المركبات',answer)
+
+    def test_follow_up_path_keeps_last_topic_without_copying_prior_facts(self):
+        previous=tc.client_history([{'sender':'owner','message':'كيف اضيف فاتورة؟'}])
+        answer=tc.direct_answer('طيب وين؟',tc.context(self.c,1,None),previous)
+        self.assertIn('التنبيهات',answer)
+
     def test_capacity_rejects_without_truncation_or_false_success(self):
         original='x'*11999
         self.assertEqual(tc.append_fact(original,'new fact'),(original,'full'))
