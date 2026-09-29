@@ -3044,7 +3044,7 @@ class _DashboardPageState extends State<DashboardPage> {
       .toLowerCase()
       .replaceAll(RegExp(r'[أإآ]'), 'ا')
       .replaceAll('ة', 'ه')
-      .replaceAll('ظ‰', 'ظٹ')
+      .replaceAll('ى', 'ي')
       .replaceAll(RegExp(r'[\u064B-\u065F\u0670]'), '')
       .replaceAll(RegExp(r'[^\u0600-\u06FFa-z0-9 ]'), ' ')
       .replaceAll(RegExp(r'\s+'), ' ')
@@ -11693,7 +11693,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
   final Map<int, List<Map<String, dynamic>>> _messageAttachments = {};
   final List<({String text, bool fromUser, bool voice})> _messages = [
     (
-      text: 'مرحبًا 👋 أنا موظف خدوم الذكي. اسألني عن استخدام التطبيق، الباقات، الموظفين، المركبات، الفواتير، التنبيهات أو أكواد التفعيل.',
+      text: 'حياك الله 👋 أنا مساعد خدوم. اسألني عن استخدام التطبيق، أو عن بيانات المؤسسة الظاهرة لك.',
       fromUser: false,
       voice: false,
     ),
@@ -11840,7 +11840,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       .toLowerCase()
       .replaceAll(RegExp(r'[أإآ]'), 'ا')
       .replaceAll('ة', 'ه')
-      .replaceAll('ظ‰', 'ظٹ')
+      .replaceAll('ى', 'ي')
       .replaceAll(RegExp(r'[\u064B-\u065F\u0670]'), '')
       .replaceAll(RegExp(r'[^\u0600-\u06FFa-z0-9 ]'), ' ')
       .replaceAll(RegExp(r'\s+'), ' ')
@@ -11870,7 +11870,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     final prefs = await _branchPrefs;
     _conversation.bind(prefs.branchId);
     if (_hasAny(text, ['فرع', 'فروع'])) {
-      return 'الفرع الحالي: ${prefs.branchName}. للتبديل افتح الإعدادات ← إدارة الفروع. تبي معلومات هذا الفرع أو طريقة إضافة فرع؟';
+      return 'الفرع الحالي هو: ${prefs.branchName}. للتبديل، افتح «الإعدادات ← إدارة الفروع».';
     }
     final organizationRecords = KhdoomNotifications._storedList(
       prefs,
@@ -11913,7 +11913,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       );
       if (vehicle.isNotEmpty) {
         attachments?.add(vehicle);
-        return 'حاضر. تأمين ${vehicle['name'] ?? 'المركبة'}: ${_assistantDateStatus(vehicle['insurance'])}. إذا كان قريبًا من الانتهاء ابدأ التجديد الآن.';
+        return 'تأمين ${vehicle['name'] ?? 'المركبة'}: ${_assistantDateStatus(vehicle['insurance'])}. إذا كان موعد الانتهاء قريبًا، يفضل بدء التجديد من الآن.';
       }
     }
 
@@ -11964,7 +11964,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
             final title =
                 item['title']?.toString() ?? item['type']?.toString() ?? 'موعد';
             final date = item['date']?.toString() ?? 'تاريخ غير محدد';
-            return 'â€¢ $title â€” $customer\n  $date';
+            return '• $title — $customer\n  $date';
           })
           .join('\n');
     }
@@ -12033,7 +12033,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
           ? 'تاريخ الانتهاء غير مضاف'
           : _assistantDateStatus(date.toIso8601String());
       return [
-        'هذه $title.',
+        '$title:',
         dateText,
         'الأفضل تبدأ إجراءات التجديد قريبًا إذا كان التاريخ قريبًا.',
       ].join('\n');
@@ -12103,7 +12103,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
                 const {
                   'working': 'تعمل',
                   'stopped': 'متوقفة',
-                  'broken': 'عطلانة',
+                  'broken': 'متوقفة بسبب عطل',
                   'maintenance': 'تحت الصيانة',
                 }[vehicle['status']] ??
                 'تعمل';
@@ -12124,7 +12124,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       return 'موظف الاستقبال متاح في الأساسية وVIP. تضبط معلومات المؤسسة وساعات العمل وأسلوب الرد ليجمع بيانات العملاء ويرد على الاستفسارات الأولية.';
     }
     if (_hasAny(text, ['واتس', 'واتساب', 'مكالم', 'اتصالات'])) {
-      return 'موظفا واتساب والاتصالات ضمن VIP. واتساب يحتاج Meta Business وخادمًا عامًا، والاتصالات تحتاج مزود اتصال سحابي.';
+      return 'موظفا واتساب والاتصالات متاحان ضمن باقة VIP. واتساب يحتاج حساب Meta Business وخادمًا عامًا، والاتصالات تحتاج مزود اتصال سحابي.';
     }
     if (_hasAny(text, ['موظف', 'موظفين', 'صلاحيات', 'مستخدم'])) {
       if (wantsAdd) {
@@ -12149,7 +12149,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     }
     if (_hasAny(text, [
       'شعار',
-      'ظ„ظˆظ‚ظˆ',
+      'لوقو',
       'بيانات المؤسسه',
       'اسم المؤسسه',
       'نشاط المؤسسه',
@@ -12173,10 +12173,10 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       return 'يمكن استخدام خدووم على عدة أجهزة متصلة بالخادم نفسه. للاستخدام خارج الشبكة المحلية نحتاج نشر الخادم على رابط HTTPS عام.';
     }
     if (_hasAny(text, ['سلام', 'مرحبا', 'هلا', 'اهلا'])) {
-      return 'وعليكم السلام، حياك الله. وش حاب أطلع لك اليوم؟';
+      return 'وعليكم السلام، حياك الله 👋 وش تحب تعرف؟';
     }
     if (_hasAny(text, ['مساعده', 'ساعدني', 'مميزات', 'وش تعرف'])) {
-      return 'أشرح لك بيانات المؤسسة، الموظفين، المركبات، الفواتير، التنبيهات، الباقات والأكواد، الإعلانات، موظفي AI، الدخول والخادم. اكتب اسم الميزة فقط أو سؤالك كاملًا.';
+      return 'أقدر أساعدك في بيانات المؤسسة، الموظفين، المركبات، الفواتير، التنبيهات، الباقات، الإعلانات، والدخول. اكتب سؤالك بطريقتك العادية.';
     }
     return _conversation.ask(prefs, question);
   }
