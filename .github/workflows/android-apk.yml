@@ -28,6 +28,7 @@ jobs:
         run: |
           rm -rf /tmp/khdoom_android
           flutter create --platforms=android --org com.khdoom --project-name app /tmp/khdoom_android
+          rm -rf ./android
           cp -R /tmp/khdoom_android/android ./android
           cp build_support/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
           mkdir -p android/app/src/main/kotlin/com/khdoom/app
@@ -44,4 +45,3 @@ jobs:
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 14
-
