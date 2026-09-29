@@ -2,6 +2,8 @@ name: Build Khdoom Android APK
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [ main ]
   push:
     branches: [ main ]
     paths:
@@ -31,6 +33,7 @@ jobs:
           rm -rf ./android
           cp -R /tmp/khdoom_android/android ./android
           cp build_support/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          cp -R build_support/res/. android/app/src/main/res/
           mkdir -p android/app/src/main/kotlin/com/khdoom/app
           cp build_support/MainActivity.kt android/app/src/main/kotlin/com/khdoom/app/MainActivity.kt
           sed -i 's/package com\.example\.untitled1/package com.khdoom.app/' android/app/src/main/kotlin/com/khdoom/app/MainActivity.kt
@@ -44,6 +47,12 @@ jobs:
           EOF
       - name: Get Flutter packages
         run: flutter pub get
+      - name: Verify advertisement rendering
+        run: |
+          flutter test test/advertisement_banner_test.dart
+          python -m pip install -r requirements.txt
+          python -m unittest test_ad_banner_feed test_advertisements.AdRulesTest.test_subscriber_cap_and_owner_control test_advertisements.AdRulesTest.test_status_at_exact_expiration -q
+          node test_ad_banner_display.js
       - name: Build installable APK
         run: flutter build apk --debug
       - name: Upload APK
@@ -54,6 +63,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Publish direct APK download
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

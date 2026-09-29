@@ -4475,25 +4475,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 return
             if path == "/api/ads" and method == "GET":
                 purge_expired_ads(connection)
-                rows = connection.execute(
-                    """SELECT advertisements.id,advertisements.title,advertisements.message,advertisements.contact,
-                              advertisements.approved_at,advertisements.expires_at,organizations.name AS advertiser,
-                              organizations.phone AS advertiser_phone,
-                              '' AS promo_code,'organization' AS ad_source,advertisements.image_data,advertisements.display_seconds,advertisements.banner_config,advertisements.published_at
-                       FROM advertisements JOIN organizations ON organizations.id=advertisements.organization_id
-                       WHERE advertisements.active=1 AND advertisements.approved=1
-                         AND (advertisements.scheduled_at IS NULL OR advertisements.scheduled_at<=?)
-                         AND (advertisements.expires_at IS NULL OR advertisements.expires_at>?)
-                       UNION ALL
-                       SELECT id,title,message,'' AS contact,starts_at AS approved_at,expires_at,
-                              'منصة خدووم' AS advertiser,'' AS advertiser_phone,promo_code,'platform' AS ad_source,image_data,display_seconds,banner_config,published_at
-                       FROM platform_advertisements
-                       WHERE active=1 AND (starts_at IS NULL OR starts_at<=?)
-                         AND (expires_at IS NULL OR expires_at>?)
-                       ORDER BY approved_at DESC""",
-                    (now(), now(), now(), now()),
-                ).fetchall()
-                self._send(200, [dict(row) for row in rows])
+                self._send(200, ad_policy.public_ads(connection, now()))
                 return
             if path == "/api/my-ads" and method == "GET":
                 require_advertisement_permission(user)
