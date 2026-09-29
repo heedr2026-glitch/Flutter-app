@@ -411,6 +411,8 @@ class KhdoomCloudApi {
     required String message,
     required String contact,
     int requestedDays = 10,
+    int displaySeconds = 8,
+    Map<String, dynamic> bannerConfig = const {},
     String imageData = '',
   }) async {
     final result = await _request(
@@ -421,6 +423,8 @@ class KhdoomCloudApi {
         'message': message,
         'contact': contact,
         'requestedDays': requestedDays,
+        'displaySeconds': displaySeconds,
+        'bannerConfig': bannerConfig,
         'imageData': imageData,
       },
     );

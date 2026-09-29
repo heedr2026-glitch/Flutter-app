@@ -173,20 +173,38 @@ class DocumentImagePicker extends StatelessWidget {
   const DocumentImagePicker({
     super.key,
     required this.path,
+    this.data = '',
     required this.onChanged,
+    this.onClear,
   });
   final String path;
+  final String data;
   final ValueChanged<String> onChanged;
+  final VoidCallback? onClear;
 
   @override
   Widget build(BuildContext context) => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
-      if (path.isNotEmpty)
-        DocumentImage(path: path, width: double.infinity, height: 130),
+      if (path.isNotEmpty || data.isNotEmpty) ...[
+        DocumentImage(
+          path: path,
+          data: data,
+          width: double.infinity,
+          height: 130,
+        ),
+        if (onClear != null)
+          TextButton.icon(
+            onPressed: onClear,
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('حذف الصورة'),
+          ),
+      ],
       OutlinedButton.icon(
         icon: const Icon(Icons.add_a_photo_outlined),
-        label: Text(path.isEmpty ? 'إضافة صورة' : 'تغيير الصورة'),
+        label: Text(
+          path.isEmpty && data.isEmpty ? 'إضافة صورة' : 'تغيير الصورة',
+        ),
         onPressed: () async {
           try {
             final selected = await const MethodChannel('khdoom/profile_image')
