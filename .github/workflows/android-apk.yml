@@ -16,7 +16,7 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -53,3 +53,11 @@ jobs:
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Publish direct APK download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-debug.apk Khdoom-latest.apk
+          gh release create "khdoom-build-${{ github.run_number }}" Khdoom-latest.apk \
+            --title "Khdoom Android build ${{ github.run_number }}" \
+            --notes "Installable Khdoom Android package."
