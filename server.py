@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import atexit
 import hashlib
 import hmac
 import html
@@ -330,17 +331,44 @@ class PostgresCursor:
         return iter(self._cursor)
 
 
+# Reuse a small, bounded set of PostgreSQL connections across requests.
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:
+    ConnectionPool = None
+
+_postgres_pool = None
+_postgres_pool_lock = threading.Lock()
+
+def postgres_pool():
+    global _postgres_pool
+    if _postgres_pool is None:
+        with _postgres_pool_lock:
+            if _postgres_pool is None:
+                size = max(2, min(16, int(os.environ.get("KHDOOM_DB_POOL_SIZE", "8"))))
+                pool = ConnectionPool(
+                    conninfo=DATABASE_URL, min_size=1, max_size=size,
+                    kwargs={"row_factory": dict_row, "connect_timeout": 10},
+                    timeout=20, max_idle=300, max_lifetime=1800, open=True,
+                )
+                atexit.register(pool.close)
+                _postgres_pool = pool
+    return _postgres_pool
+
 class PostgresConnection:
     _id_tables = {"organizations", "users", "vehicles", "advertisements", "activation_codes", "ai_usage", "subscription_requests", "appointment_requests", "chat_sessions", "chat_messages", "platform_advertisements", "ai_customers", "ai_leads", "ai_conversation_summaries"}
     _id_tables.add("package_offers")
 
-    def __init__(self, connection: Any):
+    def __init__(self, connection: Any, pool_context=None):
         self._connection = connection
+        self._pool_context = pool_context
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, traceback):
+        if self._pool_context is not None:
+            return self._pool_context.__exit__(exc_type, exc, traceback)
         if exc_type is None:
             self._connection.commit()
         else:
@@ -373,6 +401,9 @@ def db():
     if DATABASE_URL:
         if psycopg is None:
             raise RuntimeError("psycopg is required when DATABASE_URL is configured")
+        if ConnectionPool is not None:
+            context = postgres_pool().connection()
+            return PostgresConnection(context.__enter__(), context)
         return PostgresConnection(psycopg.connect(DATABASE_URL, row_factory=dict_row))
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
