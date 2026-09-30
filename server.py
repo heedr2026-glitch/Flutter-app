@@ -909,8 +909,17 @@ def seed_package_offers(connection: Any) -> None:
     connection.execute(f"UPDATE package_offers SET active=0 WHERE id NOT IN ({placeholders})", selected_ids)
 
 
+def migration_db():
+    # Startup migrations use session advisory locks: closing their dedicated
+    # connection must release those locks instead of returning it to the pool.
+    if DATABASE_URL:
+        if psycopg is None:
+            raise RuntimeError("psycopg is required when DATABASE_URL is configured")
+        return PostgresConnection(psycopg.connect(DATABASE_URL, row_factory=dict_row))
+    return db()
+
 def init_db() -> None:
-    with db() as connection:
+    with migration_db() as connection:
         if DATABASE_URL:
             # Serialize every PostgreSQL startup migration, including package limits.
             # This must happen before the first migration block; otherwise two
@@ -1180,7 +1189,7 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_ai_usage_org_date ON ai_usage(organization_id,created_at);
         CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(active,approved);
         """
-        with db() as connection:
+        with migration_db() as connection:
             # This narrow, idempotent migration runs before the deployment lock.
             # It keeps the public catalog readable while Render drains an older instance.
             connection.execute("""CREATE TABLE IF NOT EXISTS package_prices (
@@ -1277,7 +1286,7 @@ def init_db() -> None:
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
             OWNER_KEY_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
         return
-    with db() as connection:
+    with migration_db() as connection:
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS organizations (
