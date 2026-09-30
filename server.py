@@ -2058,7 +2058,7 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                     health_connection.execute("SELECT 1").fetchone()
             except Exception:
                 database_status = "degraded"
-            self._send(200, {"status": "ok" if STARTUP_READY and database_status == "ok" else "degraded", "service": "khdoom-api", "services": {"api": "ok", "database": database_status, "whatsapp": "configured" if whatsapp_is_configured() else "not_configured", "ai": "configured" if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "not_configured", "calls": "configured" if os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip() else "not_configured"}})
+            self._send(200, {"status": "ok" if STARTUP_READY and database_status == "ok" else "degraded", "databasePooling": bool(DATABASE_URL and ConnectionPool is not None and _postgres_pool is not None), "service": "khdoom-api", "services": {"api": "ok", "database": database_status, "whatsapp": "configured" if whatsapp_is_configured() else "not_configured", "ai": "configured" if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "not_configured", "calls": "configured" if os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip() else "not_configured"}})
             return
         if path == "/webhooks/calls" and method == "POST":
             expected = os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip()
