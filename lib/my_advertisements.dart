@@ -192,7 +192,10 @@ class AdvertisementFilters extends StatelessWidget {
 
 class VipAdvertisementCard extends StatefulWidget {
   final String subscriptionPackage;
-  const VipAdvertisementCard({super.key, required this.subscriptionPackage});
+  final VoidCallback? onFlip;
+  const VipAdvertisementCard({
+    super.key, required this.subscriptionPackage, this.onFlip,
+  });
   @override
   State<VipAdvertisementCard> createState() => _VipAdvertisementCardState();
 }
@@ -255,7 +258,12 @@ class _VipAdvertisementCardState extends State<VipAdvertisementCard>
   @override
   Widget build(BuildContext context) => CompactAdvertisementSummary(
     ads: _ads,
+    onTap: widget.onFlip,
     onFilter: (status) async {
+      if (widget.onFlip != null) {
+        widget.onFlip!();
+        return;
+      }
       await Navigator.push<void>(
         context,
         MaterialPageRoute(
@@ -295,9 +303,11 @@ class CompactAdvertisementSummary extends StatelessWidget {
   final DateTime? updatedAt;
   final bool busy;
   final VoidCallback onOpen, onRefresh;
+  final VoidCallback? onTap;
   const CompactAdvertisementSummary({
     super.key,
     this.ads,
+    this.onTap,
     this.onFilter,
     this.latest,
     this.published,
@@ -316,7 +326,7 @@ class CompactAdvertisementSummary extends StatelessWidget {
     return Card(
       color: const Color(0xFF172554),
       child: InkWell(
-        onTap: onOpen,
+        onTap: onTap ?? onOpen,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
           child: Column(

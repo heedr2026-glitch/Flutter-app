@@ -2251,6 +2251,15 @@ class _DashboardPageState extends State<DashboardPage> {
   String _subscriptionPackage = 'free';
   bool _showHomeBranches = false;
   List<Map<String, String>> _vipAdvertisements = [];
+  bool _showVipAdvertisementSide = false;
+
+  bool _loadHomeAdvertisements({
+    required String subscriptionPackage,
+    required bool isEmployee,
+  }) => showPublicAdvertisementBanner(
+    subscriptionPackage: subscriptionPackage,
+    isEmployee: isEmployee,
+  ) || (subscriptionPackage == 'vip' && !isEmployee);
   Timer? _adRotationTimer;
   Timer? _requestRefreshTimer;
   Timer? _sessionValidationTimer;
@@ -2395,7 +2404,7 @@ class _DashboardPageState extends State<DashboardPage> {
         activeReminderCount = 0;
       }
     }
-    if (showPublicAdvertisementBanner(
+    if (_loadHomeAdvertisements(
           subscriptionPackage: subscriptionPackage,
           isEmployee: isEmployeeSession,
         ) &&
@@ -2419,7 +2428,7 @@ class _DashboardPageState extends State<DashboardPage> {
       _permissions = permissions;
       _subscriptionPackage = subscriptionPackage;
       _vipAdvertisements =
-          showPublicAdvertisementBanner(
+          _loadHomeAdvertisements(
             subscriptionPackage: subscriptionPackage,
             isEmployee: isEmployeeSession,
           )
@@ -2469,7 +2478,7 @@ class _DashboardPageState extends State<DashboardPage> {
               subscriptionPackage = cloudPackage!;
               await prefs.setString('subscription_package', cloudPackage);
             }
-            if (showPublicAdvertisementBanner(
+            if (_loadHomeAdvertisements(
               subscriptionPackage: subscriptionPackage,
               isEmployee: isEmployeeSession,
             )) {
@@ -2520,7 +2529,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   .toList();
               advertisements = cloudAdvertisements;
             }
-            if (showPublicAdvertisementBanner(
+            if (_loadHomeAdvertisements(
                   subscriptionPackage: subscriptionPackage,
                   isEmployee: isEmployeeSession,
                 ) &&
@@ -2544,7 +2553,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   ? _businessLogoData
                   : logoData;
               _vipAdvertisements =
-                  showPublicAdvertisementBanner(
+                  _loadHomeAdvertisements(
                     subscriptionPackage: subscriptionPackage,
                     isEmployee: isEmployeeSession,
                   )
@@ -2658,7 +2667,7 @@ class _DashboardPageState extends State<DashboardPage> {
         api.close();
       }
     }
-    if (showPublicAdvertisementBanner(
+    if (_loadHomeAdvertisements(
           subscriptionPackage: subscriptionPackage,
           isEmployee: isEmployeeSession,
         ) &&
@@ -2682,7 +2691,7 @@ class _DashboardPageState extends State<DashboardPage> {
       _permissions = permissions;
       _subscriptionPackage = subscriptionPackage;
       _vipAdvertisements =
-          showPublicAdvertisementBanner(
+          _loadHomeAdvertisements(
             subscriptionPackage: subscriptionPackage,
             isEmployee: isEmployeeSession,
           )
@@ -2766,6 +2775,10 @@ class _DashboardPageState extends State<DashboardPage> {
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
           onTap: () {
+            if (_subscriptionPackage == 'vip' && _isAdmin) {
+              setState(() => _showVipAdvertisementSide = false);
+              return;
+            }
             if (ad['promotion']?.isNotEmpty == true) {
               Navigator.push(
                 context,
@@ -3721,14 +3734,18 @@ class _DashboardPageState extends State<DashboardPage> {
                 _buildOrganizationAssistant(),
                 const SizedBox(height: 16),
 
-                if (_subscriptionPackage == 'vip' && _isAdmin) ...[
+                if (_subscriptionPackage == 'vip' && _isAdmin &&
+                    (!_showVipAdvertisementSide || _vipAdvertisements.isEmpty)) ...[
                   VipAdvertisementCard(
                     subscriptionPackage: _subscriptionPackage,
+                    onFlip: () => setState(() => _showVipAdvertisementSide = true),
                   ),
                   const SizedBox(height: 16),
                 ],
 
-                if (_vipAdvertisements.isNotEmpty) _buildAdvertisementBanner(),
+                if (_vipAdvertisements.isNotEmpty &&
+                    (_subscriptionPackage != 'vip' || !_isAdmin ||
+                     _showVipAdvertisementSide)) _buildAdvertisementBanner(),
               ],
             ),
           ),
