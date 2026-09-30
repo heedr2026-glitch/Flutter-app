@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:untitled1/advertisement_banner.dart';
+import 'package:untitled1/my_advertisements.dart';
 
 
 void main() {
@@ -46,4 +47,23 @@ void main() {
     expect(advertisementRotationIndex(ads, DateTime.fromMillisecondsSinceEpoch(3000)), 1);
     expect(advertisementRotationIndex(ads, DateTime.fromMillisecondsSinceEpoch(15000)), 0);
   });
+  testWidgets('summary body flips without opening ad management', (tester) async {
+    var flips = 0;
+    var opens = 0;
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body:
+      CompactAdvertisementSummary(
+        ads: const [],
+        onTap: () => flips++,
+        onOpen: () => opens++,
+        onRefresh: () {},
+      ),
+    )));
+    await tester.tap(find.text('إعلاني'));
+    expect(flips, 1);
+    expect(opens, 0);
+    await tester.tap(find.text('فتح إعلاني'));
+    expect(flips, 1);
+    expect(opens, 1);
+  });
+
 }
