@@ -11,7 +11,21 @@ let ownerKey='',token='',me=null,current='home',currentPage=1,filter='',search='
 function installReadableOwnerStyle(){if(document.getElementById('ownerReadableStyle'))return;const s=document.createElement('style');s.id='ownerReadableStyle';s.textContent='body{color:#142b43;background:#eef3f8}h2,h3,h4{color:#102a43}.muted{color:#334e68;font-weight:500}.panel,.tablewrap,.community-card{color:#142b43}.panel p,.panel td,.panel label,.panel output{color:#142b43}.panel .muted,.tablewrap .muted{color:#334e68}.tablewrap{border-color:#c7d6e5}th{background:#dceaf5;color:#173b5c;font-weight:800}td{color:#142b43;border-bottom-color:#d9e4ee}input,select,textarea{color:#102a43;background:#fff;border-color:#9fb5ca}input::placeholder,textarea::placeholder{color:#526b82;opacity:1}.note{color:#173b5c;background:#e5f2fa;border-right-color:#168bc4}.error{color:#8b1e2d;background:#ffedf0}.tag{color:#173b5c;background:#dcecf7}a{color:#075985}nav button{color:#e5f2ff}aside p{color:#c4d7e9}#breadcrumb{color:#526b82}#identity{color:#294963;font-weight:600}';document.head.append(s)}
 const can=p=>!p||me?.permissions.includes(p), fmt=v=>v===null||v===undefined||v===''?'غير متاح':esc(v), when=v=>{if(!v)return '—';let d=new Date(v);if(Number.isNaN(d.getTime()))return esc(v);let z=n=>String(n).padStart(2,'0');return esc(d.getFullYear()+'/'+z(d.getMonth()+1)+'/'+z(d.getDate())+' '+z(d.getHours())+':'+z(d.getMinutes()))};
 const homeRequestCache=new Map(),liveSnapshot=new Map();
-async function api(path,method='GET',data){const cacheKey=method==='GET'&&current==='home'&&['summary','service-health','technical-ai'].includes(path)?path:null;if(cacheKey&&homeRequestCache.has(cacheKey))return homeRequestCache.get(cacheKey);const request=(async()=>{let r=await fetch(path.startsWith('/')?path:'/owner/api/v2/'+path,{method,headers:{'Content-Type':'application/json',...(ownerKey?{'X-Owner-Key':ownerKey}:{}),...(token?{'X-Admin-Session':token}:{})},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});let d=await r.json();if(!r.ok)throw Error(d.error||'تعذر تنفيذ الطلب');return d})();if(cacheKey){homeRequestCache.set(cacheKey,request);request.catch(()=>homeRequestCache.delete(cacheKey))}return request}
+async function api(path,method='GET',data){
+ const cacheable=method==='GET'&&!path.startsWith('live-changes')&&path!=='ads/live';
+ const cacheKey=cacheable?version+':'+path:null;
+ if(cacheKey&&homeRequestCache.has(cacheKey))return homeRequestCache.get(cacheKey);
+ if(method!=='GET')homeRequestCache.clear();
+ const request=(async()=>{
+  const r=await fetch(path.startsWith('/')?path:'/owner/api/v2/'+path,{method,headers:{'Content-Type':'application/json',...(ownerKey?{'X-Owner-Key':ownerKey}:{}),...(token?{'X-Admin-Session':token}:{})},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'تعذر تنفيذ الطلب');return d;
+ })();
+ if(cacheKey){homeRequestCache.set(cacheKey,request);request.catch(()=>{if(homeRequestCache.get(cacheKey)===request)homeRequestCache.delete(cacheKey)})}
+ return request;
+}
+function liveChangeSignature(value){
+ return JSON.stringify(value,(_,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])):item);
+}
 function flash(t){$('flash').textContent=t;$('flash').hidden=false;setTimeout(()=>$('flash').hidden=true,4500)}
 function action(label,fn,cls=''){let b=document.createElement('button');b.textContent=label;b.className=cls;b.onclick=async()=>{try{await fn()}catch(e){flash(e.message)}};return b}
 function button(label,act,id='',extra=''){return `<button data-act="${act}" data-id="${esc(id)}" ${extra}>${esc(label)}</button>`}
@@ -99,7 +113,7 @@ function packageConfiguration(items,limits){
  let limitsRoot=document.createElement('div');limitsRoot.id='packageLimitsInline';limitsRoot.className='panel';limitsRoot.innerHTML='<h3>3. حدود المؤسسة</h3><p class="muted">تحدد حجم المؤسسة المسموح به، وهي منفصلة عن الأسعار ورصيد الخدمات.</p><div class="cards">'+Object.entries(limits).map(([plan,values])=>'<div class="panel"><h4>'+esc(pkg[plan]||plan)+'</h4>'+[['users','عدد المستخدمين'],['vehicles','عدد المركبات'],['branches','عدد الفروع'],['organization_notifications','تنبيهات المؤسسة'],['employee_notifications','تنبيهات الموظفين']].map(([resource,label])=>'<label>'+label+'<input type="number" min="0" max="100000" step="1" data-plan="'+esc(plan)+'" data-resource="'+resource+'" value="'+(values[resource]??'')+'" placeholder="دون حد"></label>').join('')+'</div>').join('')+'</div><button class="primary" type="submit">حفظ حدود المؤسسة</button>';
  limitsRoot.onsubmit=async e=>{e.preventDefault();if(!confirm('حفظ حدود المؤسسة؟'))return;let payload={};limitsRoot.querySelectorAll('input').forEach(input=>{let p=input.dataset.plan;payload[p]??={};payload[p][input.dataset.resource]=input.value===''?null:Number(input.value)});let b=e.submitter;b.disabled=true;try{let r=await fetch('/owner/api/package-limits',{method:'PUT',headers:{'Content-Type':'application/json','X-Owner-Key':ownerKey,'X-Admin-Session':token},body:JSON.stringify(payload),cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||'تعذر حفظ حدود المؤسسة');flash('تم حفظ حدود المؤسسة')}catch(err){flash(err.message)}finally{b.disabled=false}};root.append(limitsRoot);return root;
 }
-async function render(options={}){let v=++version;homeRequestCache.clear();let c=$('content');document.body.classList.toggle('ads-blue-theme',current==='ads'||current.startsWith('ads-'));document.querySelector('#app main').classList.toggle('admin-blue',current!=='ads'&&!current.startsWith('ads-'));let loading=options.silent?null:setTimeout(()=>{if(v===version)c.innerHTML='<p class="muted">جارٍ تحميل البيانات…</p>'},180);let title=[...$('nav').querySelectorAll('button')].find(b=>b.dataset.route===current)?.textContent||'ملف المؤسسة';$('title').textContent=title;$('breadcrumb').textContent='خدووم / '+title;document.querySelectorAll('[data-route]').forEach(b=>b.classList.toggle('active',b.dataset.route===current));
+async function render(options={}){let v=++version;homeRequestCache.clear();if(current==='home'){Promise.allSettled(['summary',...(can('settings')?['service-health','technical-ai']:[])].map(path=>api(path)))}let c=$('content');document.body.classList.toggle('ads-blue-theme',current==='ads'||current.startsWith('ads-'));document.querySelector('#app main').classList.toggle('admin-blue',current!=='ads'&&!current.startsWith('ads-'));let loading=options.silent?null:setTimeout(()=>{if(v===version)c.innerHTML='<p class="muted">جارٍ تحميل البيانات…</p>'},180);let title=[...$('nav').querySelectorAll('button')].find(b=>b.dataset.route===current)?.textContent||'ملف المؤسسة';$('title').textContent=title;$('breadcrumb').textContent='خدووم / '+title;document.querySelectorAll('[data-route]').forEach(b=>b.classList.toggle('active',b.dataset.route===current));
  try{let data;const check=()=>v===version;
  if(window.renderAddons && await renderAddons(current,v))return;
  if(current==='home'){data=await api('summary');if(!check())return;c.innerHTML='<p class="muted">ملخص المنصة · اضغط على البطاقة لعرض التفاصيل. أرقام اليوم حسب UTC.</p><div class="cards" id="cards"></div>';let cards=[['organizations','إجمالي المؤسسات','organizations'],['newToday','المشتركون الجدد اليوم','organizations'],['newMonth','المشتركون الجدد هذا الشهر','organizations'],['ai','استهلاك الذكاء الاصطناعي','usage-ai'],['whatsapp','استهلاك واتساب','usage-whatsapp'],['calls','استهلاك المكالمات','usage-calls'],['ads','الإعلانات النشطة','ads-published'],['support','طلبات الدعم غير المحلولة','support'],['logins','محاولات الدخول اليوم','security-login'],['passwordResets','إعادة كلمات المرور','security-password'],['alerts','تنبيهات اليوم','security-alerts']];for(let [key,label,target]of cards){if(!(key in data))continue;let b=action('',()=>{go(target);if(key==='newToday'||key==='newMonth'){since=new Date().toISOString().slice(0,key==='newToday'?10:7)+(key==='newMonth'?'-01':'');render()}});b.dataset.metric=key;b.className='metric'+(key==='support'&&Number(data[key])>0?' alert':'');b.innerHTML=esc(label)+`<strong>${fmt(data[key])}</strong>`;$('cards').append(b)}for(let x of Object.keys(pkg).map(p=>({package:p,total:(data.packages||[]).find(x=>x.package===p)?.total||0})).filter(()=>can('organizations.view'))){let b=action('',()=>{go('organizations');filter=x.package;render()});b.className='metric';b.innerHTML=esc(pkg[x.package])+`<strong>${x.total}</strong>`;$('cards').append(b)}return}
@@ -441,13 +455,13 @@ setInterval(async()=>{
   if(scope==='home'){
    for(const key of ['support','ads']){const metric=document.querySelector('#cards [data-metric="'+key+'"]');if(metric&&result[key]!==null&&result[key]!==undefined){metric.querySelector('strong').textContent=result[key];if(key==='support')metric.classList.toggle('alert',Number(result[key])>0)}}
   }else{
-   const key=scope+':'+status+':'+page,signature=JSON.stringify(result);
-   if(liveSnapshot.has(key)&&liveSnapshot.get(key)!==signature)await render({silent:true});
+   const key=scope+':'+status+':'+page,signature=liveChangeSignature(result);
+   if(liveSnapshot.has(key)&&liveChangeSignature(JSON.parse(liveSnapshot.get(key)))!==signature){await render({silent:true});if(route===current&&page===currentPage)liveSnapshot.set(key,signature)}
    else if(!liveSnapshot.has(key))liveSnapshot.set(key,signature);
   }
  }catch(_){/* Keep the current page visible and retry on the next interval. */}
  finally{liveRefreshBusy=false}
-},2000);
+},5000);
 
 
 
