@@ -5,7 +5,7 @@ import 'package:untitled1/my_advertisements.dart';
 
 
 void main() {
-  testWidgets('all formats keep the same height, reserved logo and bounded RTL text', (tester) async {
+  testWidgets('all formats keep the same fixed height, reserved logo and bounded RTL text', (tester) async {
     const square = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAFAAAABQCAIAAAABc2X6AAAAdUlEQVR4nO3PAQ0AIRDAsOP9ewYXfDJaBdua2fOS7++A2wzXGa4zXGe4znCd4TrDdYbrDNcZrjNcZ7jOcJ3hOsN1husM1xmuM1xnuM5wneE6w3WG6wzXGa4zXGe4znCd4TrDdYbrDNcZrjNcZ7jOcJ3hOsN1B9vBAZ8YuKa+AAAAAElFTkSuQmCC';
     const wide = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAAA8CAIAAADXHaAKAAAAvElEQVR4nO3SwQkAIBDAsNP9d9YlBKEkE/TRNXMGKvbvAHjJ0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmhRDk2JoUgxNiqFJMTQphibF0KQYmpQLoEMBd6rSWxsAAAAASUVORK5CYII=';
     const design = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAWgAAAB4CAIAAABQJv+tAAABh0lEQVR4nO3UQQ0AIBDAsAP/nkHDXoSkVbDX1swZgGK/DgD+YxxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAZhxAdgFm2wHvZzFoPAAAAABJRU5ErkJggg==';
@@ -22,12 +22,12 @@ void main() {
         expect(tester.takeException(), isNull);
         final size = tester.getSize(find.byType(AdvertisementBannerView));
         expect(size.width, closeTo(width, .01));
-        expect(size.height, closeTo(width / 3, .01));
+        expect(size.height, advertisementBannerHeight);
         final full = ad.containsKey('banner_config');
         expect(find.byKey(const ValueKey('advertisement-logo-slot')), full ? findsNothing : findsOneWidget);
         if (full) expect(find.text(ad['title']), findsNothing);
         final images = tester.widgetList<Image>(find.byType(Image));
-        expect(images.every((image) => image.fit == BoxFit.contain), isTrue);
+        expect(images.every((image) => image.fit == (full ? BoxFit.fill : BoxFit.contain)), isTrue);
       }
     }
   });
@@ -36,7 +36,7 @@ void main() {
       final ad = {'title': 'إعلان $i', 'message': List.filled(i * 20 + 1, 'نص').join(' ')};
       await tester.pumpWidget(MaterialApp(home: Scaffold(body: Center(child: SizedBox(width: 360, child: AdvertisementBannerSwitcher(ad: ad, identity: i))))));
       await tester.pump(const Duration(milliseconds: 400));
-      expect(tester.getSize(find.byType(AdvertisementBannerSwitcher)).height, 120);
+      expect(tester.getSize(find.byType(AdvertisementBannerSwitcher)).height, advertisementBannerHeight);
       expect(tester.takeException(), isNull);
       await tester.pumpAndSettle();
     }
