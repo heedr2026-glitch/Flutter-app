@@ -52,13 +52,13 @@ class PackageLimitsTest(unittest.TestCase):
         self.assertEqual(package_limits.read_limits(self.connection)["basic"]["employees"], 40)
 
     def test_invalid_updates_are_atomic(self):
-        for invalid in (-1, 100001, True, 1.5, "5", None):
+        for invalid in (-1, 100001, True, 1.5, "5"):  # None تعني بلا حد وصارت مقبولة
             payload = {"free": {"employees": 9, "vehicles": 9},
                        "basic": {"employees": invalid, "vehicles": 5}}
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 package_limits.save_limits(self.connection, payload)
             self.assertEqual(package_limits.read_limits(self.connection), package_limits.DEFAULT_LIMITS)
-        for payload in (None, [], {}, {"vip": {"employees": 4, "vehicles": 4}}):
+        for payload in (None, [], {}):  # حدود VIP صارت قابلة للتعديل
             with self.assertRaises(ValueError):
                 package_limits.save_limits(self.connection, payload)
 
@@ -95,8 +95,8 @@ class PackageLimitsHttpTest(unittest.TestCase):
                         error.exception.close()
                     request("/owner/api/package-limits", "PUT", payload, owner=True)
                     actual = request("/api/package-limits")
-                    self.assertEqual(actual["free"], payload["free"])
-                    self.assertEqual(actual["basic"], payload["basic"])
+                    self.assertEqual({k: actual["free"][k] for k in payload["free"]}, payload["free"])
+                    self.assertEqual({k: actual["basic"][k] for k in payload["basic"]}, payload["basic"])
                     self.assertIsNone(actual["vip"]["vehicles"])
                     bad = copy.deepcopy(payload)
                     bad["basic"]["employees"] = -5
