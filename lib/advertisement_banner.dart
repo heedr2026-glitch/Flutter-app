@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+const advertisementBannerHeight = 180.0;
+// Kept for callers that still use the design aspect ratio.
 const advertisementBannerAspectRatio = 3.0;
 const advertisementBannerTransitionDuration = Duration(milliseconds: 1200);
 
@@ -76,8 +78,9 @@ class AdvertisementBannerView extends StatelessWidget {
             errorBuilder: (_, _, _) => Center(
               child: Icon(Icons.broken_image_outlined, color: textColor),
             ));
-    return AspectRatio(
-      aspectRatio: advertisementBannerAspectRatio,
+    return SizedBox(
+      width: double.infinity,
+      height: advertisementBannerHeight,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: barColor,
@@ -86,10 +89,12 @@ class AdvertisementBannerView extends StatelessWidget {
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(14),
-          child: fullImage ? Padding(
-            padding: const EdgeInsets.all(1.5), child: image(BoxFit.contain),
+          // Full-image advertisements always occupy the entire frame, just as
+          // in the owner dashboard; saved zoom must not crop the artwork.
+          child: fullImage ? SizedBox.expand(
+            child: image(BoxFit.fill),
           ) : LayoutBuilder(builder: (context, frame) {
-            final unit = frame.maxWidth / 360;
+            final unit = (frame.maxWidth / 360).clamp(.5, 1.5).toDouble();
             final padding = 14 * unit;
             final height = frame.maxHeight - 16 * unit;
             final font = (double.tryParse('${config['fontSize']}') ?? 18)
@@ -161,8 +166,9 @@ class AdvertisementBannerSwitcher extends StatelessWidget {
   const AdvertisementBannerSwitcher({super.key, required this.ad, required this.identity});
 
   @override
-  Widget build(BuildContext context) => AspectRatio(
-    aspectRatio: advertisementBannerAspectRatio,
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    height: advertisementBannerHeight,
     child: ClipRect(child: AnimatedSwitcher(
       duration: advertisementBannerTransitionDuration,
       transitionBuilder: (child, animation) => FadeTransition(
