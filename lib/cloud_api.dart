@@ -139,26 +139,69 @@ class KhdoomCloudApi {
     }
   }
 
-  Future<List<dynamic>> cameras() async => List<dynamic>.from(
-    await _request('GET', '/api/cameras') as List,
-  );
+  Future<List<dynamic>> cameras() async =>
+      List<dynamic>.from(await _request('GET', '/api/cameras') as List);
 
-  Future<Map<String, dynamic>> createCamera(Map<String, dynamic> camera) async =>
-      Map<String, dynamic>.from(
-        await _request('POST', '/api/cameras', body: camera) as Map,
-      );
+  Future<Map<String, dynamic>> createCamera(
+    Map<String, dynamic> camera,
+  ) async => Map<String, dynamic>.from(
+    await _request('POST', '/api/cameras', body: camera) as Map,
+  );
 
   Future<void> deleteCamera(Object id) async {
     await _request('DELETE', '/api/cameras/$id');
   }
 
-  Future<Map<String, dynamic>> vehicleTracking(String vehicleKey) async =>
+  Future<Map<String, dynamic>> vehicleTracking(
+    String vehicleKey,
+  ) async => Map<String, dynamic>.from(
+    await _request(
+      'GET',
+      '/api/vehicle-tracking?vehicleKey=${Uri.encodeQueryComponent(vehicleKey)}',
+    ) as Map,
+  );
+
+  Future<List<dynamic>> trackingDrivers() async => List<dynamic>.from(
+    await _request('GET', '/api/vehicle-tracking/drivers') as List,
+  );
+  Future<Map<String, dynamic>> trackingSchedule(
+    String key,
+  ) async => Map<String, dynamic>.from(
+    await _request(
+      'GET',
+      '/api/vehicle-tracking/schedule?vehicleKey=${Uri.encodeQueryComponent(key)}',
+    ) as Map,
+  );
+  Future<void> stopVehicleTrackingSchedule(String key) async {
+    await _request(
+      'DELETE',
+      '/api/vehicle-tracking/schedule?vehicleKey=${Uri.encodeQueryComponent(key)}',
+    );
+  }
+
+  Future<void> saveTrackingSchedule(Map<String, dynamic> data) async {
+    await _request('PUT', '/api/vehicle-tracking/schedule', body: data);
+  }
+
+  Future<Map<String, dynamic>> driverTrackingAssignment() async =>
       Map<String, dynamic>.from(
-        await _request(
-          'GET',
-          '/api/vehicle-tracking?vehicleKey=${Uri.encodeQueryComponent(vehicleKey)}',
-        ) as Map,
+        await _request('GET', '/api/vehicle-tracking/assignment') as Map,
       );
+  Future<void> consentDriverTracking(int revision) async {
+    await _request(
+      'POST',
+      '/api/vehicle-tracking/consent',
+      body: {'accepted': true, 'revision': revision},
+    );
+  }
+
+  Future<void> trackingHeartbeat(String status) async {
+    await _request(
+      'POST',
+      '/api/vehicle-tracking/heartbeat',
+      body: {'status': status},
+    );
+  }
 
   Future<void> updateVehicleTracking({
     required String vehicleKey,
@@ -166,18 +209,24 @@ class KhdoomCloudApi {
     required double longitude,
     required double accuracyMeters,
   }) async {
-    await _request('POST', '/api/vehicle-tracking', body: {
-      'vehicleKey': vehicleKey,
-      'latitude': latitude,
-      'longitude': longitude,
-      'accuracyMeters': accuracyMeters,
-    });
+    await _request(
+      'POST',
+      '/api/vehicle-tracking',
+      body: {
+        'vehicleKey': vehicleKey,
+        'latitude': latitude,
+        'longitude': longitude,
+        'accuracyMeters': accuracyMeters,
+        'capturedAt': DateTime.now().toUtc().toIso8601String(),
+      },
+    );
   }
 
   Future<Map<String, dynamic>> createEmployeeInvitation(
     Map<String, dynamic> invitation,
   ) async => Map<String, dynamic>.from(
-    await _request('POST', '/api/employee-invitations', body: invitation) as Map,
+    await _request('POST', '/api/employee-invitations', body: invitation)
+        as Map,
   );
 
   Future<List<dynamic>> employeeInvitations() async => List<dynamic>.from(
@@ -323,7 +372,11 @@ class KhdoomCloudApi {
     final result = await _request(
       'POST',
       '/api/discount-code/preview',
-      body: {'code': code.trim().toUpperCase(), 'package': package, 'durationMonths': durationMonths},
+      body: {
+        'code': code.trim().toUpperCase(),
+        'package': package,
+        'durationMonths': durationMonths,
+      },
     );
     return Map<String, dynamic>.from(result as Map);
   }

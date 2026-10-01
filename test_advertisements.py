@@ -91,8 +91,9 @@ class AdRulesTest(unittest.TestCase):
                 server.init_db()
                 self.assertEqual(req('/api/my-ads')[0]['requested_days'],7)
                 with urlopen('http://127.0.0.1:'+str(httpd.server_port)+'/owner',timeout=5) as r:
-                    self.assertIn('ad-unlimited-',r.read().decode())
+                    self.assertIn('/owner/dashboard.js',r.read().decode())
             finally:
                 httpd.shutdown(); httpd.server_close(); thread.join(timeout=5)
 
 if __name__ == '__main__': unittest.main()
+

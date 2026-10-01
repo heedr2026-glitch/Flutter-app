@@ -95,6 +95,7 @@ def permission(path,method):
   if p.startswith('community/rewards/'): return 'rewards'
   if p.startswith('addon-offers'): return 'offers'
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
+  if p.startswith('directory'): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('credits'): return 'usage'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
   for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('expenses','finance'),('technical-ai','security'),('performance','security'),('readiness','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
@@ -166,6 +167,7 @@ def daily_limit(c,org,package):
  credit=c.execute('SELECT units FROM platform_daily_credits WHERE organization_id=? AND day=?',(org,stamp()[:10])).fetchone()
  return (override['daily_limit'] if override else p['ai_daily'])+(credit['units'] if credit else 0)
 def suspended(c,org):
+ if c.execute('SELECT 1 FROM organizations WHERE id=? AND archived_at IS NOT NULL',(org,)).fetchone(): return True
  r=c.execute('SELECT suspended FROM platform_org_state WHERE organization_id=?',(org,)).fetchone()
  return bool(r and r['suspended'])
 def paged(c,select,where,args,order,page):
@@ -312,6 +314,9 @@ def handle(h,method,s):
  except (ValueError,TypeError,KeyError) as e: raise s.ApiError(400,str(e))
 
 def dispatch(c,r,m,d,q,page,a,h,s):
+ if r.startswith('directory/'):
+  import identity_directory
+  return identity_directory.handle(c,r,m,d,q,page,a,__import__(__name__),s)
  if r=='live-changes' and m=='GET':
   scope=q.get('scope','')
   if scope=='home':
@@ -348,8 +353,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='summary' and m=='GET':
   out={}; today=stamp()[:10]; month=today[:7]+'-01'; p=a['permissions']
   if 'organizations.view' in p:
-   out['organizations']=scalar(c,'SELECT COUNT(*) n FROM organizations'); out['activeSubscribers']=scalar(c,"SELECT COUNT(*) n FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id WHERE COALESCE(z.suspended,0)=0 AND (s.expires_at IS NULL OR s.expires_at>?)",(stamp(),)); out['expiringSubscriptions']=scalar(c,"SELECT COUNT(*) n FROM subscriptions WHERE expires_at>? AND expires_at<=?",(stamp(),(datetime.now(timezone.utc)+timedelta(days=14)).isoformat())); out['packages']=rows(c,"SELECT COALESCE(s.package,'free') package,COUNT(*) total FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id GROUP BY s.package")
-   out['newToday']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE created_at>=?',(today,)); out['newMonth']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE created_at>=?',(month,))
+   out['organizations']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE archived_at IS NULL'); out['activeSubscribers']=scalar(c,"SELECT COUNT(*) n FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id WHERE COALESCE(z.suspended,0)=0 AND (s.expires_at IS NULL OR s.expires_at>?)",(stamp(),)); out['expiringSubscriptions']=scalar(c,"SELECT COUNT(*) n FROM subscriptions WHERE expires_at>? AND expires_at<=?",(stamp(),(datetime.now(timezone.utc)+timedelta(days=14)).isoformat())); out['packages']=rows(c,"SELECT COALESCE(s.package,'free') package,COUNT(*) total FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id WHERE o.archived_at IS NULL GROUP BY s.package")
+   out['newToday']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE archived_at IS NULL AND created_at>=?',(today,)); out['newMonth']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE archived_at IS NULL AND created_at>=?',(month,))
    out['problemOrganizations']=scalar(c,"SELECT COUNT(DISTINCT o.id) n FROM organizations o LEFT JOIN platform_org_state z ON z.organization_id=o.id LEFT JOIN login_failures f ON f.organization_id=o.id AND f.created_at>=? WHERE COALESCE(z.suspended,0)=1 OR f.id IS NOT NULL",((datetime.now(timezone.utc)-timedelta(hours=24)).isoformat(),)) if table_exists(c,'login_failures',s) else scalar(c,'SELECT COUNT(*) n FROM organizations o JOIN platform_org_state z ON z.organization_id=o.id WHERE z.suspended=1')
    out['recentActivity']=rows(c,"SELECT o.name organization_name,a.action,a.summary,a.created_at FROM audit_logs a JOIN organizations o ON o.id=a.organization_id ORDER BY a.id DESC LIMIT 8") if table_exists(c,'audit_logs',s) else []
    out['serviceStatus']={'server':'ready','database':'ready','ai':'ready' if os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip() else 'warning','whatsapp':'ready' if table_exists(c,'whatsapp_connections',s) and scalar(c,'SELECT COUNT(*) n FROM whatsapp_connections') else 'warning','calls':'ready' if table_exists(c,'call_connections',s) and scalar(c,"SELECT COUNT(*) n FROM call_connections WHERE status='ready'") else 'warning','payment':'ready' if os.environ.get('KHDOOM_PAYMENT_MODE','').strip().lower() in ('sandbox','test','test_mode') else 'warning'}
@@ -857,6 +862,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    c.execute('INSERT INTO technical_incidents(service,organization_id,problem,root_cause,proposal,severity,test_status,deployment_status,affected_organizations,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',('support',None,'عطل عام معلن من مركز الدعم','تحتاج عدة مؤسسات إلى مراجعة موحدة؛ لا يتم إصلاح الإنتاج تلقائيًا','فحص آمن ثم اختبار وموافقة قبل أي تطبيق عام','high','not_tested','proposed',0,stamp(),stamp()))
   if note: c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,note,a['name'],stamp()))
   return {'saved':True}
+ if r=='security/login-alerts' and m=='GET':
+  latest=c.execute("SELECT a.id,a.created_at,o.name organization_name,u.name user_name,a.summary FROM audit_logs a JOIN organizations o ON o.id=a.organization_id LEFT JOIN users u ON u.id=a.actor_user_id WHERE a.action IN ('new_device','login') ORDER BY a.id DESC LIMIT 1").fetchone()
+  return {'latest':dict(latest) if latest else None}
  if r=='security' and m=='GET':
   cutoff=(datetime.now(timezone.utc)-timedelta(days=30)).isoformat()
   for table in ('audit_logs','platform_audit','platform_login_events','platform_unknown_logins'):
@@ -986,4 +994,5 @@ def usage(c,q,page,s):
  out['summary']={'total':summary['total'],'today':summary['today'],'month':summary['month_count']}
  out['note']='المتبقي لـ AI هو الحد اليومي ويشمل وحدات الإدارة لليوم. التكلفة غير متاحة لعدم وجود سجل فوترة.'
  return out
+
 

@@ -12,7 +12,7 @@ function installReadableOwnerStyle(){if(document.getElementById('ownerReadableSt
 const can=p=>!p||me?.permissions.includes(p), fmt=v=>v===null||v===undefined||v===''?'غير متاح':esc(v), when=v=>{if(!v)return '—';let d=new Date(v);if(Number.isNaN(d.getTime()))return esc(v);let z=n=>String(n).padStart(2,'0');return esc(d.getFullYear()+'/'+z(d.getMonth()+1)+'/'+z(d.getDate())+' '+z(d.getHours())+':'+z(d.getMinutes()))};
 const homeRequestCache=new Map(),liveSnapshot=new Map();
 async function api(path,method='GET',data){
- const cacheable=method==='GET'&&!path.startsWith('live-changes')&&path!=='ads/live';
+ const cacheable=method==='GET'&&!path.startsWith('live-changes')&&path!=='ads/live'&&path!=='security/login-alerts';
  const cacheKey=cacheable?version+':'+path:null;
  if(cacheKey&&homeRequestCache.has(cacheKey))return homeRequestCache.get(cacheKey);
  if(method!=='GET')homeRequestCache.clear();
@@ -48,7 +48,7 @@ function addPlatformAdButton(){
   $('content').append(action('إضافة إعلان منصة',()=>edit('إضافة إعلان منصة',[f('title','عنوان الإعلان'),f('message','نص الإعلان','textarea'),f('adMode','نوع الإعلان','select',[['logo_text','شعار + نص'],['full_image','صورة كاملة']]),f('promoCode','كود الخصم (اختياري)'),f('imageData','الصورة أو الشعار','file'),f('durationDays','مدة العرض بالأيام','number'),f('displaySeconds','مدة ظهور الشريط بالثواني','number'),f('textColor','لون النص','color'),f('barColor','لون الشريط','color'),f('textAlign','محاذاة النص','select',[['right','يمين'],['center','وسط'],['left','يسار']]),f('fontSize','حجم الخط','number'),f('logoScale','حجم الشعار','number'),f('height','ارتفاع الشريط','number')],{adMode:'logo_text',durationDays:30,displaySeconds:8,textColor:'#FFFFFF',barColor:'#172554',textAlign:'right',fontSize:18,logoScale:1,height:64},d=>api('/owner/api/platform-ads','POST',{title:d.title,message:d.message,promoCode:d.promoCode,imageData:d.imageData||'',durationDays:d.durationDays,displaySeconds:d.displaySeconds,textColor:d.textColor,barColor:d.barColor,textAlign:d.textAlign,fontSize:d.fontSize,logoScale:d.logoScale,height:d.height})),'primary'))
  }else $('content').insertAdjacentHTML('beforeend',note('لا تملك صلاحية إنشاء إعلان منصة.'))
 }
-const tree=[['الرئيسية','home',null],['الإدارة العامة',null,null,[['الباقات',null,null,[['أسعار الباقات','packages','packages'],['أكواد الخصم','codes','codes'],['عروض الباقات','offers','offers'],['أوائل المشتركين','signup','offers'],['الفروع والإضافات','addons','packages'],['طلبات الاشتراك','subscriptions','packages']]]]],['المؤسسات',null,'organizations.view',[['جميع المؤسسات','organizations','organizations.view'],['حسابات المشتركين','accounts','organizations.view'],['التحقق من الملكية','organization-verifications','organizations.view']]],['الحسابات والاستهلاك',null,'usage',[['أرصدة الخدمات','usage-credits','usage'],['الذكاء الاصطناعي','usage-ai','usage'],['واتساب','usage-whatsapp','usage'],['المكالمات','usage-calls','usage']]],['الأمن',null,'security',[['تسجيل الدخول','security-login','security'],['كلمات المرور','security-password','security'],['الأجهزة','security-devices','security'],['التنبيهات','security-alerts','security'],['سجل العمليات','security-audit','security']]],['الدعم',null,'support',[['جديدة','support-open','support'],['جاري العمل عليها','support-in_progress','support'],['محلولة','support-resolved','support'],['مغلقة','support-closed','support']]],['الإعلانات',null,'ads',[['الطلبات','ads-pending','ads'],['المجدولة','ads-scheduled','ads'],['المنشورة','ads-published','ads'],['المنتهية','ads-expired','ads'],['المرفوضة','ads-rejected','ads']]],['شات خدووم',null,'community',[['المنشورات','community-posts','community'],['التعليقات','community-comments','community'],['البلاغات','community-reports','community'],['المستخدمون','community-users','community']]],['مستخدمو الإدارة',null,'admins',[['المستخدمون','admins','admins'],['الأدوار والصلاحيات','roles','admins']]],['الإعدادات','settings',null]];
+const tree=[['الرئيسية','home',null],['الإدارة العامة',null,null,[['الباقات',null,null,[['أسعار الباقات','packages','packages'],['أكواد الخصم','codes','codes'],['عروض الباقات','offers','offers'],['أوائل المشتركين','signup','offers'],['الفروع والإضافات','addons','packages'],['طلبات الاشتراك','subscriptions','packages']]]]],['المؤسسات',null,'organizations.view',[['جميع المؤسسات','organizations','organizations.view'],['جميع المشتركين','directory-users','organizations.view'],['التحقق من الملكية','organization-verifications','organizations.view']]],['الحسابات والاستهلاك',null,'usage',[['أرصدة الخدمات','usage-credits','usage'],['الذكاء الاصطناعي','usage-ai','usage'],['واتساب','usage-whatsapp','usage'],['المكالمات','usage-calls','usage']]],['الأمن',null,'security',[['تسجيل الدخول','security-login','security'],['كلمات المرور','security-password','security'],['الأجهزة','security-devices','security'],['التنبيهات','security-alerts','security'],['سجل العمليات','security-audit','security']]],['الدعم',null,'support',[['جديدة','support-open','support'],['جاري العمل عليها','support-in_progress','support'],['محلولة','support-resolved','support'],['مغلقة','support-closed','support']]],['الإعلانات',null,'ads',[['الطلبات','ads-pending','ads'],['المجدولة','ads-scheduled','ads'],['المنشورة','ads-published','ads'],['المنتهية','ads-expired','ads'],['المرفوضة','ads-rejected','ads']]],['شات خدووم',null,'community',[['المنشورات','community-posts','community'],['التعليقات','community-comments','community'],['البلاغات','community-reports','community'],['المستخدمون','community-users','community']]],['مستخدمو الإدارة',null,'admins',[['المستخدمون','admins','admins'],['الأدوار والصلاحيات','roles','admins']]],['الإعدادات','settings',null]];
 tree.splice(4,0,['المالية',null,'finance',[['المصاريف والفواتير','expenses','finance']]]);
 tree.splice(5,0,['مركز الأمان','security-center','security']);
 tree[8][3].push(['المحادثات المباشرة','community-chat','community']);
@@ -117,7 +117,7 @@ async function render(options={}){let v=++version;homeRequestCache.clear();if(cu
  try{let data;const check=()=>v===version;
  if(window.renderAddons && await renderAddons(current,v))return;
  if(current==='home'){data=await api('summary');if(!check())return;c.innerHTML='<p class="muted">ملخص المنصة · اضغط على البطاقة لعرض التفاصيل. أرقام اليوم حسب UTC.</p><div class="cards" id="cards"></div>';let cards=[['organizations','إجمالي المؤسسات','organizations'],['newToday','المشتركون الجدد اليوم','organizations'],['newMonth','المشتركون الجدد هذا الشهر','organizations'],['ai','استهلاك الذكاء الاصطناعي','usage-ai'],['whatsapp','استهلاك واتساب','usage-whatsapp'],['calls','استهلاك المكالمات','usage-calls'],['ads','الإعلانات النشطة','ads-published'],['support','طلبات الدعم غير المحلولة','support'],['logins','محاولات الدخول اليوم','security-login'],['passwordResets','إعادة كلمات المرور','security-password'],['alerts','تنبيهات اليوم','security-alerts']];for(let [key,label,target]of cards){if(!(key in data))continue;let b=action('',()=>{go(target);if(key==='newToday'||key==='newMonth'){since=new Date().toISOString().slice(0,key==='newToday'?10:7)+(key==='newMonth'?'-01':'');render()}});b.dataset.metric=key;b.className='metric'+(key==='support'&&Number(data[key])>0?' alert':'');b.innerHTML=esc(label)+`<strong>${fmt(data[key])}</strong>`;$('cards').append(b)}for(let x of Object.keys(pkg).map(p=>({package:p,total:(data.packages||[]).find(x=>x.package===p)?.total||0})).filter(()=>can('organizations.view'))){let b=action('',()=>{go('organizations');filter=x.package;render()});b.className='metric';b.innerHTML=esc(pkg[x.package])+`<strong>${x.total}</strong>`;$('cards').append(b)}return}
- if(current==='organizations'){data=await api(`organizations?page=${currentPage}&package=${filter}&search=${encodeURIComponent(search)}&since=${since}`);if(!check())return;c.innerHTML='';tabs([['','جميع المؤسسات'],...packageOptions],filter,x=>{filter=x;currentPage=1;render()});let form=document.createElement('form');form.className='toolbar';form.innerHTML=`<input aria-label="بحث المؤسسة" placeholder="اسم المؤسسة أو رقم التواصل" value="${esc(search)}"><button>بحث</button>`;form.onsubmit=e=>{e.preventDefault();search=form.querySelector('input').value;currentPage=1;render()};c.append(form);append(table(data.items,[['المؤسسة',x=>button(x.name,'profile',x.id)],['التواصل',x=>esc(x.phone)],['الباقة',x=>pkg[x.package]],['التسجيل',x=>when(x.created_at)],['بداية الاشتراك',x=>when(x.starts_at)],['النهاية',x=>when(x.expires_at)],['الحالة',x=>x.suspended?'موقوفة':'نشطة'],['آخر نشاط مسجل',x=>when(x.last_login)]]));pages(data);return}
+ if(current==='organizations'||current==='directory-users'){await renderIdentityDirectory(check);return}
  if(current==='profile'){data=await api('organizations/'+profileId);profileData=data;if(!check())return;c.innerHTML='';$('title').textContent=data.name;append(`<div class="panel"><h3>${esc(data.name)}</h3><p>${esc(data.activity)} · ${esc(data.phone)}</p><p>الباقة: ${pkg[data.package]} · ${data.suspended?'موقوفة':'نشطة'} · التسجيل: ${when(data.created_at)}</p><p>الاشتراك: ${when(data.starts_at)} — ${when(data.expires_at)}</p><div id="orgActions" class="toolbar"></div></div>`);if(data.account_id)$('orgActions').append(action('حساب المشترك والمؤسسات',()=>{addonAccount=data.account_id;current='account-detail';render()}));for(let branch of data.branches||[])$('orgActions').append(action(branch.name,()=>{addonBranch={org:data.id,id:branch.id};current='branch-detail';render()}));if(can('packages'))$('orgActions').append(action('تغيير الباقة',()=>edit('تغيير الباقة',[f('package','الباقة','select',packageOptions),f('durationDays','المدة بالأيام','number')],{package:data.package,durationDays:30},d=>api('/owner/api/organizations/'+profileId+'/package','PUT',d))));if(can('rewards'))$('orgActions').append(action('مكافأة يدوية',()=>edit('مكافأة المؤسسة',[f('kind','نوع المكافأة','select',[['days','إضافة أيام'],['month','شهر مجاني (30 يومًا)'],['vip','VIP لمدة محددة'],['ai','وحدات AI لليوم']]),f('amount','عدد الأيام أو الوحدات','number'),f('reason','سبب المكافأة','textarea')],{kind:'days',amount:30},d=>api('organizations/'+profileId+'/reward','POST',d))));if(can('suspend'))$('orgActions').append(action(data.suspended?'إعادة التفعيل':'إيقاف المؤسسة',()=>api('organizations/'+profileId+'/status','POST',{suspended:!data.suspended}).then(render),'danger'));if(can('organizations.edit'))$('orgActions').append(action('خروج جميع الأجهزة',()=>api('organizations/'+profileId+'/logout','POST',{}).then(render)));append('<h3>الحسابات والتواصل</h3>'+table(data.users,[['الاسم',x=>esc(x.name)],['البريد',x=>esc(x.email)],['الجوال',x=>esc(x.phone)],['آخر سبب دخول',x=>esc(x.last_login_failure||'—')],['الحالة',x=>x.active?'نشط':'موقوف'],['إجراء',x=>can('organizations.edit')?button(x.active?'إيقاف الحساب':'إعادة التفعيل','organization-user-status',x.id,`data-active="${x.active?0:1}"`):'—']]));append('<h3>موظفو AI المستخدمون</h3>'+table(data.employees,[['الموظف',x=>esc(x.employee_type)],['الطلبات',x=>x.requests]]));if(can('usage'))c.append(action('عرض استهلاك المؤسسة',()=>{current='usage-ai';filter='';render()}));append('<h3>الأجهزة النشطة (حتى 100)</h3>'+table(data.devices,[['الجهاز',x=>esc(x.device_name)],['المستخدم',x=>esc(x.name)],['آخر نشاط',x=>when(x.last_seen_at)],['الإجراء',x=>can('organizations.edit')?button('تسجيل خروج','device',x.id):'—']]));append('<h3>الإعلانات (آخر 50)</h3>'+table(data.ads,[['العنوان',x=>esc(x.title)],['نهاية الإعلان',x=>when(x.expires_at)]]));return}
  if(current==='packages'){data=await api('packages');let limitsResponse=await fetch('/owner/api/package-limits',{headers:{'X-Owner-Key':ownerKey,'X-Admin-Session':token},cache:'no-store'}),limits=await limitsResponse.json();if(!check())return;if(!limitsResponse.ok)throw Error(limits.error||'تعذر تحميل حدود المؤسسة');c.innerHTML='';c.append(packageConfiguration(data,limits));c._items=data;return}
  if(current==='codes'){data=await api('codes?page='+currentPage);if(!check())return;c._items=data.items;c.innerHTML='';c.append(action('إنشاء كود خصم',()=>edit('كود خصم جديد',[f('code','الكود'),f('recipient_name','صاحب الكود'),f('discount_percent','نسبة الخصم %','number'),f('discount_amount','أو مبلغ الخصم ر.س','number'),f('starts_at','يبدأ في','datetime-local'),f('expires_at','ينتهي في','datetime-local'),f('max_uses','عدد الاستخدامات المسموحة','number'),f('eligible_packages','الباقات','select',[['basic,vip','الأساسية وVIP'],['basic','الأساسية'],['vip','VIP']]),f('eligible_durations','المدد','select',[['1,3,6,12','كل المدد'],['1','شهر'],['3','3 أشهر'],['6','6 أشهر'],['12','12 شهرًا']])],{discount_percent:20,discount_amount:0,max_uses:100,eligible_packages:'basic,vip'},d=>api('codes','POST',d)),'primary'));append(table(data.items,[['الكود',x=>esc(x.code_prefix)],['صاحبه',x=>esc(x.recipient_name)],['الخصم',x=>x.discount_amount?x.discount_amount+' ر.س':x.discount_percent+'%'],['المدد',x=>x.eligible_durations||'كل المدد'],['الاستخدام',x=>x.used_count+' / '+x.max_uses],['البداية',x=>when(x.starts_at)],['النهاية',x=>when(x.expires_at)],['إجراء',x=>button('تعديل','code-edit',x.id)+button(x.active?'إيقاف':'تشغيل','code-toggle',x.id,`data-active="${x.active?0:1}"`)]]));pages(data);return}
@@ -533,3 +533,63 @@ khdoomTechnicalAction=async function(id,action){
  }else if(action==='approve'&&!confirm('اعتماد المدير للخطة المحددة؟'))return;
  try{const d=await api('technical-ai/'+id+'/'+action,'POST',payload);flash(d.message);await render()}catch(e){flash(e.message)}
 };
+
+
+// Institution/user directory, with explicit ownership-transfer confirmation.
+async function renderIdentityDirectory(check){
+ const kind=current==='directory-users'?'users':'organizations';
+ const data=await api(`directory/${kind}?page=${currentPage}&search=${encodeURIComponent(search)}&package=${encodeURIComponent(filter)}&since=${encodeURIComponent(since)}`);
+ if(!check())return;
+ const c=$('content');c.replaceChildren();c._items=data.items;
+ tabs([['organizations',`جميع المؤسسات (${data.counts.organizations})`],['directory-users',`جميع المشتركين (${data.counts.users})`]],current,x=>go(x));
+ const form=document.createElement('form');form.className='toolbar';
+ form.innerHTML=`<input aria-label="بحث" placeholder="اسم المشترك أو المؤسسة" value="${esc(search)}"><button>بحث</button>`;
+ form.onsubmit=e=>{e.preventDefault();search=form.querySelector('input').value;currentPage=1;render()};c.append(form);
+ const controls=x=>can('organizations.edit')?button('تعديل الاسم','directory-name',x.id)+button('تعديل الباسورد','directory-password',x.id)+(me.role==='owner'?button('حذف','directory-archive',x.id)+(kind==='organizations'?button('نقل المؤسسة','directory-transfer',x.id):''):''):'—';
+ append(table(data.items,kind==='organizations'?
+ [['المشترك / المالك',x=>esc(x.owner_name||'غير مرتبط')],['المؤسسة أو الشركة',x=>button(x.name,'profile',x.id)],['الباقة',x=>esc(pkg[x.package]||x.package)],['الإدارة',controls]]:
+ [['المشترك',x=>esc(x.name)],['تبع المؤسسة',x=>esc(x.organization_name)],['اسم الدخول',x=>esc(x.username)],['الحالة',x=>x.active?'نشط':'موقوف'],['الإدارة',controls]]));
+ append(note('حذف المؤسسة يوقف الوصول ويحفظ بياناتها للاسترجاع. حذف حساب مالكها يتطلب نقل ملكية مؤسساته أولًا.'));
+ pages(data);
+ for(const [route,total] of [['organizations',data.counts.organizations],['directory-users',data.counts.users]]){
+  const b=document.querySelector(`#nav [data-route="${route}"]`);if(b)b.textContent=(route==='organizations'?'جميع المؤسسات':'جميع المشتركين')+` (${total})`;
+ }
+}
+document.addEventListener('click',async e=>{
+ const b=e.target.closest('[data-act^="directory-"]');if(!b)return;
+ const kind=current==='directory-users'?'users':'organizations';const x=($('content')._items||[]).find(x=>String(x.id)===b.dataset.id);if(!x)return;
+ const path=`directory/${kind}/${x.id}/`;
+ try{
+  if(b.dataset.act==='directory-name')edit('تعديل الاسم',[f('name',kind==='users'?'اسم المشترك':'اسم المؤسسة')],{name:x.name},d=>api(path+'name','POST',d));
+  if(b.dataset.act==='directory-password')edit('تعديل الباسورد',[f('password','كلمة مرور جديدة — 8 أحرف على الأقل','password')],{},d=>api(path+'password','POST',d));
+  if(b.dataset.act==='directory-archive')edit('حذف مع حفظ البيانات',[f('confirmation','اكتب الاسم للتأكيد: '+x.name)],{},d=>api(path+'archive','POST',d));
+  if(b.dataset.act==='directory-transfer'){
+   const users=[];for(let page=1;;page++){const d=await api(`directory/users?organization=${x.id}&page=${page}`);users.push(...d.items.filter(u=>u.active&&u.id!==x.owner_id));if(page*30>=d.total)break}
+   if(!users.length)throw Error('أضف مستخدمًا نشطًا للمؤسسة أولًا ليصبح المالك الجديد');
+   edit('نقل ملكية المؤسسة',[f('newOwnerId','المالك الجديد','select',users.map(u=>[String(u.id),u.name+' — '+u.username])),f('previousOwnerMode','وضع المالك السابق','select',[['remove','إزالة وصوله إلى المؤسسة'],['keep','الإبقاء موظفًا دون صلاحيات']]),f('confirmation','اكتب اسم المؤسسة: '+x.name)],{newOwnerId:String(users[0].id),previousOwnerMode:'remove'},d=>api(path+'transfer','POST',{...d,newOwnerId:Number(d.newOwnerId)}));
+  }
+ }catch(err){flash(err.message)}
+});
+const identityDirectoryEnter=enter;
+enter=async function(){
+ await identityDirectoryEnter();
+ if(can('organizations.view'))try{
+  const counts=await api('directory/counts');
+  for(const [route,label,n] of [['organizations','جميع المؤسسات',counts.organizations],['directory-users','جميع المشتركين',counts.users]]){
+   const b=document.querySelector(`#nav [data-route="${route}"]`);if(b)b.textContent=label+` (${n})`;
+  }
+ }catch(_){}
+};
+let loginAlertCursor=null,loginAlertBusy=false,loginAlertIdentity='';
+setInterval(async()=>{
+ if(loginAlertBusy||!me||!can('security')||document.hidden||$('app').hidden)return;
+ const identity=token||ownerKey;
+ if(identity!==loginAlertIdentity){loginAlertIdentity=identity;loginAlertCursor=null;}
+ loginAlertBusy=true;
+ try{
+  const d=await api('security/login-alerts'),x=d.latest;
+  if(identity!==(token||ownerKey))return;
+  if(loginAlertCursor!==null&&x&&x.id>loginAlertCursor)flash(`دخول جديد: ${x.user_name||'مشترك'} — ${x.organization_name}`);
+  loginAlertCursor=x?.id||0;
+ }catch(_){}finally{loginAlertBusy=false;}
+},15000);

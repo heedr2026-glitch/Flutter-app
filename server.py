@@ -23,6 +23,8 @@ import organization_addons
 import twitter_integration
 import tenant_isolation
 import owner_admin
+import identity_directory
+import vehicle_tracking
 import package_limits
 import ad_policy
 import branch_appointments
@@ -1284,6 +1286,8 @@ def init_db() -> None:
             owner_admin.migrate(connection, postgres=True)
             community_admin.migrate(connection, postgres=True)
             organization_addons.migrate(connection, postgres=True)
+            identity_directory.migrate(connection, postgres=True)
+            vehicle_tracking.migrate(connection, postgres=True)
             tenant_isolation.migrate(connection, postgres=True)
             twitter_integration.migrate(connection, postgres=True)
         if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
@@ -1685,6 +1689,8 @@ def init_db() -> None:
         owner_admin.migrate(connection)
         community_admin.migrate(connection)
         organization_addons.migrate(connection)
+        identity_directory.migrate(connection)
+        vehicle_tracking.migrate(connection)
         tenant_isolation.migrate(connection)
         twitter_integration.migrate(connection, postgres=True)
     if not os.environ.get("KHDOOM_OWNER_KEY") and not OWNER_KEY_PATH.exists():
@@ -2027,7 +2033,7 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
         token_hash = hashlib.sha256(authorization[7:].encode()).hexdigest()
         row = connection.execute(
             """SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id
-               WHERE sessions.token_hash=? AND sessions.expires_at>? AND users.active=1""",
+               WHERE sessions.token_hash=? AND sessions.expires_at>? AND users.active=1 AND users.archived_at IS NULL""",
             (token_hash, now()),
         ).fetchone()
         if row is None:
@@ -3394,6 +3400,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     )
                     if code:
                         connection.execute("UPDATE activation_codes SET used_count=used_count+1 WHERE id=?", (code["id"],))
+                    organization_addons.ensure_account(connection, {"id":cursor.lastrowid,"organization_id":organization_id,"role":"admin"})
                     token = issue_token(
                         connection, cursor.lastrowid,
                         str(data.get("deviceId", "")).strip(),
@@ -3415,7 +3422,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     record_login_failure(connection, self, organization_id=None, user_id=None, username=login_identity, code=401, reason='user_not_found', data=data)
                     connection.commit()
                     raise ApiError(401, "تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.")
-                if not user["active"]:
+                if not user["active"] or user["archived_at"]:
                     record_login_failure(connection, self, organization_id=user["organization_id"], user_id=user["id"], username=user["username"], code=403, reason='account_inactive', data=data, user=user)
                     connection.commit()
                     raise ApiError(403, "تعذر تسجيل الدخول. تحقق من بياناتك وحاول مرة أخرى.")
@@ -3691,7 +3698,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                               audit_logs.target_id,audit_logs.summary,audit_logs.created_at,
                               users.name AS actor_name,users.username AS actor_username
                        FROM audit_logs LEFT JOIN users ON users.id=audit_logs.actor_user_id
-                       WHERE audit_logs.organization_id=?
+                       WHERE audit_logs.organization_id=? AND audit_logs.action NOT IN ('new_device','login')
                        ORDER BY audit_logs.id DESC LIMIT 300""",
                     (organization_id,),
                 ).fetchall()
@@ -4446,22 +4453,26 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     connection.commit()
                 self._send(200, {"saved": True, "status": status, "replyMessage": reply_message})
                 return
+            if path.startswith('/api/vehicle-tracking/'):
+                data = self._body() if method in ('POST','PUT') else {}
+                try:
+                    result = vehicle_tracking.handle(connection,path,method,data,parse_qs(urlparse(self.path).query),user,self.headers,__import__('sys').modules[__name__])
+                except (ValueError,TypeError) as error:
+                    raise ApiError(400,str(error))
+                connection.commit()
+                self._send(200,result)
+                return
             if path == "/api/vehicle-tracking" and method == "GET":
-                require_permission(user, "viewVehicles", "editVehicles", "vehicles")
-                vehicle_key = str(parse_qs(urlparse(self.path).query).get("vehicleKey", [""])[0]).strip()[:160]
-                if not vehicle_key:
-                    raise ApiError(400, "حدد المركبة أولاً")
-                location = connection.execute(
-                    """SELECT vehicle_key,latitude,longitude,accuracy_meters,recorded_at
-                       FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=?
-                       ORDER BY id DESC LIMIT 1""",
-                    (organization_id, vehicle_key),
-                ).fetchone()
-                self._send(200, dict(location) if location else {"vehicle_key": vehicle_key, "status": "no_location"})
+                key = str(parse_qs(urlparse(self.path).query).get('vehicleKey',[''])[0]).strip()[:160]
+                if not key: raise ApiError(400,'حدد المركبة أولًا')
+                self._send(200,vehicle_tracking.location_status(connection,user,key,__import__('sys').modules[__name__]))
                 return
             if path == "/api/vehicle-tracking" and method == "POST":
-                require_permission(user, "viewVehicles", "editVehicles", "vehicles")
                 data = self._body()
+                try:
+                    vehicle_tracking.accept_location(connection,user,self.headers,data,__import__('sys').modules[__name__])
+                except (ValueError,TypeError) as error:
+                    raise ApiError(400,str(error))
                 vehicle_key = str(data.get("vehicleKey", "")).strip()[:160]
                 try:
                     latitude = float(data.get("latitude")); longitude = float(data.get("longitude"))
@@ -4721,4 +4732,5 @@ if __name__ == "__main__":
     threading.Thread(target=technical_auto_monitor, daemon=True, name="technical-auto-monitor").start()
     service_monitor.start(db, DB_PATH, bool(DATABASE_URL), PORT)
     threading.Event().wait()
+
 

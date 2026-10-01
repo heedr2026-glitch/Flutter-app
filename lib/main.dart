@@ -1,3 +1,4 @@
+import 'vehicle_tracking_page.dart';
 import 'whatsapp_workspace.dart';
 import 'reception_conversation_page.dart';
 
@@ -263,12 +264,12 @@ class KhdoomNotifications {
   }
 
   static Future<void> showSecurityAlert(Map<String, dynamic> item) async {
+    if (item['action'] == 'new_device' || item['action'] == 'login') return;
     final prefs = await BranchPreferences.getInstance();
     if (!(prefs.getBool('settings_notifications') ?? true)) return;
     await requestPermission();
     final action = item['action']?.toString() ?? '';
     final title = switch (action) {
-      'new_device' => 'دخول من جهاز جديد 🔐',
       'suspicious_login' => 'محاولات دخول مشبوهة 🚨',
       'employee_updated' => 'تم تغيير صلاحيات موظف 🔐',
       'device_blocked' => 'تم حظر جهاز 🔒',
@@ -1096,6 +1097,7 @@ class _LoginPageState extends State<LoginPage> {
     );
     try {
       final device = await khdoomDeviceIdentity();
+      await DriverTrackingNative.stop();
       final loginResult = await cloudApi.login(
         username,
         password,
@@ -1183,6 +1185,7 @@ class _LoginPageState extends State<LoginPage> {
     );
     try {
       final device = await khdoomDeviceIdentity();
+      await DriverTrackingNative.stop();
       final loginResult = await cloudApi.login(
         username,
         password,
@@ -2256,10 +2259,12 @@ class _DashboardPageState extends State<DashboardPage> {
   bool _loadHomeAdvertisements({
     required String subscriptionPackage,
     required bool isEmployee,
-  }) => showPublicAdvertisementBanner(
-    subscriptionPackage: subscriptionPackage,
-    isEmployee: isEmployee,
-  ) || (subscriptionPackage == 'vip' && !isEmployee);
+  }) =>
+      showPublicAdvertisementBanner(
+        subscriptionPackage: subscriptionPackage,
+        isEmployee: isEmployee,
+      ) ||
+      (subscriptionPackage == 'vip' && !isEmployee);
   Timer? _adRotationTimer;
   Timer? _requestRefreshTimer;
   Timer? _sessionValidationTimer;
@@ -2310,6 +2315,7 @@ class _DashboardPageState extends State<DashboardPage> {
     } on CloudApiException catch (error) {
       if (error.statusCode != 401 && error.statusCode != 403) return;
       _forcingCloudLogout = true;
+      await DriverTrackingNative.stop();
       await storage.delete(key: 'cloud_session_token');
       await prefs.remove('session_user_type');
       await prefs.remove('session_employee_id');
@@ -2587,7 +2593,6 @@ class _DashboardPageState extends State<DashboardPage> {
           final securityActions = {
             'failed_login',
             'suspicious_login',
-            'new_device',
             'employee_updated',
             'employee_deleted',
             'device_trust_updated',
@@ -2605,7 +2610,6 @@ class _DashboardPageState extends State<DashboardPage> {
               prefs.getInt('security_notification_last_id') ?? 0;
           var newestNotified = lastNotified;
           const notificationActions = {
-            'new_device',
             'suspicious_login',
             'employee_updated',
             'device_blocked',
@@ -3622,6 +3626,14 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
           centerTitle: true,
           actions: [
+            IconButton(
+              tooltip: 'تتبع دوامي',
+              icon: const Icon(Icons.route_outlined),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const DriverTrackingPage()),
+              ),
+            ),
             if (_isAdmin)
               IconButton(
                 tooltip: 'لوحتي اليومية',
@@ -3734,18 +3746,23 @@ class _DashboardPageState extends State<DashboardPage> {
                 _buildOrganizationAssistant(),
                 const SizedBox(height: 16),
 
-                if (_subscriptionPackage == 'vip' && _isAdmin &&
-                    (!_showVipAdvertisementSide || _vipAdvertisements.isEmpty)) ...[
+                if (_subscriptionPackage == 'vip' &&
+                    _isAdmin &&
+                    (!_showVipAdvertisementSide ||
+                        _vipAdvertisements.isEmpty)) ...[
                   VipAdvertisementCard(
                     subscriptionPackage: _subscriptionPackage,
-                    onFlip: () => setState(() => _showVipAdvertisementSide = true),
+                    onFlip: () =>
+                        setState(() => _showVipAdvertisementSide = true),
                   ),
                   const SizedBox(height: 16),
                 ],
 
                 if (_vipAdvertisements.isNotEmpty &&
-                    (_subscriptionPackage != 'vip' || !_isAdmin ||
-                     _showVipAdvertisementSide)) _buildAdvertisementBanner(),
+                    (_subscriptionPackage != 'vip' ||
+                        !_isAdmin ||
+                        _showVipAdvertisementSide))
+                  _buildAdvertisementBanner(),
               ],
             ),
           ),
@@ -4206,6 +4223,7 @@ class _VehiclesPageState extends State<VehiclesPage> {
   bool _loading = true;
   bool _canEdit = true;
   bool _canDelete = true;
+  bool _canManageTracking = false;
   List<int> get _visibleIndexes => [
     for (var i = 0; i < _vehicles.length; i++)
       if (widget.recordId == null ||
@@ -4221,6 +4239,7 @@ class _VehiclesPageState extends State<VehiclesPage> {
 
   Future<void> _load() async {
     final prefs = await _branchPrefs;
+    _canManageTracking = prefs.getString('session_user_type') == 'admin';
     // Refresh in the background; opening the form must not wait for the network.
     unawaited(PackageResourceLimits.load(prefs));
     if (prefs.getString('session_user_type') == 'employee') {
@@ -4261,6 +4280,8 @@ class _VehiclesPageState extends State<VehiclesPage> {
   }
 
   String _trackingKey(Map<String, dynamic> vehicle) {
+    final stable = vehicle['trackingKey']?.toString() ?? '';
+    if (stable.isNotEmpty) return stable;
     final plate = vehicle['plate']?.toString().trim() ?? '';
     return plate.isNotEmpty ? 'plate:$plate' : 'local:${vehicle['id']}';
   }
@@ -4351,7 +4372,11 @@ class _VehiclesPageState extends State<VehiclesPage> {
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('لا يوجد موقع مسجل لهذه المركبة بعد.'),
+              content: Text(
+                trackingStatusLabel(
+                  location['status']?.toString() ?? 'no_location',
+                ),
+              ),
             ),
           );
         return;
@@ -4359,7 +4384,29 @@ class _VehiclesPageState extends State<VehiclesPage> {
       final map = Uri.parse(
         'https://www.openstreetmap.org/?mlat=$latitude&mlon=$longitude#map=16/$latitude/$longitude',
       );
-      await launchUrl(map, mode: LaunchMode.externalApplication);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: Text(
+            trackingStatusLabel(location['status']?.toString() ?? 'offline'),
+          ),
+          content: Text(
+            'آخر موقع مسجل: ${location['recorded_at'] ?? 'غير متاح'}\nالموقع يمثل جوال السائق؛ قد يختلف عن المركبة إذا ابتعد عنها.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c),
+              child: const Text('إغلاق'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  launchUrl(map, mode: LaunchMode.externalApplication),
+              child: const Text('فتح الخريطة'),
+            ),
+          ],
+        ),
+      );
     } catch (error) {
       if (mounted)
         ScaffoldMessenger.of(context)
@@ -4406,6 +4453,7 @@ class _VehiclesPageState extends State<VehiclesPage> {
           VehicleFormDialog(initial: index == null ? null : _vehicles[index]),
     );
     if (result == null || !mounted) return;
+    if (index != null) result['trackingKey'] = _trackingKey(_vehicles[index]);
     setState(() {
       if (index == null) {
         _vehicles.add(result);
@@ -4461,6 +4509,27 @@ class _VehiclesPageState extends State<VehiclesPage> {
     await Future<void>.delayed(const Duration(milliseconds: 400));
     confirmationController.dispose();
     if (confirmed != true || !mounted) return;
+    if (_canManageTracking) {
+      try {
+        final api = await _trackingApi();
+        if (api != null) {
+          try {
+            await api.stopVehicleTrackingSchedule(
+              _trackingKey(_vehicles[index]),
+            );
+          } finally {
+            api.close();
+          }
+        }
+      } catch (error) {
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('تعذر إيقاف ربط التتبع قبل الحذف: $error')),
+          );
+        return;
+      }
+    }
+    if (!mounted) return;
     setState(() => _vehicles.removeAt(index));
     await _save();
   }
@@ -4634,6 +4703,24 @@ class _VehiclesPageState extends State<VehiclesPage> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
+                          if (_canManageTracking)
+                            OutlinedButton.icon(
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => TrackingSchedulePage(
+                                    vehicleKey: _trackingKey(vehicle),
+                                    vehicleName:
+                                        (vehicle['name'] ??
+                                                vehicle['plate'] ??
+                                                'مركبة')
+                                            .toString(),
+                                  ),
+                                ),
+                              ),
+                              icon: const Icon(Icons.schedule),
+                              label: const Text('السائق وجدول الدوام'),
+                            ),
                           OutlinedButton.icon(
                             onPressed: () => _trackVehicle(vehicle),
                             icon: const Icon(Icons.my_location_outlined),
@@ -5172,6 +5259,7 @@ class _SettingsPageState extends State<SettingsPage> {
         }
       }
     }
+    await DriverTrackingNative.stop();
     await prefs.setBool('has_logged_out_once', true);
     await prefs.remove('session_user_type');
     await prefs.remove('session_employee_id');
@@ -6892,7 +6980,6 @@ class _SecurityAlertsPageState extends State<SecurityAlertsPage> {
   static const _actions = {
     'failed_login',
     'suspicious_login',
-    'new_device',
     'employee_updated',
     'employee_deleted',
     'device_trust_updated',

@@ -230,6 +230,8 @@ def customer_context(c,user,h):
             member=c.execute('SELECT ao.organization_id FROM account_organizations ao JOIN owner_accounts a ON a.id=ao.account_id WHERE ao.organization_id=? AND a.owner_user_id=?',(int(selected),user['id'])).fetchone()
             if not member:raise ValueError('المؤسسة غير موثقة تحت حسابك')
             user['organization_id']=int(selected)
+    owns=c.execute('SELECT 1 FROM account_organizations ao JOIN owner_accounts a ON a.id=ao.account_id WHERE ao.organization_id=? AND a.owner_user_id=?',(user['organization_id'],user['id'])).fetchone()
+    if owns: user['role']='admin';user['permissions']='{}'
     parent=c.execute('SELECT root.package,root.starts_at,root.expires_at FROM account_organizations child JOIN account_organizations primary_org ON primary_org.account_id=child.account_id AND primary_org.is_primary=1 JOIN subscriptions root ON root.organization_id=primary_org.organization_id WHERE child.organization_id=? AND child.independent_package=0',(user['organization_id'],)).fetchone()
     if parent:
         c.execute('UPDATE subscriptions SET package=?,starts_at=?,expires_at=? WHERE organization_id=?',(parent['package'],parent['starts_at'],parent['expires_at'],user['organization_id']))
@@ -326,3 +328,4 @@ def client(h,method,s):
             c.commit()
         h._send(200,result);return True
     except ValueError as e:raise s.ApiError(400,str(e))
+
