@@ -398,6 +398,15 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='technical-ai/ask' and m=='POST':
   question=str(d.get('question','')).strip()[:1000]
   if len(question)<4: raise ValueError('اكتب وصف المشكلة أولًا')
+  if not d.get('_rule'):
+   import technical_agent, ai_core
+   if technical_agent.ai_configured():
+    try:
+     result=technical_agent.answer(c,question,d.get('history') if isinstance(d.get('history'),list) else [],lambda rr,mm,dd: dispatch(c,rr,mm,dd,{},page,a,h,s),rows,a['name'])
+     audit(c,a['name'],'technical_ai_chat',question[:200])
+     return result
+    except ai_core.AIServiceError as error:
+     print('TECHNICAL AI FALLBACK:',error.message)
   question_fold=question.casefold()
   org=None
   for candidate in rows(c,'SELECT id,name FROM organizations ORDER BY id'):

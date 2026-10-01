@@ -1,4 +1,5 @@
 """Durable, account/branch scoped reception conversations and manager requests."""
+import chat_store
 import json
 import re
 import secrets
@@ -126,11 +127,11 @@ def send(c, org, uid, branch, message, client_id, clock, generate, error, postgr
         return snapshot(c,org,uid,branch)
     c.execute('INSERT INTO reception_turns(session_id,client_id,message) VALUES(?,?,?)',(session['id'],client_id,message))
     history=c.execute('SELECT sender,message FROM chat_messages WHERE session_id=? ORDER BY id DESC LIMIT 12',(session['id'],)).fetchall()
-    cursor=c.execute('INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)',(session['id'],'customer',message,clock()))
+    cursor=chat_store.insert_chat_message(c,org,session['id'],'customer',message,clock())
     reply=manager_reply(c,org,session,message,cursor.lastrowid,clock)
     if reply is None:
         fresh=session_for(c,org,uid,branch)
         reply=generate(fresh,[{'role':r['sender'],'text':r['message']} for r in reversed(history)],json.loads(fresh['context_json'] or '{}'))
-    c.execute('INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,?,?,?)',(session['id'],'bot',reply,clock()))
+    chat_store.insert_chat_message(c,org,session['id'],'bot',reply,clock())
     c.execute('UPDATE chat_sessions SET updated_at=? WHERE id=?',(clock(),session['id']))
     return snapshot(c,org,uid,branch)

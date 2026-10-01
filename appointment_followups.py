@@ -1,4 +1,5 @@
 """Durable customer follow-ups, linked to an existing session-owned booking."""
+import chat_store
 import re
 from appointment_context import normalize
 
@@ -78,7 +79,7 @@ def reply(c, org, branch, appointment_id, body, now, error):
     if selected is None: raise error(404, 'المتابعة غير موجودة')
     cursor = c.execute('UPDATE appointment_followups SET resolved=1 WHERE appointment_id=? AND message_id<=? AND resolved=0', (appointment_id,through))
     if cursor.rowcount == 0: return {'sent':False,'alreadyReplied':True}
-    c.execute("INSERT INTO chat_messages(session_id,sender,message,created_at) VALUES(?,'human',?,?)", (row['chat_session_id'],text,now()))
+    chat_store.insert_chat_message(c,org,row['chat_session_id'],'human',text,now())
     c.execute("""UPDATE appointment_requests SET status='completed',updated_at=?
         WHERE id=? AND organization_id=? AND branch_id=? AND source='human_handoff'
         AND NOT EXISTS(SELECT 1 FROM appointment_followups WHERE appointment_id=? AND resolved=0)""",
