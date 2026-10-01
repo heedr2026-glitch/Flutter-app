@@ -386,7 +386,7 @@ async function renderKhdoomAdsNew(items,status){
  const selected=items.find(x=>String(x.id)===String(adsWorkspaceSelected))||list[0]||null;
  if(selected&&!adsWorkspaceSelected)adsWorkspaceSelected=selected.id;
  const requestEmpty={title:'لم يتم اختيار طلب',message:'اختر معاينة من الطلبات الموجودة بالأعلى',banner_config:{barColor:'#172554',textColor:'#ffffff',fontSize:18,textAlign:'right',logoPosition:'left'}};
- const requestPreview=mode==='pending'?'<section class="ads-request-strip-panel"><div class="ads-request-strip-head"><div><h3>معاينة طلب الإعلان</h3><p class="muted">اضغط «معاينة» على أي طلب ليظهر في هذا الشريط بالمقاس الصحيح.</p></div>'+(adsWorkspacePreviewOpen&&selected?'<button data-ads-ws-close-preview>إغلاق المعاينة</button>':'')+'</div><div class="khdoom-request-banner-shell" id="adsSinglePreview">'+khdoomRequestBanner(adsWorkspacePreviewOpen&&selected?selected:requestEmpty)+'</div>'+(adsWorkspacePreviewOpen&&selected?adsTrialControls(selected):'')+'</section>':'';
+ const requestPreview=mode==='pending'?'<section class="ads-request-strip-panel"><div class="ads-request-strip-head"><div><h3>معاينة طلب الإعلان</h3><p class="muted">اضغط «معاينة» على أي طلب ليظهر في هذا الشريط بالمقاس الصحيح.</p></div>'+(adsWorkspacePreviewOpen&&selected?'<button data-ads-ws-close-preview>إغلاق المعاينة</button>':'')+'</div><div class="khdoom-request-banner-shell" id="adsSinglePreview">'+khdoomRequestBanner(adsWorkspacePreviewOpen&&selected?selected:requestEmpty)+'</div>'+(adsWorkspacePreviewOpen&&selected?adsTrialControls(selected)+adsExpiryControls(selected):'')+'</section>':'';
  const publishedPreview=mode==='pending'?adsPublishedStripMarkup(published):'';
  const tabs='<div class="ads-new-tabs"><button class="'+(mode==='create'?'active':'')+'" data-ads-new-tab="create">＋ إنشاء إعلان</button><button class="'+(mode==='pending'?'active':'')+'" data-ads-new-tab="pending">▤ الطلبات</button><button class="'+(mode==='published'?'active':'')+'" data-ads-new-tab="published">▧ المنشور</button></div>';
  const head='<div class="ads-new-head"><div><h2>إعلانات خدووم</h2><p class="muted">إدارة الإعلانات بسهولة ووضوح</p></div></div>';
@@ -472,3 +472,31 @@ khdoomUnifiedBannerStyle.textContent=`
 .khdoom-request-banner__full-image,.ads-app-banner-preview.ads-full-banner img,.ads-request-banner.ads-full-banner img,.ads-new-banner #adsNewFullImage,.ad-live-editor [data-ad-editor-full]{object-fit:fill!important;width:100%!important;height:100%!important}
 `;
 document.head.append(khdoomUnifiedBannerStyle);
+
+function adsExpiryDateValue(value){
+ if(!value)return '';
+ const at=new Date(value);if(!Number.isFinite(at.getTime()))return '';
+ return new Date(at.getTime()+3*60*60*1000).toISOString().slice(0,10);
+}
+function adsExpiryTimestamp(value){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(value))throw new Error('حدد تاريخ انتهاء الإعلان');
+ const at=new Date(value+'T23:59:59+03:00');
+ if(!Number.isFinite(at.getTime())||adsExpiryDateValue(at)!==value)throw new Error('تاريخ الانتهاء غير صحيح');
+ return at.toISOString();
+}
+function adsExpiryControls(ad){
+ if(ad.ad_source==='platform')return '';
+ return '<div class="ads-trial-controls ads-expiry-controls"><label for="adsRequestExpiry">تاريخ انتهاء الإعلان<input id="adsRequestExpiry" type="date" value="'+esc(adsExpiryDateValue(ad.expires_at))+'"></label><button type="button" data-ads-expiry-save>حفظ تاريخ الانتهاء</button><span class="muted">يتوقف العرض بنهاية اليوم المحدد بتوقيت السعودية.</span></div>';
+}
+async function saveAdsRequestExpiry(ad,value){
+ const expires=adsExpiryTimestamp(value);
+ if(new Date(expires)<=new Date())throw new Error('اختر تاريخًا لم ينتهِ بعد');
+ if(ad.scheduled_at&&new Date(expires)<=new Date(ad.scheduled_at))throw new Error('تاريخ الانتهاء يجب أن يكون بعد موعد بداية الإعلان');
+ await api('ads/'+ad.id,'PUT',{status:ad.status,expires_at:expires});
+}
+document.addEventListener('click',async e=>{
+ const b=e.target.closest('[data-ads-expiry-save]');if(!b)return;e.preventDefault();
+ const ad=($('content')._items||[]).find(x=>String(x.id)===String(adsWorkspaceSelected)&&x.ad_source!=='platform');
+ if(!ad)return;
+ try{b.disabled=true;await saveAdsRequestExpiry(ad,$('adsRequestExpiry').value);flash('تم حفظ تاريخ انتهاء الإعلان');await render()}catch(error){flash(error.message)}finally{b.disabled=false}
+});
