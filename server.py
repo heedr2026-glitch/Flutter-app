@@ -278,6 +278,9 @@ def technical_auto_monitor() -> None:
                          "تشخيص الجلسات والصلاحيات وكلمات المرور دون تغيير تلقائي",
                          "high", "not_tested", "proposed", 0, ts, ts),
                     )
+                import technical_support
+                import owner_admin
+                technical_support.run_pending(connection, owner_admin, __import__('sys').modules[__name__])
                 connection.commit()
         except Exception as error:
             print(f"TECHNICAL MONITOR ERROR: {type(error).__name__}", flush=True)
@@ -4718,3 +4721,4 @@ if __name__ == "__main__":
     threading.Thread(target=technical_auto_monitor, daemon=True, name="technical-auto-monitor").start()
     service_monitor.start(db, DB_PATH, bool(DATABASE_URL), PORT)
     threading.Event().wait()
+

@@ -401,7 +401,17 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   ticket_match=re.search(r'(?:#|طلب\s*دعم|شكوى|بلاغ)\s*(\d+)',question_fold)
   if ticket_match:
    ticket=c.execute('SELECT id,organization_id,status,category,message,last_error FROM support_tickets WHERE id=?',(int(ticket_match.group(1)),)).fetchone()
-   if ticket and not org: org=c.execute('SELECT id,name FROM organizations WHERE id=?',(ticket['organization_id'],)).fetchone()
+   if ticket: org=c.execute('SELECT id,name FROM organizations WHERE id=?',(ticket['organization_id'],)).fetchone()
+  if ticket:
+   import technical_support
+   full_ticket=c.execute('SELECT * FROM support_tickets WHERE id=?',(ticket['id'],)).fetchone()
+   evidence=technical_support.process_ticket(c,full_ticket,__import__(__name__),s)
+   evidence.update({'organization':dict(org) if org else None,'affected':org['name'] if org else 'المشترك','scope':'organization','warnings':sum(x['status']=='warning' for x in evidence['checks']),'status':'proposed'})
+   evidence['diagnosis']+=' العوائق: '+'؛ '.join(evidence['limitations'])
+   return evidence
+  if question_fold in ('تقرير','وش وضع المنصة؟','وش وضع المنصة','حالة المنصة'):
+   report=dispatch(c,'technical-ai/daily-report','GET',{},q,page,a,h,s)
+   return {'service':'platform','scope':'global','affected':'خدووم','checks':report['serviceChecks'],'diagnosis':report['summary'],'proposal':report['recommendations'],'requiresApproval':True,'report':report}
   service='whatsapp' if any(x in question_fold for x in ('واتساب','whatsapp')) else 'calls' if any(x in question_fold for x in ('مكالمة','المكالمات','calls')) else 'login' if any(x in question_fold for x in ('دخول','تسجيل','401','كلمة المرور','تسجيل الدخول')) else 'ai' if any(x in question_fold for x in ('ai','ذكاء','اسألني','اسالني','المساعد')) else 'ads' if any(x in question_fold for x in ('إعلان','اعلان','الإعلانات','اعلانات')) else 'performance' if any(x in question_fold for x in ('بطء','بطيء','سرعة','صفحة')) else 'support' if any(x in question_fold for x in ('دعم','شكوى','بلاغ')) else 'platform'
   checks=[]; affected='عامة'; scope='global'
   if org:
@@ -484,7 +494,15 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   last_detected=c.execute("SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id WHERE i.created_at>=? ORDER BY i.id DESC LIMIT 1",(start,)).fetchone()
   last_completed=c.execute("SELECT t.*,o.name organization_name FROM technical_tasks t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.status='completed' AND COALESCE(t.finished_at,t.started_at)>=? ORDER BY t.id DESC LIMIT 1",(start,)).fetchone()
   state=c.execute('SELECT status,last_check,last_task,last_success,last_error FROM technical_agent_state WHERE id=1').fetchone()
-  return {'date':start,'counts':counts,'totalTasks':len(tasks),'performance':performance,'lastDetected':dict(last_detected) if last_detected else None,'lastCompleted':dict(last_completed) if last_completed else None,'state':dict(state) if state else {},'recentTasks':tasks[:20]}
+  support_counts=rows(c,'SELECT status,COUNT(*) n FROM support_tickets GROUP BY status')
+  open_tickets=rows(c,"SELECT id,organization_id,category,status,created_at,updated_at FROM support_tickets WHERE status NOT IN ('resolved','closed') ORDER BY created_at LIMIT 100")
+  overdue=[x for x in open_tickets if x['updated_at']<(datetime.now(timezone.utc)-timedelta(days=1)).isoformat()]
+  repeated=rows(c,"SELECT organization_id,category,COUNT(*) n FROM support_tickets WHERE created_at>=? GROUP BY organization_id,category HAVING COUNT(*)>1",((datetime.now(timezone.utc)-timedelta(days=30)).isoformat(),))
+  page_metrics=rows(c,"SELECT page_name,COUNT(*) samples,AVG(elapsed_ms) avg_ms,MAX(elapsed_ms) max_ms FROM page_performance_events WHERE created_at>=? GROUP BY page_name",(start,))
+  service_checks=[{'key':'database','label':'قاعدة البيانات','status':'ok','details':'استعلام التقرير نجح الآن'}, {'key':'api','label':'API الإدارة','status':'ok','details':'معالجة طلب التقرير تمت؛ لا يثبت سلامة كل المسارات'}, {'key':'whatsapp','label':'واتساب','status':'warning','details':'لم يجر اختبار إرسال واستقبال مباشر؛ يحتاج فحص المؤسسة المحددة'}]
+  summary='فُحصت سجلات الإدارة وقاعدة البيانات في '+stamp()+'. الطلبات المفتوحة المعروضة: '+str(len(open_tickets))+'؛ المتأخرة: '+str(len(overdue))+'. لا يمكن اعتبار المنصة سليمة بالكامل دون اختبارات الخدمات الخارجية.'
+  recommendations='1. مراجعة الشكاوى الحرجة والمتأخرة. 2. استكمال أدلة المشاكل المتكررة. 3. فحص قياسات الصفحات. 4. اعتماد إصلاح محدد قبل تغيير التشغيل.'
+  return {'checkedAt':stamp(),'supportCounts':support_counts,'openTickets':open_tickets,'overdueTickets':overdue,'repeatedProblems':repeated,'pageMetrics':page_metrics,'serviceChecks':service_checks,'summary':summary,'recommendations':recommendations,'date':start,'counts':counts,'totalTasks':len(tasks),'performance':performance,'lastDetected':dict(last_detected) if last_detected else None,'lastCompleted':dict(last_completed) if last_completed else None,'state':dict(state) if state else {},'recentTasks':tasks[:20]}
  if r=='technical-ai' and m=='GET':
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   state=c.execute('SELECT * FROM technical_agent_state WHERE id=1').fetchone()
@@ -501,7 +519,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    task_stats[task['status']]=task_stats.get(task['status'],0)+1
   failures=rows(c,"SELECT f.*,o.name organization_name,u.name user_name FROM login_failures f LEFT JOIN organizations o ON o.id=f.organization_id LEFT JOIN users u ON u.id=f.user_id ORDER BY f.id DESC LIMIT 100")
   recent_failures=scalar(c,"SELECT COUNT(*) n FROM login_failures WHERE created_at>=?",((datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat(),))
-  return {'state':state_out,'monitoring':internal_live,'tasks':tasks,'taskStats':task_stats,'loginFailures':failures,'loginAlert':recent_failures>=3,'items':rows(c,"SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id ORDER BY i.id DESC LIMIT 100"),'note':'المراقبة تجمع الحالة وتكتب التقارير؛ لا تعديل إنتاج أو نشر تلقائيًا.'}
+  import technical_support
+  return {'instructions':technical_support.POLICY,'capabilities':{'scopedLogs':True,'databaseChecks':True,'recordedPageSpeed':True,'supportUpdates':True,'providerLiveTest':False,'restartService':False,'automaticProductionRepair':False},'state':state_out,'monitoring':internal_live,'tasks':tasks,'taskStats':task_stats,'loginFailures':failures,'loginAlert':recent_failures>=3,'items':rows(c,"SELECT i.*,o.name organization_name FROM technical_incidents i LEFT JOIN organizations o ON o.id=i.organization_id ORDER BY i.id DESC LIMIT 100"),'note':'المراقبة تجمع الحالة وتكتب التقارير؛ لا تعديل إنتاج أو نشر تلقائيًا.'}
  if r=='technical-ai/heartbeat' and m=='POST':
   secret=h.headers.get('X-Technical-AI-Secret','')
   expected=os.environ.get('KHDOOM_TECHNICAL_AI_SECRET','').strip()
@@ -524,19 +543,28 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    c.execute("INSERT INTO technical_agent_state(id,status,last_heartbeat,last_check,last_task,last_error,updated_at) VALUES(1,'working',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status='working',last_heartbeat=excluded.last_heartbeat,last_check=excluded.last_check,last_task=excluded.last_task,last_error='',updated_at=excluded.updated_at",(ts,'فحص '+service,title,'',ts))
    message='بدأ الفحص وتم حفظ حالة المهمة.'
   elif action=='report':
+   if task.get('support_ticket_id'):
+    import technical_support
+    ticket=c.execute('SELECT * FROM support_tickets WHERE id=?',(task['support_ticket_id'],)).fetchone()
+    if not ticket: raise s.ApiError(404,'طلب الدعم غير موجود')
+    evidence=technical_support.process_ticket(c,ticket,__import__(__name__),s)
+    return {'saved':True,'message':'تم فحص السجلات وإرسال تحديث الدعم؛ لم يتم إعلان الحل','taskId':ident,'report':evidence}
    diagnosis=task['diagnosis'] or 'تمت مراجعة مؤشرات الخادم والخدمة المرتبطة بالمهمة دون الوصول إلى الأسرار أو بيانات مؤسسة أخرى.'
    proposal=task['proposal'] or 'تنفيذ الإصلاح المقترح في بيئة آمنة ثم اختبار النتيجة قبل اعتماد التنفيذ.'
-   report='تقرير موظف AI: المشكلة: '+title+' | الفحص: '+diagnosis+' | الخطة: '+proposal+' | التنفيذ الإنتاجي يحتاج موافقة الإدارة.'
+   report='تقرير غير متحقق من تنفيذ إصلاح: المشكلة: '+title+' | الفحص: '+diagnosis+' | الخطة: '+proposal+' | التنفيذ الإنتاجي يحتاج موافقة الإدارة.'
    c.execute("UPDATE technical_tasks SET status='proposed',diagnosis=?,proposal=?,action_taken=?,result=? WHERE id=?",(diagnosis,proposal,'أُعد تقرير وخطة إصلاح بانتظار موافقة الإدارة',report,ident))
    message='تم إعداد التقرير وخطة الإصلاح.'
   elif action=='approve':
+   if a.get('role') not in ('owner','manager'): raise s.ApiError(403,'موافقة المدير مطلوبة')
    c.execute("UPDATE technical_tasks SET status='approved',approved_by=?,action_taken=?,result=? WHERE id=?",(a['name'],'اعتمدت الإدارة تنفيذ الإصلاح؛ التنفيذ الفعلي يبقى يدويًا ومختبرًا','تمت الموافقة. لا توجد أي تعديلات تلقائية على الإنتاج.',ident))
    message='تمت الموافقة. يمكن تنفيذ الإصلاح يدويًا ثم تسجيل النتيجة.'
   elif action=='complete':
    if task['status'] not in ('approved','diagnosing','diagnosed','proposed'):
     raise ValueError('ابدأ الفحص وأعد التقرير قبل تسجيل الإنجاز')
-   result='تم الإنجاز: تم توثيق معالجة المهمة واختبار النتيجة. راجع سجل التغييرات إن وُجد.'
-   c.execute("UPDATE technical_tasks SET status='completed',action_taken=?,result=?,finished_at=? WHERE id=?",('تم تسجيل الإنجاز بعد المعالجة والاختبار',result,ts,ident))
+   import technical_support
+   action_taken,verification=technical_support.completion_evidence(d,task)
+   result='تم التحقق بعد المعالجة: '+verification
+   c.execute("UPDATE technical_tasks SET status='completed',action_taken=?,result=?,finished_at=? WHERE id=?",(action_taken,result,ts,ident))
    match=re.match(r'طلب دعم #(\d+):',task['problem'])
    if match and table_exists(c,'support_tickets',s):
     c.execute("UPDATE support_tickets SET status='resolved',updated_at=? WHERE id=?",(ts,int(match.group(1))))
@@ -556,7 +584,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     if action=='start': reply='بدأ موظف التقنية AI الفحص الأولي الآمن لطلبك.'
     elif action=='report': reply=report
     elif action=='approve': reply='تم اعتماد خطة موظف التقنية AI، ويجري توثيق النتيجة.'
-    else: reply=result
+    elif action=='complete': reply='تمت معالجة المشكلة والتحقق من النتيجة. إذا استمرت عندك، أرسل نتيجة التجربة عبر الدعم.'
+    else: reply='لم تكتمل المعالجة؛ الطلب يحتاج متابعة ومعلومات إضافية، ولم يتم إعلان الحل.'
     next_status='resolved' if action=='complete' else 'in_progress' if action in ('start','report','approve') else ticket['status']
     c.execute('UPDATE support_tickets SET status=?,owner_reply=?,updated_at=? WHERE id=?',(next_status,reply,ts,ticket['id']))
     support_event(c,dict(ticket),actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_'+action,body=reply,from_status=ticket['status'],to_status=next_status)
@@ -566,12 +595,17 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   service=str(d.get('service','')).strip(); services={'whatsapp':('واتساب','فشل webhook أو صلاحيات الربط','فحص رمز التحقق والتوقيع وسجل آخر webhook','تحديث الإعدادات فقط بعد نجاح اختبار مستقل'),'ai':('الذكاء الاصطناعي','الخدمة غير مهيأة أو تجاوزت الحد','مراجعة إعداد الخادم وحدود الباقة','إعادة مزامنة الحالة دون تغيير الأسرار'),'calls':('المكالمات','قناة الاتصال غير جاهزة أو بها فشل','فحص حالة قناة خدووم وسجل المكالمات','إعادة محاولة الاتصال بعد التحقق من الرصيد'),'login':('تسجيل الدخول','فشل مصادقة مستخدم أو أكثر','فحص وجود المستخدم وحالته وhash كلمة المرور وربط المؤسسة وLogin API والجلسات','اقتراح إعادة المزامنة أو إنهاء الجلسات المنتهية فقط؛ لا تغيير لكلمة المرور دون إجراء رسمي'),'server':('الخادم','بطء أو انقطاع في خادم خدووم','فحص استجابة API واتصال قاعدة البيانات وسجل الأخطاء','إعداد تقرير سبب العطل وخطة إصلاح ثم اختبارها قبل الاعتماد'),'database':('قاعدة البيانات','فشل استعلام أو بطء في البيانات','فحص اتصال القاعدة وسلامة الاستعلامات دون تغيير البيانات','اقتراح فهرسة أو إصلاح آمن بعد موافقة الإدارة')}
   if service not in services: raise ValueError('اختر خدمة مدعومة')
-  label,problem,cause,proposal=services[service]; ts=stamp(); organization_id=number(d.get('organization_id'),1,100000000,True) if d.get('organization_id') else None; user_id=number(d.get('user_id'),1,100000000,True) if d.get('user_id') else None; cur=c.execute('INSERT INTO technical_incidents(service,organization_id,problem,root_cause,proposal,severity,test_status,deployment_status,affected_organizations,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id', (service,organization_id,problem,cause,proposal,'medium','not_tested','proposed',1 if organization_id else 0,ts,ts)); incident_id=cur.fetchone()['id']; cur=c.execute('INSERT INTO technical_tasks(organization_id,user_id,service,problem,severity,status,diagnosis,proposal,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id',(organization_id,user_id,service,problem,'medium','diagnosed',cause,proposal,ts,'ai')); task_id=cur.fetchone()['id']; audit(c,a['name'],'technical_diagnosis',service); return {'id':incident_id,'taskId':task_id,'service':label,'problem':problem,'rootCause':cause,'proposal':proposal,'testStatus':'not_tested','deploymentStatus':'proposed'}
+  label,problem,cause,proposal=services[service]; cause='احتمال غير مؤكد؛ المطلوب فحص: '+cause; ts=stamp(); organization_id=number(d.get('organization_id'),1,100000000,True) if d.get('organization_id') else None; user_id=number(d.get('user_id'),1,100000000,True) if d.get('user_id') else None; cur=c.execute('INSERT INTO technical_incidents(service,organization_id,problem,root_cause,proposal,severity,test_status,deployment_status,affected_organizations,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id', (service,organization_id,problem,cause,proposal,'medium','not_tested','proposed',1 if organization_id else 0,ts,ts)); incident_id=cur.fetchone()['id']; cur=c.execute('INSERT INTO technical_tasks(organization_id,user_id,service,problem,severity,status,diagnosis,proposal,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id',(organization_id,user_id,service,problem,'medium','diagnosed',cause,proposal,ts,'ai')); task_id=cur.fetchone()['id']; audit(c,a['name'],'technical_diagnosis',service); return {'id':incident_id,'taskId':task_id,'service':label,'problem':problem,'rootCause':cause,'proposal':proposal,'testStatus':'not_tested','deploymentStatus':'proposed'}
  if re.fullmatch(r'technical-ai/\d+/(test|approve|reject)',r) and m=='POST':
   ident=int(r.split('/')[1]); action=r.split('/')[2]; item=c.execute('SELECT id FROM technical_incidents WHERE id=?',(ident,)).fetchone()
   if not item: raise ValueError('التشخيص غير موجود')
-  if action=='test': c.execute("UPDATE technical_incidents SET test_status='passed',updated_at=? WHERE id=?",(stamp(),ident)); message='تم تسجيل نجاح الاختبار؛ لم يتم نشر أي كود'
-  elif action=='approve': c.execute("UPDATE technical_incidents SET deployment_status='approved',approved_by=?,updated_at=? WHERE id=?",(a['name'],stamp(),ident)); message='تمت الموافقة للمراجعة؛ النشر ما زال يدويًا'
+  if action=='test':
+   import technical_support
+   technical_support.completion_evidence(d,{})
+   c.execute("UPDATE technical_incidents SET test_status='passed',updated_at=? WHERE id=?",(stamp(),ident)); message='تم تسجيل نجاح الاختبار؛ لم يتم نشر أي كود'
+  elif action=='approve':
+   if a.get('role') not in ('owner','manager'): raise s.ApiError(403,'موافقة المدير مطلوبة')
+   c.execute("UPDATE technical_incidents SET deployment_status='approved',approved_by=?,updated_at=? WHERE id=?",(a['name'],stamp(),ident)); message='تمت الموافقة للمراجعة؛ النشر ما زال يدويًا'
   else: c.execute("UPDATE technical_incidents SET deployment_status='rejected',updated_at=? WHERE id=?",(stamp(),ident)); message='تم رفض الإصلاح المقترح'
   audit(c,a['name'],'technical_'+action,ident); return {'saved':True,'message':message}
  if r=='admins' and m=='GET': return {'items':rows(c,'SELECT id,name,username,role,permissions,active,created_at FROM platform_admins ORDER BY id DESC LIMIT 200'),'roles':ROLES,'permissions':PERMISSIONS}
@@ -952,3 +986,4 @@ def usage(c,q,page,s):
  out['summary']={'total':summary['total'],'today':summary['today'],'month':summary['month_count']}
  out['note']='المتبقي لـ AI هو الحد اليومي ويشمل وحدات الإدارة لليوم. التكلفة غير متاحة لعدم وجود سجل فوترة.'
  return out
+
