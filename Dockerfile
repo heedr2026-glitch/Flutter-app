@@ -23,6 +23,7 @@ COPY training_context.py /app/training_context.py
 COPY reception_actions.py /app/reception_actions.py
 COPY reception_conversations.py /app/reception_conversations.py
 COPY ai_core.py /app/ai_core.py
+COPY chat_store.py technical_agent.py /app/
 COPY service_monitor.py owner_service_health.html /app/
 COPY signup_offer.py owner_signup_offer.html /app/
 COPY owner_ads.js /app/owner_ads.js
