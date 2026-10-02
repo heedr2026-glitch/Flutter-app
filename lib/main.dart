@@ -4782,6 +4782,24 @@ class _VehiclesPageState extends State<VehiclesPage> {
                             icon: const Icon(Icons.map_outlined),
                             label: const Text('عرض آخر موقع'),
                           ),
+                          if (_canManageTracking)
+                            OutlinedButton.icon(
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => VehicleRoutePage(
+                                    vehicleKey: _trackingKey(vehicle),
+                                    vehicleName:
+                                        (vehicle['name'] ??
+                                                vehicle['plate'] ??
+                                                'مركبة')
+                                            .toString(),
+                                  ),
+                                ),
+                              ),
+                              icon: const Icon(Icons.route_outlined),
+                              label: const Text('مسار المركبة'),
+                            ),
                         ],
                       ),
                     ],

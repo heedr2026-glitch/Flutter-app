@@ -4,8 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'branch_store.dart';
@@ -546,6 +548,249 @@ class _DriverTrackingPageState extends State<DriverTrackingPage> {
                   ],
                 ],
               ),
+      ),
+    );
+  }
+}
+
+/// مسار المركبة ليوم واحد على خريطة داخل التطبيق؛ للمالك فقط.
+class VehicleRoutePage extends StatefulWidget {
+  final String vehicleKey, vehicleName;
+  const VehicleRoutePage({
+    super.key,
+    required this.vehicleKey,
+    required this.vehicleName,
+  });
+  @override
+  State<VehicleRoutePage> createState() => _VehicleRoutePageState();
+}
+
+class _VehicleRoutePageState extends State<VehicleRoutePage> {
+  KhdoomCloudApi? _api;
+  DateTime _day = DateTime.now();
+  List<LatLng> _points = [];
+  Map<String, dynamic> _summary = {};
+  String? _error;
+  bool _busy = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _api?.close();
+    super.dispose();
+  }
+
+  String get _dayText =>
+      '${_day.year}-${_day.month.toString().padLeft(2, '0')}-${_day.day.toString().padLeft(2, '0')}';
+
+  Future<void> _load() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      _api ??= await _trackingApi();
+      final data = await _api!.vehicleRoute(widget.vehicleKey, _dayText);
+      final points = <LatLng>[];
+      for (final item in (data['points'] as List? ?? const [])) {
+        final point = Map<String, dynamic>.from(item as Map);
+        final latitude = (point['latitude'] as num?)?.toDouble();
+        final longitude = (point['longitude'] as num?)?.toDouble();
+        if (latitude != null && longitude != null) {
+          points.add(LatLng(latitude, longitude));
+        }
+      }
+      _points = points;
+      _summary = data;
+    } catch (e) {
+      _error = e.toString();
+      _points = [];
+      _summary = {};
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  Future<void> _pickDay() async {
+    final now = DateTime.now();
+    final chosen = await showDatePicker(
+      context: context,
+      initialDate: _day,
+      firstDate: now.subtract(const Duration(days: 30)),
+      lastDate: now,
+    );
+    if (chosen == null || !mounted) return;
+    _day = chosen;
+    await _load();
+  }
+
+  String _distanceText() {
+    final meters = (_summary['distanceMeters'] as num?)?.toDouble() ?? 0;
+    if (meters < 1000) return '${meters.round()} م';
+    return '${(meters / 1000).toStringAsFixed(1)} كم';
+  }
+
+  Widget _map() {
+    final first = _points.first, last = _points.last;
+    var south = first.latitude, north = first.latitude;
+    var west = first.longitude, east = first.longitude;
+    for (final point in _points) {
+      if (point.latitude < south) south = point.latitude;
+      if (point.latitude > north) north = point.latitude;
+      if (point.longitude < west) west = point.longitude;
+      if (point.longitude > east) east = point.longitude;
+    }
+    // مركبة لم تتحرك تقريبًا: نعرضها بتكبير ثابت بدل حدود صفرية.
+    final still = (north - south).abs() < 0.0005 && (east - west).abs() < 0.0005;
+    return Stack(
+      children: [
+        FlutterMap(
+          key: ValueKey('$_dayText-${_points.length}'),
+          options: still
+              ? MapOptions(initialCenter: last, initialZoom: 16)
+              : MapOptions(
+                  initialCameraFit: CameraFit.bounds(
+                    bounds: LatLngBounds(
+                      LatLng(south, west),
+                      LatLng(north, east),
+                    ),
+                    padding: const EdgeInsets.all(48),
+                  ),
+                ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName: 'com.khdoom.app',
+            ),
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: _points,
+                  strokeWidth: 4,
+                  color: const Color(0xFF2563EB),
+                ),
+              ],
+            ),
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: first,
+                  width: 36,
+                  height: 36,
+                  child: const Icon(
+                    Icons.play_circle_fill,
+                    color: Color(0xFF16A34A),
+                    size: 30,
+                  ),
+                ),
+                Marker(
+                  point: last,
+                  width: 40,
+                  height: 40,
+                  child: const Icon(
+                    Icons.location_on,
+                    color: Color(0xFFDC2626),
+                    size: 38,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        const Positioned(
+          left: 6,
+          bottom: 4,
+          child: Text(
+            '© OpenStreetMap',
+            style: TextStyle(fontSize: 11, color: Colors.black87),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final driver = (_summary['driverName'] ?? '').toString();
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('مسار المركبة'),
+          actions: [
+            IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+          ],
+        ),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.vehicleName,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _pickDay,
+                    icon: const Icon(Icons.calendar_today, size: 18),
+                    label: Text(_dayText),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: _busy
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          _error!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: Colors.red),
+                        ),
+                      ),
+                    )
+                  : _points.isEmpty
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(24),
+                        child: Text(
+                          'لا توجد مواقع مسجلة في هذا اليوم. المسار يُسجَّل خلال الدوام فقط ومن جوال السائق المرتبط.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )
+                  : _map(),
+            ),
+            if (!_busy && _error == null && _points.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (driver.isNotEmpty) Text('السائق: $driver'),
+                    Text('أول موقع: ${trackingTimeLabel(_summary['firstAt'])}'),
+                    Text('آخر موقع: ${trackingTimeLabel(_summary['lastAt'])}'),
+                    Text('المسافة التقريبية: ${_distanceText()}'),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'الأخضر بداية المسار والأحمر آخر موقع. تُحفظ المسارات 30 يومًا.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
