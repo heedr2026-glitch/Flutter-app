@@ -139,6 +139,39 @@ class DirectoryTrackingHTTP(unittest.TestCase):
         raw_fails(403,'/api/vehicle-tracking','POST',{**location,'capturedAt':datetime.now(timezone.utc).isoformat()},token=fourth['token'])
         self.assertEqual(self.req('/api/vehicle-tracking?vehicleKey=plate:777',user=3)['status'],'no_location')
         with urlopen(base+'/driver?c='+code,timeout=5) as page:self.assertIn('أنا سائق',page.read().decode())
+    def test_route_for_owner_day_distance_and_retention(self):
+        with server.db() as c:
+            def add(lat,lon,at,key='plate:9',org=1,acc=10):
+                c.execute('INSERT INTO vehicle_location_events(organization_id,vehicle_key,latitude,longitude,accuracy_meters,recorded_at,user_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)',(org,key,lat,lon,acc,at.isoformat(),at.isoformat()))
+            now=datetime.now(timezone.utc)
+            day_start=datetime.now(vehicle_tracking.RIYADH).replace(hour=0,minute=0,second=1,microsecond=0).astimezone(timezone.utc)
+            add(24.1,46.1,now-timedelta(days=40));add(24.2,46.2,now-timedelta(days=35))          # أقدم من مدة الاحتفاظ
+            add(24.7000,46.7000,day_start);add(24.7001,46.7000,day_start+timedelta(seconds=1))   # اهتزاز 11م يُتجاهل
+            add(24.7090,46.7000,day_start+timedelta(seconds=2))                                  # ≈1000م
+            add(24.9,46.9,day_start+timedelta(seconds=3),acc=500)                                # دقة ضعيفة تُتجاهل في المسافة
+            add(24.5,46.5,day_start-timedelta(seconds=5))                                        # أمس
+            add(21.0,39.0,day_start,org=2)                                                       # مؤسسة أخرى
+            c.commit()
+        path='/api/vehicle-tracking/route?vehicleKey=plate:9'
+        self.fails(403,path,user=2)
+        today=self.req(path)
+        self.assertEqual(today['count'],4);self.assertEqual(today['retentionDays'],30)
+        self.assertTrue(950<=today['distanceMeters']<=1050,today['distanceMeters'])
+        self.assertEqual(today['points'][0]['latitude'],24.7);self.assertEqual(today['firstAt'],today['points'][0]['recordedAt'])
+        yesterday=(datetime.now(vehicle_tracking.RIYADH)-timedelta(days=1)).strftime('%Y-%m-%d')
+        self.assertEqual(self.req(path+'&date='+yesterday)['count'],1)
+        other=self.req(path,user=3);self.assertEqual((other['count'],other['points'][0]['latitude']),(1,21.0))  # المؤسسة الأخرى ترى بياناتها فقط
+        self.fails(400,path+'&date=2020-01-01');self.fails(400,path+'&date=bad')
+        self.fails(400,path+'&date='+(datetime.now(vehicle_tracking.RIYADH)+timedelta(days=1)).strftime('%Y-%m-%d'))
+        with server.db() as c:
+            vehicle_tracking.purge_old(c,force=True);c.commit()
+            old=c.execute("SELECT COUNT(*) n FROM vehicle_location_events WHERE vehicle_key='plate:9' AND organization_id=1 AND recorded_at<?",((datetime.now(timezone.utc)-timedelta(days=30)).isoformat(),)).fetchone()['n']
+            self.assertEqual(old,0)
+            self.assertEqual(c.execute("SELECT COUNT(*) n FROM vehicle_location_events WHERE organization_id=2").fetchone()['n'],1)
+            # مركبة ليس لها إلا موقع قديم يبقى آخر موقع لها محفوظًا.
+            c.execute('INSERT INTO vehicle_location_events(organization_id,vehicle_key,latitude,longitude,accuracy_meters,recorded_at,user_id,created_at) VALUES(1,?,1,1,5,?,NULL,?)',('plate:old',(datetime.now(timezone.utc)-timedelta(days=90)).isoformat(),'x'))
+            vehicle_tracking.purge_old(c,force=True);c.commit()
+            self.assertEqual(c.execute("SELECT COUNT(*) n FROM vehicle_location_events WHERE vehicle_key='plate:old'").fetchone()['n'],1)
     def test_schedule_consent_isolation_freshness_and_reapproval(self):
         minute=datetime.now(vehicle_tracking.RIYADH).hour*60+datetime.now(vehicle_tracking.RIYADH).minute
         def clock(n):n%=1440;return f'{n//60:02d}:{n%60:02d}'

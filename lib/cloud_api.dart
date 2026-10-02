@@ -183,6 +183,15 @@ class KhdoomCloudApi {
     await _request('PUT', '/api/vehicle-tracking/schedule', body: data);
   }
 
+  Future<Map<String, dynamic>> vehicleRoute(String key, String date) async =>
+      Map<String, dynamic>.from(
+        await _request(
+              'GET',
+              '/api/vehicle-tracking/route?vehicleKey=${Uri.encodeQueryComponent(key)}&date=${Uri.encodeQueryComponent(date)}',
+            )
+            as Map,
+      );
+
   Future<Map<String, dynamic>> rotateTrackingLink(String key) async =>
       Map<String, dynamic>.from(
         await _request(

@@ -2,8 +2,10 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import re
 import secrets
+import time
 
 RIYADH=timezone(timedelta(hours=3))
 
@@ -51,6 +53,52 @@ def public_schedule(row):
 
 def assignment(c,user):
     return c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND driver_user_id=? AND enabled=1 ORDER BY updated_at DESC LIMIT 1',(user['organization_id'],user['id'])).fetchone()
+
+
+RETENTION_DAYS=30
+_last_purge=0.0
+
+
+def purge_old(c,force=False):
+    """يمسح مواقع التتبع الأقدم من 30 يومًا، ويبقي آخر موقع لكل مركبة حتى لا يختفي «آخر موقع»."""
+    global _last_purge
+    if not force and time.monotonic()-_last_purge<3600: return
+    _last_purge=time.monotonic()
+    cutoff=(datetime.now(timezone.utc)-timedelta(days=RETENTION_DAYS)).isoformat()
+    c.execute('DELETE FROM vehicle_location_events WHERE recorded_at<? AND id NOT IN (SELECT MAX(id) FROM vehicle_location_events GROUP BY organization_id,vehicle_key)',(cutoff,))
+
+
+def _meters(a,b):
+    lat1,lon1,lat2,lon2=map(math.radians,(a['latitude'],a['longitude'],b['latitude'],b['longitude']))
+    h=math.sin((lat2-lat1)/2)**2+math.cos(lat1)*math.cos(lat2)*math.sin((lon2-lon1)/2)**2
+    return 6371000*2*math.asin(min(1,math.sqrt(h)))
+
+
+def route(c,user,key,day,server):
+    """مسار المركبة ليوم واحد بتوقيت السعودية؛ للمالك فقط وضمن مدة الاحتفاظ."""
+    if user['role']!='admin': raise server.ApiError(403,'عرض مسار المركبة متاح لمالك المؤسسة فقط')
+    org=user['organization_id']
+    schedule=c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND vehicle_key=?',(org,key)).fetchone()
+    if schedule and user.get('current_branch') and schedule['branch_id']!=user['current_branch']: raise server.ApiError(403,'المركبة تتبع فرعًا آخر')
+    today=datetime.now(RIYADH).date()
+    try: chosen=datetime.strptime(day,'%Y-%m-%d').date() if day else today
+    except ValueError: raise ValueError('صيغة التاريخ غير صحيحة')
+    if chosen>today or (today-chosen).days>RETENTION_DAYS: raise ValueError('المسارات محفوظة لآخر 30 يومًا فقط')
+    purge_old(c)
+    start=datetime(chosen.year,chosen.month,chosen.day,tzinfo=RIYADH)
+    rows=c.execute('SELECT latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? AND recorded_at>=? AND recorded_at<? ORDER BY id LIMIT 2000',
+        (org,key,start.astimezone(timezone.utc).isoformat(),(start+timedelta(days=1)).astimezone(timezone.utc).isoformat())).fetchall()
+    points=[{'latitude':r['latitude'],'longitude':r['longitude'],'accuracyMeters':r['accuracy_meters'],'recordedAt':r['recorded_at']} for r in rows]
+    # المسافة تقريبية: تتجاهل القراءات الضعيفة والاهتزاز الصغير والمركبة واقفة.
+    distance=0.0;anchor=None
+    for point in points:
+        if (point['accuracyMeters'] or 0)>100: continue
+        if anchor is None: anchor=point;continue
+        step=_meters(anchor,point)
+        if step>=25: distance+=step;anchor=point
+    return {'vehicleKey':key,'date':chosen.isoformat(),'timezone':'Asia/Riyadh','retentionDays':RETENTION_DAYS,'points':points,
+        'count':len(points),'firstAt':points[0]['recordedAt'] if points else None,'lastAt':points[-1]['recordedAt'] if points else None,
+        'distanceMeters':round(distance),'driverName':(schedule['driver_name'] or '') if schedule and schedule['driver_user_id']==0 else ''}
 
 
 LINK_ALPHABET='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -138,12 +186,17 @@ def device_request(c, path, method, data, headers, server):
         if not (-90<=latitude<=90 and -180<=longitude<=180 and 0<=accuracy<=100000): raise ValueError('بيانات تتبع المركبة غير صحيحة')
         stamp=server.now()
         c.execute('INSERT INTO vehicle_location_events(organization_id,vehicle_key,latitude,longitude,accuracy_meters,recorded_at,user_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)',(org,key,latitude,longitude,accuracy,stamp,stamp))
+        purge_old(c)
         return 201,{'saved':True,'vehicleKey':key,'recordedAt':stamp}
     raise server.ApiError(403,'هذا الطلب غير متاح لجوال السائق')
 
 
 def handle(c, path, method, data, query, user, headers, server):
     org=user['organization_id'];branch=user.get('current_branch')
+    if path=='/api/vehicle-tracking/route' and method=='GET':
+        key=str(query.get('vehicleKey',[''])[0]).strip()[:160]
+        if not key: raise ValueError('حدد المركبة')
+        return route(c,user,key,str(query.get('date',[''])[0]).strip(),server)
     if path=='/api/vehicle-tracking/drivers' and method=='GET':
         if user['role']!='admin': raise server.ApiError(403,'إدارة السائقين متاحة للمالك فقط')
         # Names and IDs only; credentials and account permissions are never exposed.
