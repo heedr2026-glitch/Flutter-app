@@ -15,8 +15,13 @@ const _driverApiBase = 'https://khdoom-api.onrender.com';
 const _driverLinkInfoKey = 'driver_link_info';
 const _driverLinkTokenKey = 'driver_link_token';
 
-String _driverClock(num minute) =>
-    '${(minute.toInt() ~/ 60).toString().padLeft(2, '0')}:${(minute.toInt() % 60).toString().padLeft(2, '0')}';
+/// عرض الوقت بنظام 12 ساعة (ص/م).
+String _driverClock(num minute) {
+  final m = minute.toInt();
+  final hour24 = (m ~/ 60) % 24;
+  final hour = hour24 % 12 == 0 ? 12 : hour24 % 12;
+  return '$hour:${(m % 60).toString().padLeft(2, '0')} ${hour24 < 12 ? 'ص' : 'م'}';
+}
 
 const _driverDays = {
   1: 'الإثنين',
