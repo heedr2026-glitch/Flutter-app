@@ -1,4 +1,5 @@
 import 'vehicle_tracking_page.dart';
+import 'driver_link_page.dart';
 import 'whatsapp_workspace.dart';
 import 'reception_conversation_page.dart';
 
@@ -1747,6 +1748,35 @@ class HomePage extends StatelessWidget {
                                   ),
                                   padding: const EdgeInsets.symmetric(
                                     vertical: 15,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const DriverLinkPage(),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.qr_code_scanner),
+                                label: const Text(
+                                  'أنا سائق — صوّر باركود المركبة',
+                                  style: TextStyle(fontSize: 16),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  side: const BorderSide(
+                                    color: Color(0xFF1E4D82),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 13,
                                   ),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(14),
@@ -4719,7 +4749,7 @@ class _VehiclesPageState extends State<VehiclesPage> {
                                 ),
                               ),
                               icon: const Icon(Icons.schedule),
-                              label: const Text('السائق وجدول الدوام'),
+                              label: const Text('الدوام وباركود السائق'),
                             ),
                           OutlinedButton.icon(
                             onPressed: () => _trackVehicle(vehicle),

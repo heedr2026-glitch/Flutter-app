@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import 'branch_store.dart';
 import 'cloud_api.dart';
@@ -86,8 +87,8 @@ class TrackingSchedulePage extends StatefulWidget {
 
 class _TrackingSchedulePageState extends State<TrackingSchedulePage> {
   KhdoomCloudApi? _api;
-  List<Map<String, dynamic>> _drivers = [];
-  int? _driver;
+  String _linkUrl = '', _linkCode = '', _driverName = '';
+  bool _linked = false;
   Set<int> _weekdays = {7, 1, 2, 3, 4};
   TimeOfDay _start = const TimeOfDay(hour: 7, minute: 0),
       _end = const TimeOfDay(hour: 17, minute: 0);
@@ -113,17 +114,9 @@ class _TrackingSchedulePageState extends State<TrackingSchedulePage> {
         return;
       }
       _api = api;
-      final results = await Future.wait<dynamic>([
-        api.trackingDrivers(),
-        api.trackingSchedule(widget.vehicleKey),
-      ]);
-      final schedule = results[1] as Map<String, dynamic>;
+      final schedule = await api.trackingSchedule(widget.vehicleKey);
       if (!mounted) return;
-      _drivers = (results[0] as List)
-          .map((e) => Map<String, dynamic>.from(e as Map))
-          .toList();
-      _driver = (schedule['driver_user_id'] as num?)?.toInt();
-      if (!_drivers.any((d) => d['id'] == _driver)) _driver = null;
+      _applyLink(schedule);
       if (schedule['weekdays'] is List)
         _weekdays = (schedule['weekdays'] as List)
             .map((e) => (e as num).toInt())
@@ -143,9 +136,57 @@ class _TrackingSchedulePageState extends State<TrackingSchedulePage> {
     if (mounted) setState(() => _busy = false);
   }
 
+  void _applyLink(Map<String, dynamic> schedule) {
+    _linkUrl = (schedule['linkUrl'] ?? '').toString();
+    _linkCode = (schedule['linkCode'] ?? '').toString();
+    _driverName = (schedule['driverName'] ?? '').toString();
+    _linked = schedule['linked'] == true;
+  }
+
+  Future<void> _linkAction(bool rotate) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: Text(rotate ? 'باركود جديد؟' : 'إلغاء ربط السائق؟'),
+          content: Text(
+            rotate
+                ? 'يُلغى الباركود الحالي وينفصل جوال السائق المرتبط. يلزم السائق تصوير الباركود الجديد.'
+                : 'ينفصل جوال السائق ويتوقف التتبع حتى يصوّر الباركود من جديد.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('تراجع'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('تأكيد'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final schedule = rotate
+          ? await _api!.rotateTrackingLink(widget.vehicleKey)
+          : await _api!.unlinkTrackingDriver(widget.vehicleKey);
+      _applyLink(schedule);
+    } catch (e) {
+      _error = e.toString();
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
   Future<void> _save() async {
-    if (_driver == null || _weekdays.isEmpty) {
-      setState(() => _error = 'اختر السائق وأيام الدوام');
+    if (_weekdays.isEmpty) {
+      setState(() => _error = 'اختر أيام الدوام');
       return;
     }
     setState(() {
@@ -156,21 +197,19 @@ class _TrackingSchedulePageState extends State<TrackingSchedulePage> {
       await _api!.saveTrackingSchedule({
         'vehicleKey': widget.vehicleKey,
         'vehicleName': widget.vehicleName,
-        'driverUserId': _driver,
         'weekdays': _weekdays.toList()..sort(),
         'startTime': _clock(_start.hour * 60 + _start.minute),
         'endTime': _clock(_end.hour * 60 + _end.minute),
         'enabled': _enabled,
       });
+      final schedule = await _api!.trackingSchedule(widget.vehicleKey);
+      _applyLink(schedule);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text(
-              'تم حفظ الجدول؛ يلزم السائق قبول الجدول الجديد وتفعيل التتبع',
-            ),
+            content: Text('تم حفظ الدوام. باركود المركبة جاهز أسفل الصفحة'),
           ),
         );
-        Navigator.pop(context);
       }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
@@ -182,7 +221,7 @@ class _TrackingSchedulePageState extends State<TrackingSchedulePage> {
   Widget build(BuildContext context) => Directionality(
     textDirection: TextDirection.rtl,
     child: Scaffold(
-      appBar: AppBar(title: const Text('السائق وجدول الدوام')),
+      appBar: AppBar(title: const Text('الدوام وباركود السائق')),
       body: _busy
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -195,22 +234,6 @@ class _TrackingSchedulePageState extends State<TrackingSchedulePage> {
                 const SizedBox(height: 12),
                 if (_error != null)
                   Text(_error!, style: const TextStyle(color: Colors.red)),
-                DropdownButtonFormField<int>(
-                  value: _driver,
-                  decoration: const InputDecoration(
-                    labelText: 'السائق — حساب المستخدم في المؤسسة',
-                  ),
-                  items: _drivers
-                      .map(
-                        (d) => DropdownMenuItem<int>(
-                          value: (d['id'] as num).toInt(),
-                          child: Text(d['name'].toString()),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (v) => setState(() => _driver = v),
-                ),
-                const SizedBox(height: 16),
                 Wrap(
                   spacing: 8,
                   children: _days.entries
@@ -250,18 +273,78 @@ class _TrackingSchedulePageState extends State<TrackingSchedulePage> {
                   },
                 ),
                 SwitchListTile(
-                  title: const Text('تفعيل الربط'),
+                  title: const Text('تفعيل التتبع لهذه المركبة'),
                   value: _enabled,
                   onChanged: (v) => setState(() => _enabled = v),
                 ),
                 const Text(
-                  'التتبع من جوال السائق داخل تطبيق خدووم. خارج الدوام لا يُجمع الموقع. تغيير السائق أو الجدول يحتاج موافقته من جديد. إذا كانت النهاية قبل البداية، يمتد الدوام لليوم التالي.',
+                  'التتبع من جوال السائق داخل تطبيق خدووم، بدون حساب: يضغط «أنا سائق» ويصوّر الباركود ويوافق. خارج الدوام لا يُجمع الموقع. تعديل الدوام يصل لجوال السائق تلقائيًا. إذا كانت النهاية قبل البداية، يمتد الدوام لليوم التالي.',
                 ),
                 const SizedBox(height: 20),
                 FilledButton(
                   onPressed: _api == null ? null : _save,
-                  child: const Text('حفظ الجدول'),
+                  child: const Text('حفظ الدوام'),
                 ),
+                if (_linkUrl.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  const Divider(),
+                  Text(
+                    'باركود المركبة',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 12),
+                  Center(
+                    child: Container(
+                      color: Colors.white,
+                      padding: const EdgeInsets.all(12),
+                      child: QrImageView(
+                        data: _linkUrl,
+                        version: QrVersions.auto,
+                        size: 220,
+                        backgroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Center(
+                    child: SelectableText(
+                      _linkCode,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        letterSpacing: 4,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _linked
+                        ? 'السائق المرتبط: $_driverName'
+                        : 'لا يوجد سائق مرتبط بعد',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'اجعل الباركود داخل المركبة فقط؛ من يصوّره يربط جواله بالمركبة ويفصل السائق الحالي.',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 8,
+                    children: [
+                      if (_linked)
+                        OutlinedButton(
+                          onPressed: () => _linkAction(false),
+                          child: const Text('إلغاء ربط السائق'),
+                        ),
+                      OutlinedButton(
+                        onPressed: () => _linkAction(true),
+                        child: const Text('باركود جديد'),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
     ),

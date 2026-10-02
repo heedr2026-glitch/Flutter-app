@@ -2131,6 +2131,9 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                 invite_connection.commit()
             self._send_html("<html lang='ar' dir='rtl'><meta charset='utf-8'><body style='font-family:Tahoma;padding:30px'><h2>تم إنشاء الحساب بنجاح ✓</h2><p>افتح تطبيق خدووم وسجل الدخول باسم المستخدم وكلمة المرور اللذين اخترتهما.</p></body></html>")
             return
+        if path == "/driver" and method == "GET":
+            self._send_html("<html lang='ar' dir='rtl'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='font-family:Tahoma;padding:30px;line-height:1.9'><h2>باركود مركبة — خدووم</h2><p>هذا الباركود يربط جوال السائق بالمركبة.</p><p>افتح تطبيق <b>خدووم</b>، اضغط <b>«أنا سائق»</b> في أول صفحة، ثم صوّر الباركود من داخل التطبيق.</p></body></html>")
+            return
         if path == "/delete-account":
             if method == "GET":
                 self._send_html(deletion_request_page())
@@ -3518,6 +3521,21 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         with db() as connection:
             if downgrade_expired_subscriptions(connection):
                 connection.commit()
+            if path.startswith("/api/driver-link/") or (
+                path.startswith("/api/vehicle-tracking")
+                and self.headers.get("Authorization", "").startswith("Bearer " + vehicle_tracking.DEVICE_PREFIX)
+            ):
+                # سائق بلا حساب: ربط بالباركود ثم طلبات جواله بتوكن الجهاز فقط.
+                data = self._body() if method in ("POST", "PUT") else {}
+                try:
+                    status, result = vehicle_tracking.device_request(
+                        connection, path, method, data, self.headers, __import__("sys").modules[__name__]
+                    )
+                except (ValueError, TypeError) as error:
+                    raise ApiError(400, str(error))
+                connection.commit()
+                self._send(status, result)
+                return
             user = self._user(connection)
             organization_id = user["organization_id"]
             if path.startswith("/api/branch-sync/"):
