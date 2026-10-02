@@ -4371,7 +4371,7 @@ class _VehiclesPageState extends State<VehiclesPage> {
       if (latitude == null || longitude == null) {
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
+            SnackBar(
               content: Text(
                 trackingStatusLabel(
                   location['status']?.toString() ?? 'no_location',
