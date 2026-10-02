@@ -78,6 +78,67 @@ class DirectoryTrackingHTTP(unittest.TestCase):
         self.assertEqual(self.req(root+'counts',owner=True),{'organizations':1,'users':1})
         self.fails(401,'/api/session-status',user=2,token=logged['token'])
         with server.db() as c:self.assertEqual(c.execute('SELECT COUNT(*) n FROM users').fetchone()['n'],3)
+    def test_barcode_link_without_account_and_revocation(self):
+        minute=datetime.now(vehicle_tracking.RIYADH).hour*60+datetime.now(vehicle_tracking.RIYADH).minute
+        def clock(n):n%=1440;return f'{n//60:02d}:{n%60:02d}'
+        base='http://127.0.0.1:'+str(self.http.server_port)
+        def raw(path,method='GET',data=None,token=None):
+            h={'Content-Type':'application/json'}
+            if token:h['Authorization']='Bearer '+token
+            with urlopen(Request(base+path,data=None if data is None else json.dumps(data).encode(),headers=h,method=method),timeout=5) as r:return r.status,json.load(r)
+        def raw_fails(code,*a,**kw):
+            with self.assertRaises(HTTPError) as caught:raw(*a,**kw)
+            self.assertEqual(caught.exception.code,code);caught.exception.close()
+        data={'vehicleKey':'plate:777','vehicleName':'وانيت','weekdays':list(range(1,8)),'startTime':clock(minute-20),'endTime':clock(minute+20),'enabled':True}
+        schedule='/api/vehicle-tracking/schedule'
+        self.fails(403,schedule,'PUT',data,user=2)
+        self.req(schedule,'PUT',data)
+        owner=self.req(schedule+'?vehicleKey=plate:777')
+        code=owner['linkCode'];self.assertEqual(len(code),8);self.assertFalse(owner['linked']);self.assertTrue(owner['linkUrl'].endswith(code))
+        self.assertNotIn('device_hash',owner);self.assertNotIn('link_code',owner)
+        raw_fails(404,'/api/driver-link/preview','POST',{'code':'AAAAAAAA'})
+        status,preview=raw('/api/driver-link/preview','POST',{'code':owner['linkUrl']})
+        self.assertEqual((preview['vehicleName'],preview['organizationName'],preview['hasDriver']),('وانيت','Institution 1',False));self.assertNotIn('token',preview)
+        raw_fails(400,'/api/driver-link/claim','POST',{'code':code,'driverName':'سالم','accepted':False})
+        raw_fails(400,'/api/driver-link/claim','POST',{'code':code,'driverName':'','accepted':True})
+        status,claim=raw('/api/driver-link/claim','POST',{'code':code.lower(),'driverName':' سالم  أحمد ','accepted':True})
+        token=claim['token'];self.assertTrue(token.startswith('kdrv_'));self.assertEqual(claim['vehicleKey'],'plate:777')
+        status,a=raw('/api/vehicle-tracking/assignment',token=token)
+        self.assertTrue(a['consented']);self.assertEqual((a['revision'],a['vehicle_key'],a['enabled']),(claim['revision'],'plate:777',1))
+        self.assertNotIn('device_hash',a);self.assertNotIn('link_code',a)
+        location={'vehicleKey':'plate:777','latitude':24.7,'longitude':46.7,'accuracyMeters':10,'capturedAt':datetime.now(timezone.utc).isoformat()}
+        raw_fails(403,'/api/vehicle-tracking','POST',{**location,'vehicleKey':'plate:123'},token=token)
+        raw_fails(400,'/api/vehicle-tracking','POST',{**location,'capturedAt':(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()},token=token)
+        self.assertEqual(raw('/api/vehicle-tracking','POST',location,token=token)[0],201)
+        raw('/api/vehicle-tracking/heartbeat','POST',{'status':'tracking'},token=token)
+        seen=self.req('/api/vehicle-tracking?vehicleKey=plate:777');self.assertEqual((seen['status'],seen['driverName']),('live','سالم أحمد'))
+        owner=self.req(schedule+'?vehicleKey=plate:777');self.assertTrue(owner['linked']);self.assertEqual(owner['driverName'],'سالم أحمد')
+        # الجوال المرتبط لا يصل لأي مسار آخر، وتوكن عشوائي مرفوض.
+        raw_fails(403,'/api/vehicle-tracking/schedule?vehicleKey=plate:777',token=token)
+        raw_fails(401,'/api/vehicles',token=token)
+        raw_fails(401,'/api/vehicle-tracking/assignment',token='kdrv_not-a-real-token')
+        # تعديل الدوام لا يفصل الجوال ولا يغيّر رقم الربط.
+        self.req(schedule,'PUT',{**data,'endTime':clock(minute+30)})
+        self.assertEqual(raw('/api/vehicle-tracking/assignment',token=token)[1]['revision'],claim['revision'])
+        # سائق جديد يصوّر نفس الباركود: يصير هو المرتبط وينفصل الأول.
+        second=raw('/api/driver-link/claim','POST',{'code':code,'driverName':'فهد','accepted':True})[1]
+        raw_fails(401,'/api/vehicle-tracking/assignment',token=token)
+        self.assertEqual(raw('/api/vehicle-tracking','POST',{**location,'capturedAt':datetime.now(timezone.utc).isoformat()},token=second['token'])[0],201)
+        # باركود جديد يلغي القديم ويفصل الجوال.
+        self.fails(403,'/api/vehicle-tracking/link/rotate','POST',{'vehicleKey':'plate:777'},user=2)
+        rotated=self.req('/api/vehicle-tracking/link/rotate','POST',{'vehicleKey':'plate:777'})
+        self.assertNotEqual(rotated['linkCode'],code);self.assertFalse(rotated['linked'])
+        raw_fails(401,'/api/vehicle-tracking/assignment',token=second['token'])
+        raw_fails(404,'/api/driver-link/preview','POST',{'code':code})
+        third=raw('/api/driver-link/claim','POST',{'code':rotated['linkCode'],'driverName':'ناصر','accepted':True})[1]
+        self.assertFalse(self.req('/api/vehicle-tracking/link/unlink','POST',{'vehicleKey':'plate:777'})['linked'])
+        raw_fails(401,'/api/vehicle-tracking/assignment',token=third['token'])
+        # خارج الدوام يُرفض الموقع، والمؤسسة الأخرى لا ترى شيئًا.
+        fourth=raw('/api/driver-link/claim','POST',{'code':rotated['linkCode'],'driverName':'ناصر','accepted':True})[1]
+        self.req(schedule,'PUT',{**data,'startTime':clock(minute+60),'endTime':clock(minute+120)})
+        raw_fails(403,'/api/vehicle-tracking','POST',{**location,'capturedAt':datetime.now(timezone.utc).isoformat()},token=fourth['token'])
+        self.assertEqual(self.req('/api/vehicle-tracking?vehicleKey=plate:777',user=3)['status'],'no_location')
+        with urlopen(base+'/driver?c='+code,timeout=5) as page:self.assertIn('أنا سائق',page.read().decode())
     def test_schedule_consent_isolation_freshness_and_reapproval(self):
         minute=datetime.now(vehicle_tracking.RIYADH).hour*60+datetime.now(vehicle_tracking.RIYADH).minute
         def clock(n):n%=1440;return f'{n//60:02d}:{n%60:02d}'
