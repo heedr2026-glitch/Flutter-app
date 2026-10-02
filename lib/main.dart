@@ -4412,7 +4412,7 @@ class _VehiclesPageState extends State<VehiclesPage> {
         return;
       }
       final map = Uri.parse(
-        'https://www.openstreetmap.org/?mlat=$latitude&mlon=$longitude#map=16/$latitude/$longitude',
+        'https://www.google.com/maps/search/?api=1&query=$latitude,$longitude',
       );
       if (!mounted) return;
       await showDialog<void>(
@@ -4422,7 +4422,7 @@ class _VehiclesPageState extends State<VehiclesPage> {
             trackingStatusLabel(location['status']?.toString() ?? 'offline'),
           ),
           content: Text(
-            'آخر موقع مسجل: ${location['recorded_at'] ?? 'غير متاح'}\nالموقع يمثل جوال السائق؛ قد يختلف عن المركبة إذا ابتعد عنها.',
+            'آخر موقع مسجل: ${trackingTimeLabel(location['recorded_at'])}\nالموقع يمثل جوال السائق؛ قد يختلف عن المركبة إذا ابتعد عنها.',
           ),
           actions: [
             TextButton(
@@ -4430,8 +4430,29 @@ class _VehiclesPageState extends State<VehiclesPage> {
               child: const Text('إغلاق'),
             ),
             FilledButton(
-              onPressed: () =>
-                  launchUrl(map, mode: LaunchMode.externalApplication),
+              onPressed: () async {
+                var opened = false;
+                try {
+                  opened = await launchUrl(
+                    map,
+                    mode: LaunchMode.externalApplication,
+                  );
+                } catch (_) {}
+                if (!opened) {
+                  try {
+                    opened = await launchUrl(map);
+                  } catch (_) {}
+                }
+                if (!opened && c.mounted) {
+                  ScaffoldMessenger.of(c).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        'تعذر فتح الخريطة. الإحداثيات: $latitude, $longitude',
+                      ),
+                    ),
+                  );
+                }
+              },
               child: const Text('فتح الخريطة'),
             ),
           ],
