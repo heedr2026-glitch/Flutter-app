@@ -64,6 +64,19 @@ Future<KhdoomCloudApi> _trackingApi() async {
 
 String _clock(num minute) =>
     '${(minute.toInt() ~/ 60).toString().padLeft(2, '0')}:${(minute.toInt() % 60).toString().padLeft(2, '0')}';
+/// عرض الوقت بنظام 12 ساعة (ص/م)؛ الإرسال للخادم يبقى 24 ساعة عبر [_clock].
+String _clock12(num minute) {
+  final m = minute.toInt();
+  final hour24 = (m ~/ 60) % 24;
+  final hour = hour24 % 12 == 0 ? 12 : hour24 % 12;
+  return '$hour:${(m % 60).toString().padLeft(2, '0')} ${hour24 < 12 ? 'ص' : 'م'}';
+}
+
+Widget _twelveHourPicker(BuildContext context, Widget? child) => MediaQuery(
+  data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: false),
+  child: child ?? const SizedBox.shrink(),
+);
+
 const _days = {
   1: 'الإثنين',
   2: 'الثلاثاء',
@@ -252,22 +265,24 @@ class _TrackingSchedulePageState extends State<TrackingSchedulePage> {
                 ),
                 ListTile(
                   title: const Text('بداية الدوام — بتوقيت السعودية'),
-                  trailing: Text(_clock(_start.hour * 60 + _start.minute)),
+                  trailing: Text(_clock12(_start.hour * 60 + _start.minute)),
                   onTap: () async {
                     final t = await showTimePicker(
                       context: context,
                       initialTime: _start,
+                      builder: _twelveHourPicker,
                     );
                     if (t != null && mounted) setState(() => _start = t);
                   },
                 ),
                 ListTile(
                   title: const Text('نهاية الدوام — بتوقيت السعودية'),
-                  trailing: Text(_clock(_end.hour * 60 + _end.minute)),
+                  trailing: Text(_clock12(_end.hour * 60 + _end.minute)),
                   onTap: () async {
                     final t = await showTimePicker(
                       context: context,
                       initialTime: _end,
+                      builder: _twelveHourPicker,
                     );
                     if (t != null && mounted) setState(() => _end = t);
                   },
@@ -489,7 +504,7 @@ class _DriverTrackingPageState extends State<DriverTrackingPage> {
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
                     Text(
-                      '${_clock(a['start_minute'] as num)} — ${_clock(a['end_minute'] as num)} بتوقيت السعودية',
+                      '${_clock12(a['start_minute'] as num)} — ${_clock12(a['end_minute'] as num)} بتوقيت السعودية',
                     ),
                     Text(
                       (a['weekdays'] as List)
