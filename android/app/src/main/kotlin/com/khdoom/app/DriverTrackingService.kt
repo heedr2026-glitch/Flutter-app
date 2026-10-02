@@ -175,7 +175,8 @@ class DriverTrackingService : Service(), LocationListener {
         if (providers.isEmpty()) { stopLocation();state("location_disabled", "التتبع متوقف؛ فعّل الموقع");return }
         if (!listening) {
             try {
-                providers.forEach { locations.requestLocationUpdates(it, 60000L, 20f, this, Looper.getMainLooper()) }
+                // بدون شرط مسافة: المركبة الواقفة تبقى «متصلة» ويظهر آخر موقع لها كل دقيقة.
+                providers.forEach { locations.requestLocationUpdates(it, 60000L, 0f, this, Looper.getMainLooper()) }
                 listening = true
             } catch (_: SecurityException) { stopLocation();state("permission_denied", "التتبع متوقف؛ تحقق من الصلاحيات");return }
         }

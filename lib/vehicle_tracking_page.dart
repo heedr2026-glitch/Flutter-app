@@ -72,6 +72,16 @@ String _clock12(num minute) {
   return '$hour:${(m % 60).toString().padLeft(2, '0')} ${hour24 < 12 ? 'ص' : 'م'}';
 }
 
+/// وقت آخر موقع بتوقيت الجوال وبنظام 12 ساعة، مثل: 2026-10-02 3:05 م.
+String trackingTimeLabel(Object? iso) {
+  final parsed = DateTime.tryParse('${iso ?? ''}');
+  if (parsed == null) return 'غير متاح';
+  final t = parsed.toLocal();
+  final date =
+      '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
+  return '$date ${_clock12(t.hour * 60 + t.minute)}';
+}
+
 Widget _twelveHourPicker(BuildContext context, Widget? child) => MediaQuery(
   data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: false),
   child: child ?? const SizedBox.shrink(),
