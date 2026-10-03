@@ -11,12 +11,27 @@ if [ -z "${RELEASE_KEYSTORE_B64:-}" ] || [ -z "${KHDOOM_STORE_PASSWORD:-}" ]; th
 fi
 
 store="android/app/khdoom-upload.jks"
-echo "$RELEASE_KEYSTORE_B64" | base64 -d > "$store"
+if ! printf '%s' "$RELEASE_KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > "$store"; then
+  echo "خطأ: السر RELEASE_KEYSTORE_B64 ليس نص base64 سليمًا. أعد نسخه من ملف الختم." >&2
+  exit 1
+fi
 
-listing="$(keytool -list -keystore "$store" -storepass "$KHDOOM_STORE_PASSWORD" 2>/dev/null || true)"
-alias_name="$(printf '%s\n' "$listing" | grep "PrivateKeyEntry" | head -n 1 | cut -d, -f1)"
+# معلومات تشخيص غير سرية: تُقارن ببصمة الملف على جهاز المالك لمعرفة أي سر يحتاج إعادة.
+echo "حجم ملف الختم الواصل: $(stat -c %s "$store") بايت"
+echo "بصمة ملف الختم الواصل (SHA-256): $(sha256sum "$store" | cut -d' ' -f1)"
+echo "عدد حروف كلمة المرور المحفوظة: ${#KHDOOM_STORE_PASSWORD}"
+case "$KHDOOM_STORE_PASSWORD" in
+  *[[:space:]]*) echo "تحذير: كلمة المرور المحفوظة فيها مسافة أو سطر جديد زائد." ;;
+esac
+
+if ! listing="$(keytool -list -keystore "$store" -storepass "$KHDOOM_STORE_PASSWORD" 2>&1)"; then
+  echo "خطأ: تعذر فتح ملف الختم بكلمة المرور المحفوظة. رسالة keytool:" >&2
+  printf '%s\n' "$listing" | grep -i "error" | head -n 2 >&2 || true
+  exit 1
+fi
+alias_name="$(printf '%s\n' "$listing" | grep "PrivateKeyEntry" | head -n 1 | cut -d, -f1 || true)"
 if [ -z "$alias_name" ]; then
-  echo "خطأ: تعذر فتح ختم النشر. تأكد أن كلمة المرور في السر RELEASE_KEYSTORE_PASSWORD صحيحة لهذا الملف." >&2
+  echo "خطأ: ملف الختم لا يحتوي مفتاح توقيع (PrivateKeyEntry)." >&2
   exit 1
 fi
 if ! printf '%s' "$alias_name" | grep -Eq '^[A-Za-z0-9._-]+$'; then
