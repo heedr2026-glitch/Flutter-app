@@ -1,0 +1,39 @@
+name: Build Khdoom Play Store bundle
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-aab:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      KHDOOM_STORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+          cache: true
+      - name: Prepare Android project
+        run: bash build_support/prepare_android.sh
+      - name: Configure store signing
+        env:
+          RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: bash build_support/release_signing.sh
+      - name: Get Flutter packages
+        run: flutter pub get
+      - name: Build Play Store bundle
+        run: flutter build appbundle --release --build-number=$((100 + GITHUB_RUN_NUMBER)) --build-name=1.0.$GITHUB_RUN_NUMBER
+      - name: Publish bundle download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build/app/outputs/bundle/release/app-release.aab Khdoom-release.aab
+          echo "Bundle signature:"
+          keytool -printcert -jarfile Khdoom-release.aab | grep "SHA256:"
+          gh release create "khdoom-store-${{ github.run_number }}" Khdoom-release.aab \
+            --title "Khdoom Play Store bundle ${{ github.run_number }}" \
+            --notes "Signed Android App Bundle for Google Play. Version code $((100 + GITHUB_RUN_NUMBER))."
