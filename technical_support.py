@@ -87,9 +87,13 @@ def process_ticket(c, ticket, owner, server):
              'إذا لم ترفق التفاصيل، أرسل وقت آخر حدوث وصورة الخطأ وخطوات تكراره، دون كلمة مرور أو رموز تحقق. ' +
              'الخطوة التالية: مقارنة التجربة بالسجلات ثم مراجعة خطة المعالجة مع الإدارة. إذا أرسلت التفاصيل بالفعل فلا تحتاج تكرارها.')
     next_status = 'under_review' if t['status'] != 'awaiting_user' else 'awaiting_user'
-    c.execute('UPDATE support_tickets SET status=?,owner_reply=?,updated_at=? WHERE id=?', (next_status, reply, ts, t['id']))
+    # رد المدير البشري لا يُستبدل بالرد الآلي؛ يُسجل تقرير الفحص في السجل فقط.
+    applied = owner.automated_ticket_update(c, t['id'], next_status, reply, ts)
+    human_reply = applied != next_status or c.execute("SELECT 1 FROM support_tickets WHERE id=? AND owner_reply_by='admin' AND owner_reply<>''", (t['id'],)).fetchone() is not None
+    next_status = applied
     owner.support_event(c, t, actor_type='technical_ai', actor_name='الموظف التقني', event_type='technical_evidence_report', body=json.dumps(report, ensure_ascii=False), from_status=t['status'], to_status=next_status)
-    owner.support_event(c, t, actor_type='technical_ai', actor_name='الموظف التقني', event_type='technical_support_update', body=reply, from_status=next_status, to_status=next_status)
+    if not human_reply:
+        owner.support_event(c, t, actor_type='technical_ai', actor_name='الموظف التقني', event_type='technical_support_update', body=reply, from_status=next_status, to_status=next_status)
     owner.audit(c, 'support-monitor', 'support_evidence_report', 'ticket=' + str(t['id']) + ';task=' + str(task['id']))
     overdue = bool(t.get('created_at') and t['created_at'] < (utcnow()-timedelta(days=1)).isoformat())
     if report['severity'] == 'critical' or report['repeated'] or overdue:

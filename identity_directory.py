@@ -1,6 +1,7 @@
 """Platform account directory and ownership changes; deletion is recoverable archival."""
 import json
 import re
+from datetime import datetime, timedelta, timezone
 
 
 def migrate(c, postgres=False):
@@ -19,25 +20,53 @@ def handle(c, route, method, data, query, page, actor, admin, server):
     if route == 'directory/counts' and method == 'GET':
         return counts()
     if route == 'directory/organizations' and method == 'GET':
-        where="FROM organizations o LEFT JOIN account_organizations ao ON ao.organization_id=o.id LEFT JOIN owner_accounts a ON a.id=ao.account_id LEFT JOIN users u ON u.id=a.owner_user_id LEFT JOIN subscriptions s ON s.organization_id=o.id WHERE o.archived_at IS NULL"
+        where="FROM organizations o LEFT JOIN account_organizations ao ON ao.organization_id=o.id LEFT JOIN owner_accounts a ON a.id=ao.account_id LEFT JOIN users u ON u.id=a.owner_user_id LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id WHERE o.archived_at IS NULL"
         args=[]
         if query.get('search'):
             term='%'+query['search'].lower()[:100]+'%'
-            where+=' AND (LOWER(o.name) LIKE ? OR LOWER(u.name) LIKE ? OR LOWER(u.username) LIKE ?)';args=[term]*3
+            # البحث بالاسم أو اسم الدخول أو الجوال أو البريد.
+            where+=" AND (LOWER(o.name) LIKE ? OR LOWER(u.name) LIKE ? OR LOWER(u.username) LIKE ? OR COALESCE(o.phone,'') LIKE ? OR COALESCE(u.phone,'') LIKE ? OR LOWER(COALESCE(u.email,'')) LIKE ?)";args=[term]*6
         if query.get('package') in ('free','basic','vip'):
             where+=" AND COALESCE(s.package,'free')=?";args.append(query['package'])
         if query.get('since') and re.fullmatch(r'\d{4}-\d{2}-\d{2}',query['since']):
             where+=' AND o.created_at>=?';args.append(query['since'])
-        out=admin.paged(c,"SELECT o.id,o.name,o.entity_type,o.phone,o.created_at,u.id owner_id,u.name owner_name,u.username owner_username,COALESCE(s.package,'free') package",where,args,'o.id DESC',page)
+        current=admin.stamp(); soon=(datetime.now(timezone.utc)+timedelta(days=14)).isoformat()
+        status=query.get('status')
+        if status=='suspended': where+=' AND COALESCE(z.suspended,0)=1'
+        elif status=='expiring': where+=" AND s.package IN ('basic','vip') AND s.expires_at>? AND s.expires_at<=?";args.extend([current,soon])
+        elif status=='paid': where+=" AND s.package IN ('basic','vip') AND (s.expires_at IS NULL OR s.expires_at>?)";args.append(current)
+        order={'name':'o.name ASC,o.id DESC','expiry':'CASE WHEN s.expires_at IS NULL THEN 1 ELSE 0 END,s.expires_at ASC,o.id DESC','oldest':'o.id ASC'}.get(query.get('sort'),'o.id DESC')
+        out=admin.paged(c,"SELECT o.id,o.name,o.entity_type,o.phone,o.created_at,u.id owner_id,u.name owner_name,u.username owner_username,COALESCE(s.package,'free') package,s.expires_at,COALESCE(z.suspended,0) suspended",where,args,order,page)
         out['counts']=counts();return out
     if route == 'directory/users' and method == 'GET':
         where='FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.archived_at IS NULL AND o.archived_at IS NULL';args=[]
         if query.get('organization'):
             where+=' AND u.organization_id=?';args.append(int(query['organization']))
         if query.get('search'):
-            term='%'+query['search'].lower()[:100]+'%';where+=' AND (LOWER(u.name) LIKE ? OR LOWER(u.username) LIKE ? OR LOWER(o.name) LIKE ?)';args.extend([term]*3)
+            term='%'+query['search'].lower()[:100]+'%';where+=" AND (LOWER(u.name) LIKE ? OR LOWER(u.username) LIKE ? OR LOWER(o.name) LIKE ? OR COALESCE(u.phone,'') LIKE ? OR LOWER(COALESCE(u.email,'')) LIKE ?)";args.extend([term]*5)
         out=admin.paged(c,'SELECT u.id,u.name,u.username,u.phone,u.role,u.active,u.organization_id,o.name organization_name',where,args,'u.id DESC',page)
         out['counts']=counts();return out
+    if route == 'directory/archived' and method == 'GET':
+        if actor.get('role')!='owner': raise server.ApiError(403,'عرض المحذوفات واسترجاعها متاح لمالك منصة خدووم فقط')
+        return {'organizations':admin.rows(c,'SELECT id,name,phone,archived_at FROM organizations WHERE archived_at IS NOT NULL ORDER BY archived_at DESC LIMIT 200'),
+                'users':admin.rows(c,'SELECT u.id,u.name,u.username,u.archived_at,o.name organization_name FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.archived_at IS NOT NULL ORDER BY u.archived_at DESC LIMIT 200')}
+    restore=re.fullmatch(r'directory/(organizations|users)/(\d+)/restore',route)
+    if restore and method == 'POST':
+        if actor.get('role')!='owner': raise server.ApiError(403,'استرجاع المحذوفات متاح لمالك منصة خدووم فقط')
+        kind,ident=restore.group(1),int(restore.group(2))
+        if kind=='organizations':
+            record=c.execute('SELECT id,name FROM organizations WHERE id=? AND archived_at IS NOT NULL',(ident,)).fetchone()
+            if not record: raise server.ApiError(404,'المؤسسة غير موجودة في المحذوفات')
+            c.execute('UPDATE organizations SET archived_at=NULL WHERE id=?',(ident,))
+            # الحذف كان يوقف المؤسسة؛ الاسترجاع يرفع الإيقاف ليعود الدخول.
+            c.execute('INSERT INTO platform_org_state(organization_id,suspended) VALUES(?,0) ON CONFLICT(organization_id) DO UPDATE SET suspended=0',(ident,))
+        else:
+            record=c.execute('SELECT u.id,u.name,o.archived_at org_archived FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.id=? AND u.archived_at IS NOT NULL',(ident,)).fetchone()
+            if not record: raise server.ApiError(404,'المستخدم غير موجود في المحذوفات')
+            if record['org_archived']: raise ValueError('استرجع مؤسسة هذا المستخدم أولًا')
+            c.execute('UPDATE users SET archived_at=NULL,active=1 WHERE id=?',(ident,))
+        admin.audit(c,actor['name'],'directory_restored',kind+'/'+str(ident)+' '+str(record['name']))
+        return {'saved':True,'message':'تم الاسترجاع'}
     match=re.fullmatch(r'directory/(organizations|users)/(\d+)/(name|password|archive|transfer)',route)
     if not match or method != 'POST': raise ValueError('مسار إدارة الحسابات غير صحيح')
     kind,ident,action=match.groups();ident=int(ident)

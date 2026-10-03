@@ -22,7 +22,7 @@ def migrate(c,postgres=False):
 
 def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
  # تأكد من وجود جداول المجتمع حتى تعمل النسخ التي بدأت قبل آخر ترحيل.
- migrate(c,postgres=postgres)
+ if not postgres: migrate(c,postgres=False)
  part=route.split('/')[1:] or ['posts']; kind=part[0]
  if kind=='chat':
   if len(part)==1 and method=='GET':
@@ -30,7 +30,10 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
   if len(part)==2:
    user_id=int(part[1])
    if method=='GET':
-    return {'items':admin.rows(c,'SELECT m.id,m.sender,m.body,m.created_at,u.name FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.user_id=? ORDER BY m.id ASC',(user_id,))}
+    items=admin.rows(c,'SELECT m.id,m.sender,m.body,m.created_at,u.name FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.user_id=? ORDER BY m.id ASC',(user_id,))
+    # فتح المحادثة من الإدارة يعني أن رسائل العضو قُرئت، فيصفّر عدّاد غير المقروء.
+    c.execute("UPDATE community_messages SET read=1 WHERE user_id=? AND sender='user' AND read=0",(user_id,))
+    return {'items':items}
    if method=='POST':
     body=str(data.get('body','')).strip()
     if not 1<=len(body)<=3000: raise error(400,'اكتب رسالة من 1 إلى 3000 حرف')
@@ -56,7 +59,10 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
   if not post: raise error(404,'المنشور غير موجود')
   reward=str(data.get('kind','days')); amount=int(data.get('amount',1) or 1)
   if reward not in ('days','ai') or amount<1 or amount>3650: raise error(400,'بيانات المكافأة غير صحيحة')
-  c.execute('INSERT INTO platform_rewards(organization_id,kind,amount,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(post['organization_id'],reward,amount,'مكافأة منشور مجتمع خدوم',str((actor or {}).get('name','إدارة خدوم')),admin.stamp()))
+  # المكافأة تُطبَّق فعليًا على اشتراك أو رصيد مؤسسة صاحب المنشور، لا تُسجَّل فقط.
+  try: admin.apply_reward(c,post['organization_id'],reward,amount,'مكافأة منشور مجتمع خدوم',str((actor or {}).get('name','إدارة خدوم')))
+  except ValueError as problem: raise error(400,str(problem))
+  admin.audit(c,str((actor or {}).get('name','إدارة خدوم')),'community_reward','post='+str(post_id)+';organization='+str(post['organization_id'])+';'+reward+'='+str(amount))
   return {'saved':True}
  if kind not in ('posts','comments','reports','users','likes'): raise error(404,'القسم غير موجود')
  if len(part)==2:
@@ -75,7 +81,7 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
  if kind=='users':
   return admin.paged(c,'SELECT u.id,u.name,u.organization_id,o.name organization_name,(SELECT MAX(created_at) FROM community_posts WHERE user_id=u.id) last_post','FROM users u JOIN organizations o ON o.id=u.organization_id WHERE EXISTS(SELECT 1 FROM community_posts p WHERE p.user_id=u.id) OR EXISTS(SELECT 1 FROM community_comments co WHERE co.user_id=u.id)',[],'u.id DESC',page)
  if kind=='posts':
-  return admin.paged(c,'SELECT t.*,u.name,u.organization_id,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=t.id) like_count','FROM community_posts t JOIN users u ON u.id=t.user_id',[],'like_count DESC,t.id DESC',page)
+  return admin.paged(c,'SELECT t.*,u.name,u.organization_id,((SELECT COUNT(*) FROM community_likes l WHERE l.post_id=t.id)+(SELECT COUNT(*) FROM community_admin_likes al WHERE al.post_id=t.id)) like_count','FROM community_posts t JOIN users u ON u.id=t.user_id',[],'like_count DESC,t.id DESC',page)
  return admin.paged(c,'SELECT t.*,u.name,u.organization_id','FROM community_'+kind+' t JOIN users u ON u.id=t.user_id',[],'t.id DESC',page)
 
 def client(h,method,s):
@@ -96,7 +102,7 @@ def client(h,method,s):
    # Community posts are intentionally shared across all organizations. Only
    # public organization identity and post content are exposed here.
    viewer_id=int(user['id'])
-   result=admin.paged(c,f'SELECT p.id,p.body,p.created_at,o.name organization_name,u.name user_name,u.role user_role,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id) like_count,EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id={viewer_id}) liked_by_me','FROM community_posts p JOIN users u ON u.id=p.user_id JOIN organizations o ON o.id=u.organization_id WHERE p.hidden=0',[],'p.id DESC',page)
+   result=admin.paged(c,f'SELECT p.id,p.body,p.created_at,o.name organization_name,u.name user_name,u.role user_role,((SELECT COUNT(*) FROM community_likes l WHERE l.post_id=p.id)+(SELECT COUNT(*) FROM community_admin_likes al WHERE al.post_id=p.id)) like_count,EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id={viewer_id}) liked_by_me','FROM community_posts p JOIN users u ON u.id=p.user_id JOIN organizations o ON o.id=u.organization_id WHERE p.hidden=0',[],'p.id DESC',page)
    admin_posts=admin.rows(c,"SELECT -p.id id,p.body,p.created_at,'إدارة خدوم' name,(SELECT COUNT(*) FROM community_likes l WHERE l.post_id=-p.id) like_count,EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=-p.id AND l.user_id=?) liked_by_me FROM community_admin_posts p WHERE p.hidden=0 ORDER BY p.id DESC LIMIT 100",(user['id'],))
    result['items']=admin_posts+result['items']; result['items'].sort(key=lambda item: (item.get('created_at') or '', int(item.get('id') or 0)), reverse=True); result['total']+=len(admin_posts)
   elif route=='posts' and method=='POST':
@@ -118,7 +124,7 @@ def client(h,method,s):
    else:
     c.execute('INSERT INTO community_likes(post_id,user_id,created_at) VALUES(?,?,?)',(ident,user['id'],admin.stamp()))
     liked=True
-   count=c.execute('SELECT COUNT(*) total FROM community_likes WHERE post_id=?',(ident,)).fetchone()['total']
+   count=c.execute('SELECT (SELECT COUNT(*) FROM community_likes WHERE post_id=?)+(SELECT COUNT(*) FROM community_admin_likes WHERE post_id=?) total',(ident,ident)).fetchone()['total']
    if liked and ident>0 and count == 10:
     c.execute("INSERT INTO community_rewards(post_id,user_id,like_threshold,months,created_at) SELECT ?,user_id,10,1,? FROM community_posts WHERE id=? ON CONFLICT(post_id) DO NOTHING",(ident,admin.stamp(),ident))
    result={'liked':liked,'likeCount':count,'rewardEligible':liked and ident>0 and count>=10}

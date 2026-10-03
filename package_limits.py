@@ -90,9 +90,12 @@ def save_limits(connection, payload):
     if not isinstance(payload, dict) or not payload:
         raise ValueError("حدد حدود باقة واحدة على الأقل")
     # Validate the complete update before issuing any writes.
-    for values in payload.values():
+    for package, values in payload.items():
         if not isinstance(values, dict):
             raise ValueError("بيانات حدود الباقة غير صحيحة")
+        if package not in DEFAULT_LIMITS:
+            # أسماء الباقات ثابتة؛ أي اسم آخر يُرفض حتى لا يُخزَّن نص عشوائي يُعرض لاحقًا في صفحات الإدارة.
+            raise ValueError("اسم الباقة غير معروف")
         if "employees" not in values and "users" not in values:
             raise ValueError("حدد عدد المستخدمين لكل باقة")
         if "vehicles" not in values:

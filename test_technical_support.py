@@ -16,7 +16,7 @@ class SupportTriageTests(unittest.TestCase):
             'users(id INTEGER,organization_id INTEGER,active INTEGER)',
             'login_failures(organization_id INTEGER,created_at TEXT)',
             'page_performance_events(organization_id INTEGER,page_name TEXT,elapsed_ms INTEGER,created_at TEXT)',
-            'support_tickets(id INTEGER PRIMARY KEY,organization_id INTEGER,user_id INTEGER,category TEXT,message TEXT,status TEXT,owner_reply TEXT,created_at TEXT,updated_at TEXT)',
+            "support_tickets(id INTEGER PRIMARY KEY,organization_id INTEGER,user_id INTEGER,category TEXT,message TEXT,status TEXT,owner_reply TEXT,created_at TEXT,updated_at TEXT,owner_reply_by TEXT NOT NULL DEFAULT '')",
             'support_ticket_events(id INTEGER PRIMARY KEY,ticket_id INTEGER,organization_id INTEGER,user_id INTEGER,actor_type TEXT,actor_name TEXT,event_type TEXT,from_status TEXT,to_status TEXT,body TEXT,created_at TEXT)',
             "technical_tasks(id INTEGER PRIMARY KEY,organization_id INTEGER,user_id INTEGER,support_ticket_id INTEGER,service TEXT,problem TEXT,severity TEXT,status TEXT,diagnosis TEXT,proposal TEXT,action_taken TEXT,result TEXT,started_at TEXT,finished_at TEXT,created_by TEXT,approved_by TEXT DEFAULT '')",
             'technical_incidents(id INTEGER PRIMARY KEY,service TEXT,organization_id INTEGER,problem TEXT,root_cause TEXT,proposal TEXT,severity TEXT,test_status TEXT,deployment_status TEXT,affected_organizations INTEGER,created_at TEXT,updated_at TEXT)',
@@ -32,7 +32,7 @@ class SupportTriageTests(unittest.TestCase):
         self.c.execute('INSERT INTO login_failures VALUES(2,?)', (ts,))
         self.c.execute("INSERT INTO page_performance_events VALUES(2,'private',9000,?)", (ts,))
         old = (support.utcnow()-timedelta(days=9)).isoformat()
-        self.c.execute("INSERT INTO support_tickets VALUES(1,1,1,'واتساب','ما يستقبل','in_progress','',?,?)", (old, old))
+        self.c.execute("INSERT INTO support_tickets VALUES(1,1,1,'واتساب','ما يستقبل','in_progress','',?,?,'')", (old, old))
         self.server = SimpleNamespace(DATABASE_URL='', ApiError=RuntimeError)
 
     def tearDown(self):

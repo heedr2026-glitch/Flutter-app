@@ -16,6 +16,51 @@ def rows(c,sql,args=()): return [dict(r) for r in c.execute(sql,args).fetchall()
 def scalar(c,sql,args=()): return c.execute(sql,args).fetchone()['n']
 def audit(c,actor,action,target): c.execute('INSERT INTO platform_audit(actor,action,target,created_at) VALUES(?,?,?,?)',(actor,action,str(target)[:500],stamp()))
 
+SENIOR_ROLES=('owner','system','manager')
+def require_senior(actor,s,what='هذا الإجراء'):
+ """إجراءات حساسة (حساب التحويل البنكي، الإيقاف الطارئ، الحذف النهائي) للمالك ومدير النظام والمدير فقط."""
+ if (actor or {}).get('role') not in SENIOR_ROLES: raise s.ApiError(403,what+' متاح للمالك أو المدير فقط')
+
+def client_ip(h):
+ """عنوان العميل الفعلي خلف موازن الاستضافة؛ بدونه يتشارك كل العملاء عنوان الموازن."""
+ forwarded=str(h.headers.get('X-Forwarded-For','') or '').split(',')[0].strip()
+ return (forwarded or h.client_address[0])[:64]
+
+def automated_ticket_update(c,ticket_id,status,reply,ts,force_status=False):
+ """تحديث آلي لطلب دعم لا يمسح ردًا كتبه مدير. يعيد الحالة التي ثبتت فعليًا."""
+ row=c.execute('SELECT status,owner_reply,owner_reply_by FROM support_tickets WHERE id=?',(ticket_id,)).fetchone()
+ if row is None: return status
+ if row['owner_reply_by']=='admin' and str(row['owner_reply'] or '').strip():
+  kept=status if force_status else row['status']
+  c.execute('UPDATE support_tickets SET status=?,updated_at=? WHERE id=?',(kept,ts,ticket_id))
+  return kept
+ c.execute("UPDATE support_tickets SET status=?,owner_reply=?,owner_reply_by='auto',updated_at=? WHERE id=?",(status,reply,ts,ticket_id))
+ return status
+
+_FALLBACKS_READY=False
+def _fallbacks_ready(c,s):
+ """الجدول يُنشأ في ترحيل بدء التشغيل؛ قبل اكتماله لا نلمسه حتى لا يفشل الطلب."""
+ global _FALLBACKS_READY
+ if not _FALLBACKS_READY: _FALLBACKS_READY=table_exists(c,'subscription_fallbacks',s)
+ return _FALLBACKS_READY
+
+def restore_gift_fallbacks(c,current,s):
+ """بعد انتهاء هدية VIP المؤقتة يرجع الاشتراك المدفوع السابق إن كانت مدته باقية."""
+ if not _fallbacks_ready(c,s): return 0
+ due=c.execute('SELECT f.organization_id,f.package,f.expires_at FROM subscription_fallbacks f JOIN subscriptions s ON s.organization_id=f.organization_id WHERE s.expires_at IS NOT NULL AND s.expires_at<=?',(current,)).fetchall()
+ for item in due:
+  if item['expires_at'] is None or item['expires_at']>current:
+   c.execute('UPDATE subscriptions SET package=?,expires_at=? WHERE organization_id=?',(item['package'],item['expires_at'],item['organization_id']))
+  c.execute('DELETE FROM subscription_fallbacks WHERE organization_id=?',(item['organization_id'],))
+ return len(due)
+
+def clear_gift_fallback(c,org,s):
+ """تغيير الباقة يدويًا أو بدفع جديد يلغي أي اشتراك محفوظ للاسترجاع."""
+ if _fallbacks_ready(c,s): c.execute('DELETE FROM subscription_fallbacks WHERE organization_id=?',(org,))
+
+def audit_if_ready(c,actor,action,target,s):
+ if table_exists(c,'platform_audit',s): audit(c,actor,action,target)
+
 def support_reference(ticket_id, created_at=''):
  year=str(created_at or '')[:4]
  if not year.isdigit(): year=str(datetime.now(timezone.utc).year)
@@ -43,7 +88,9 @@ def migrate(c,postgres=False):
  '''platform_org_state(organization_id BIGINT PRIMARY KEY,suspended INTEGER NOT NULL DEFAULT 0)''',
  f'''platform_rewards(id {identity},organization_id BIGINT NOT NULL,kind TEXT NOT NULL,amount INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
  '''platform_daily_credits(organization_id BIGINT NOT NULL,day TEXT NOT NULL,units INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(organization_id,day))''',
- f'''platform_credit_ledger(id {identity},organization_id BIGINT NOT NULL,service TEXT NOT NULL,units INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''']
+ f'''platform_credit_ledger(id {identity},organization_id BIGINT NOT NULL,service TEXT NOT NULL,units INTEGER NOT NULL,reason TEXT NOT NULL,actor TEXT NOT NULL,created_at TEXT NOT NULL)''',
+ # الاشتراك المدفوع الذي يُستعاد بعد انتهاء هدية VIP المؤقتة.
+ '''subscription_fallbacks(organization_id BIGINT PRIMARY KEY,package TEXT NOT NULL,expires_at TEXT,created_at TEXT NOT NULL)''']
  schemas += [f'''platform_expenses(id {identity},provider TEXT NOT NULL,service TEXT NOT NULL,invoice_number TEXT NOT NULL DEFAULT '',subtotal REAL NOT NULL DEFAULT 0,tax REAL NOT NULL DEFAULT 0,total REAL NOT NULL DEFAULT 0,issued_at TEXT NOT NULL,due_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'unpaid',payment_method TEXT NOT NULL DEFAULT '',paid_at TEXT, payment_reference TEXT NOT NULL DEFAULT '',notes TEXT NOT NULL DEFAULT '',attachment_data TEXT NOT NULL DEFAULT '',recurring INTEGER NOT NULL DEFAULT 0,recurrence TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)''']
  schemas += [
   '''call_connections(organization_id BIGINT PRIMARY KEY,phone_number TEXT NOT NULL DEFAULT '',activity TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'not_connected',last_error TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL)''',
@@ -77,20 +124,24 @@ def migrate(c,postgres=False):
    legacy=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=? AND bonus_months=0 ORDER BY id LIMIT 1',(package,months)).fetchone()
    value=float(legacy['price_sar']) if legacy else fallback
    c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO NOTHING',(package,months,value,stamp()))
- for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT")],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
+ for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''"),('owner_reply_by',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT")],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
  ad_columns={row['column_name'] for row in c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='advertisements'").fetchall()} if postgres else {row['name'] for row in c.execute('PRAGMA table_info(advertisements)')}
  if 'published_by' not in ad_columns: c.execute("ALTER TABLE advertisements ADD COLUMN "+('IF NOT EXISTS ' if postgres else '')+"published_by TEXT NOT NULL DEFAULT ''")
  for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('support_tickets','reference_code'),('support_ticket_events','ticket_id,created_at'),('page_performance_events','created_at,page_name'),('employee_invitations','organization_id,status,created_at'),('organization_cameras','organization_id,branch_id,updated_at'),('vehicle_location_events','organization_id,vehicle_key,recorded_at'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('login_failures','created_at,username'),('readiness_results','run_id,service_key'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('platform_expenses','status,due_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
+ c.execute("UPDATE platform_credit_ledger SET reason=actor,actor=reason WHERE (reason='المالك' OR reason IN (SELECT name FROM platform_admins)) AND actor<>'المالك' AND actor NOT IN (SELECT name FROM platform_admins)")
  for key,package in [('free','free'),('basic','basic'),('vip','vip')]: c.execute('INSERT INTO readiness_test_accounts(account_key,package,active,created_at) VALUES(?,?,1,?) ON CONFLICT(account_key) DO UPDATE SET package=excluded.package,active=1',(f'__readiness_{key}__',package,stamp()))
 
 def permission(path,method):
  p=path.removeprefix('/owner/api/')
  if p.startswith('v2/'):
   p=p[3:]
-  if p in ('me','logout','summary','live-changes'): return None
+  if p in ('me','me/password','logout','summary','live-changes'): return None
+  # حالة الخدمات يراها أي مدير مسجل؛ طلب فحص جديد ومركز الأمان لصلاحية الأمن.
+  if p=='service-health': return None if method=='GET' else 'security'
+  if p.startswith(('service-health/','security-center')): return 'security'
   if p=='addons': return 'packages'
   if p.startswith('community/rewards/'): return 'rewards'
   if p.startswith('addon-offers'): return 'offers'
@@ -172,8 +223,14 @@ def suspended(c,org):
  return bool(r and r['suspended'])
 def paged(c,select,where,args,order,page):
  return {'items':rows(c,select+' '+where+' ORDER BY '+order+' LIMIT 30 OFFSET ?',[*args,(page-1)*30]),'total':scalar(c,'SELECT COUNT(*) n '+where,args),'page':page,'pageSize':30}
+_KNOWN_TABLES=set()
 def table_exists(c,name,s):
- if s.DATABASE_URL: return c.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?',(name,)).fetchone() is not None
+ if s.DATABASE_URL:
+  # الجداول لا تُحذف أثناء التشغيل؛ نحفظ الإجابة الموجبة بدل سؤال قاعدة البيانات في كل طلب.
+  if name in _KNOWN_TABLES: return True
+  found=c.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?',(name,)).fetchone() is not None
+  if found: _KNOWN_TABLES.add(name)
+  return found
  return c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",(name,)).fetchone() is not None
 def ensure_owner_tables(c,s,required):
  if all(table_exists(c,name,s) for name in required): return
@@ -181,24 +238,56 @@ def ensure_owner_tables(c,s,required):
  migrate(c,postgres=bool(s.DATABASE_URL))
 SERVICE_LABELS={'whatsapp':'واتساب','ai':'الذكاء الاصطناعي','calls':'المكالمات'}
 SERVICE_COSTS={'whatsapp':0.01,'ai':0.02,'calls':0.05}
-def credits_summary(c,org,s):
- package_row=c.execute('SELECT COALESCE(s.package,?) package,COALESCE(p.monthly,0) monthly,p.ai_daily,p.whatsapp_units,p.calls_units FROM subscriptions s LEFT JOIN platform_packages p ON p.package=s.package WHERE s.organization_id=?',('free',org)).fetchone()
- package=dict(package_row or {'package':'free','monthly':0,'ai_daily':5,'whatsapp_units':0,'calls_units':0})
- month=stamp()[:7]+'-01'; today=stamp()[:10]; adjustments={x:0 for x in SERVICE_LABELS}; ledger=rows(c,'SELECT service,units,reason,actor,created_at FROM platform_credit_ledger WHERE organization_id=? AND created_at>=? ORDER BY id DESC LIMIT 100',(org,month))
- for x in ledger:
-  if x['service'] in adjustments: adjustments[x['service']]+=int(x['units'] or 0)
- ai_month=c.execute('SELECT COUNT(*) n FROM ai_usage WHERE organization_id=? AND created_at>=?',(org,month)).fetchone()['n']; ai_today=c.execute('SELECT COUNT(*) n FROM ai_usage WHERE organization_id=? AND created_at>=?',(org,today)).fetchone()['n']
- wa_month=0; wa_today=0
+def _chunks(values,size=400):
+ values=list(values)
+ for start in range(0,len(values),size): yield values[start:start+size]
+
+def credits_bulk(c,s,org_ids=None,with_ledger=True):
+ """أرصدة واستهلاك عدة مؤسسات بعدد ثابت من الاستعلامات بدل استعلامات لكل مؤسسة.
+
+ org_ids=None تعني كل المؤسسات. النتيجة: {organization_id: نفس شكل credits_summary}.
+ """
+ if org_ids is not None:
+  org_ids=[int(x) for x in org_ids]
+  if not org_ids: return {}
+ month=stamp()[:7]+'-01'; today=stamp()[:10]
+ month_ts=int(datetime.fromisoformat(month).replace(tzinfo=timezone.utc).timestamp()); today_ts=int(datetime.fromisoformat(today).replace(tzinfo=timezone.utc).timestamp())
+ def grouped(sql,args=(),column='organization_id'):
+  # ينفذ الاستعلام مرة لكل المؤسسات، أو على دفعات عند تحديد قائمة.
+  if org_ids is None: return rows(c,sql.replace('{scope}','1=1'),args)
+  out=[]
+  for chunk in _chunks(org_ids): out.extend(rows(c,sql.replace('{scope}',column+' IN ('+','.join('?' for _ in chunk)+')'),[*args,*chunk]))
+  return out
+ ids=org_ids if org_ids is not None else [r['id'] for r in rows(c,'SELECT id FROM organizations')]
+ packages={r['organization_id']:r for r in grouped("SELECT s.organization_id,COALESCE(s.package,'free') package,COALESCE(p.monthly,0) monthly,p.ai_daily,p.whatsapp_units,p.calls_units FROM subscriptions s LEFT JOIN platform_packages p ON p.package=s.package WHERE {scope}",(),'s.organization_id')}
+ adjustments={}; ledgers={}
+ for x in grouped('SELECT organization_id,service,units,reason,actor,created_at FROM platform_credit_ledger WHERE created_at>=? AND {scope} ORDER BY id DESC',(month,)):
+  org=x['organization_id']; totals=adjustments.setdefault(org,{k:0 for k in SERVICE_LABELS})
+  if x['service'] in totals: totals[x['service']]+=int(x['units'] or 0)
+  if with_ledger and len(ledgers.setdefault(org,[]))<100: ledgers[org].append({k:x[k] for k in ('service','units','reason','actor','created_at')})
+ ai={r['organization_id']:r for r in grouped('SELECT organization_id,COUNT(*) month_count,COALESCE(SUM(CASE WHEN created_at>=? THEN 1 ELSE 0 END),0) today_count FROM ai_usage WHERE created_at>=? AND {scope} GROUP BY organization_id',(today,month))}
+ wa={}
  if table_exists(c,'whatsapp_messages',s):
-  wa_month=c.execute("SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=? AND timestamp>=?",(org,int(datetime.fromisoformat(month).replace(tzinfo=timezone.utc).timestamp()))).fetchone()['n']; wa_today=c.execute("SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=? AND timestamp>=?",(org,int(datetime.fromisoformat(today).replace(tzinfo=timezone.utc).timestamp()))).fetchone()['n']
- calls_month=0; calls_today=0
+  wa={r['organization_id']:r for r in grouped('SELECT organization_id,COUNT(*) month_count,COALESCE(SUM(CASE WHEN timestamp>=? THEN 1 ELSE 0 END),0) today_count FROM whatsapp_messages WHERE timestamp>=? AND {scope} GROUP BY organization_id',(today_ts,month_ts))}
+ calls={}
  if table_exists(c,'call_logs',s):
-  calls_month=math.ceil(int((c.execute('SELECT COALESCE(SUM(duration_seconds),0) n FROM call_logs WHERE organization_id=? AND started_at>=?',(org,month)).fetchone() or {'n':0})['n'] or 0)/60); calls_today=math.ceil(int((c.execute('SELECT COALESCE(SUM(duration_seconds),0) n FROM call_logs WHERE organization_id=? AND started_at>=?',(org,today)).fetchone() or {'n':0})['n'] or 0)/60)
- usage={'ai':int(ai_month or 0),'whatsapp':int(wa_month or 0),'calls':int(calls_month)}; daily={'ai':int(ai_today or 0),'whatsapp':int(wa_today or 0),'calls':int(calls_today)}
- base={'ai':int(package.get('ai_daily') or 0)*30,'whatsapp':int(package.get('whatsapp_units') or 0),'calls':int(package.get('calls_units') or 0)}
- remaining={x:max(0,base[x]+adjustments[x]-usage[x]) for x in SERVICE_LABELS}; cost={x:round(usage[x]*SERVICE_COSTS[x],2) for x in SERVICE_LABELS}; total_cost=round(sum(cost.values()),2); monthly=float(package.get('monthly') or 0)
- call_link=c.execute('SELECT status,phone_number,last_error FROM call_connections WHERE organization_id=?',(org,)).fetchone() if table_exists(c,'call_connections',s) else None
- return {'package':package.get('package','free'),'subscription_value':monthly,'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjustments[x],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'calls_status':call_link['status'] if call_link else 'not_connected','calls_phone':call_link['phone_number'] if call_link else None,'calls_error':call_link['last_error'] if call_link else '','total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledger}
+  calls={r['organization_id']:r for r in grouped('SELECT organization_id,COALESCE(SUM(duration_seconds),0) month_seconds,COALESCE(SUM(CASE WHEN started_at>=? THEN duration_seconds ELSE 0 END),0) today_seconds FROM call_logs WHERE started_at>=? AND {scope} GROUP BY organization_id',(today,month))}
+ links={}
+ if table_exists(c,'call_connections',s):
+  links={r['organization_id']:r for r in grouped('SELECT organization_id,status,phone_number,last_error FROM call_connections WHERE {scope}')}
+ result={}
+ for org in ids:
+  package=packages.get(org) or {'package':'free','monthly':0,'ai_daily':5,'whatsapp_units':0,'calls_units':0}
+  adjust=adjustments.get(org,{k:0 for k in SERVICE_LABELS}); a_row=ai.get(org,{}); w_row=wa.get(org,{}); c_row=calls.get(org,{}); link=links.get(org)
+  usage={'ai':int(a_row.get('month_count') or 0),'whatsapp':int(w_row.get('month_count') or 0),'calls':math.ceil(int(c_row.get('month_seconds') or 0)/60)}
+  daily={'ai':int(a_row.get('today_count') or 0),'whatsapp':int(w_row.get('today_count') or 0),'calls':math.ceil(int(c_row.get('today_seconds') or 0)/60)}
+  base={'ai':int(package.get('ai_daily') or 0)*30,'whatsapp':int(package.get('whatsapp_units') or 0),'calls':int(package.get('calls_units') or 0)}
+  remaining={x:max(0,base[x]+adjust[x]-usage[x]) for x in SERVICE_LABELS}; cost={x:round(usage[x]*SERVICE_COSTS[x],2) for x in SERVICE_LABELS}; total_cost=round(sum(cost.values()),2); monthly=float(package.get('monthly') or 0)
+  result[org]={'package':package.get('package') or 'free','subscription_value':monthly,'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjust[x],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'calls_status':link['status'] if link else 'not_connected','calls_phone':link['phone_number'] if link else None,'calls_error':link['last_error'] if link else '','total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledgers.get(org,[])}
+ return result
+
+def credits_summary(c,org,s):
+ return credits_bulk(c,s,[org])[int(org)]
 
 def customer_usage_summary(c,org,s):
  """Safe, read-only balance view for an authenticated organization user."""
@@ -282,6 +371,47 @@ def readiness_checks(c,s):
  add('admin','لوحة الإدارة والأمن','ready' if admin_ok else 'not_ready','فحص جداول الإدارة والمؤسسات والبحث الأساسي','' if admin_ok else 'بنية الإدارة ناقصة','اختبار الصلاحيات والفلترة بحسابات الاختبار')
  return checks
 
+def apply_reward(c,ident,kind,amount,reason,actor_name):
+ """تطبيق مكافأة على مؤسسة دون إتلاف اشتراك مدفوع قائم. تُستخدم من ملف المؤسسة ومن مكافآت المجتمع."""
+ if not reason or kind not in ('days','month','vip','ai'): raise ValueError('اختر المكافأة واكتب سببها')
+ if kind=='ai': c.execute('INSERT INTO platform_daily_credits VALUES(?,?,?) ON CONFLICT(organization_id,day) DO UPDATE SET units=platform_daily_credits.units+excluded.units',(ident,stamp()[:10],amount))
+ else:
+  sub=c.execute('SELECT * FROM subscriptions WHERE organization_id=?',(ident,)).fetchone(); now_iso=stamp()
+  held=sub['package'] if sub else 'free'; held_until=sub['expires_at'] if sub else None
+  paid=held in ('basic','vip') and (held_until is None or held_until>now_iso)
+  if paid and held_until is None and (kind!='vip' or held=='vip'): raise ValueError('اشتراك المؤسسة مفتوح بدون تاريخ انتهاء؛ لا يحتاج تمديدًا')
+  if kind=='vip' and held!='vip':
+   # هدية VIP مؤقتة فوق اشتراك مدفوع: نحفظ الاشتراك الأصلي ليرجع بعد انتهاء الهدية.
+   if paid: c.execute('INSERT INTO subscription_fallbacks(organization_id,package,expires_at,created_at) VALUES(?,?,?,?) ON CONFLICT(organization_id) DO NOTHING',(ident,held,held_until,now_iso))
+   pkg='vip'; base=now_iso
+  else:
+   pkg=held if paid else 'basic'; base=max(now_iso,held_until) if paid else now_iso
+  expiry=(datetime.fromisoformat(base)+timedelta(days=30 if kind=='month' else amount)).isoformat()
+  c.execute('INSERT INTO subscriptions(organization_id,package,starts_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET package=excluded.package,expires_at=excluded.expires_at',(ident,pkg,now_iso,expiry))
+ c.execute('INSERT INTO platform_rewards(organization_id,kind,amount,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(ident,kind,amount,reason[:500],actor_name,stamp()))
+
+def ask_technical_agent(d,page,actor,h,s):
+ """محادثة الموظف التقني دون حجز اتصال قاعدة البيانات أثناء انتظار مزود الذكاء.
+
+ كل أداة تفتح اتصالًا قصيرًا وتغلقه؛ نداءات المزود (قد تأخذ ثوانيَ) تجري بلا اتصال مفتوح.
+ تعيد None عند تعذر الذكاء ليكمل المسار بالفحص المبني على القواعد.
+ """
+ import technical_agent, ai_core
+ question=str(d.get('question','')).strip()[:1000]
+ if len(question)<4: raise ValueError('اكتب وصف المشكلة أولًا')
+ if not technical_agent.ai_configured(): return None
+ def run(route,method,data):
+  with s.db() as c:
+   out=dispatch(c,route,method,data,{},page,actor,h,s); c.commit(); return out
+ def query(_,sql,args=()):
+  with s.db() as c: return rows(c,sql,args)
+ try: result=technical_agent.answer(None,question,d.get('history') if isinstance(d.get('history'),list) else [],run,query,actor['name'])
+ except ai_core.AIServiceError as error:
+  print('TECHNICAL AI FALLBACK:',error.message); return None
+ with s.db() as c:
+  audit(c,actor['name'],'technical_ai_chat',question[:200]); c.commit()
+ return result
+
 def handle(h,method,s):
  path=urlparse(h.path).path.rstrip('/')
  if path=='/owner' and method=='GET': h._send_html((s.ROOT/'owner_dashboard.html').read_text(encoding='utf-8').replace('20260924-ad-image-compress-fix','20260926-ad-request-image-small')); return True
@@ -291,10 +421,10 @@ def handle(h,method,s):
  route=path[len('/owner/api/v2/'):]
  try:
   if route=='login' and method=='POST':
-   d=h._body(); username=str(d.get('username','')).strip().lower(); ip=h.client_address[0]
+   d=h._body(); username=str(d.get('username','')).strip().lower(); ip=client_ip(h)
    with s.db() as c:
     since=(datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat()
-    if scalar(c,'SELECT COUNT(*) n FROM platform_login_events WHERE ip=? AND success=0 AND created_at>?',(ip,since))>=10: raise s.ApiError(429,'محاولات كثيرة؛ أعد المحاولة بعد 15 دقيقة')
+    if scalar(c,'SELECT COUNT(*) n FROM platform_login_events WHERE ip=? AND success=0 AND created_at>?',(ip,since))>=10 or scalar(c,'SELECT COUNT(*) n FROM platform_login_events WHERE account=? AND success=0 AND created_at>?',(username[:100],since))>=20: raise s.ApiError(429,'محاولات كثيرة؛ أعد المحاولة بعد 15 دقيقة')
     user=c.execute('SELECT * FROM platform_admins WHERE username=? AND active=1',(username,)).fetchone()
     valid=bool(user and s.verify_password(str(d.get('password','')),user['password_hash'],user['password_salt']))
     c.execute('INSERT INTO platform_login_events(account,ip,success,created_at) VALUES(?,?,?,?)',(username[:100],ip,int(valid),stamp()))
@@ -305,7 +435,25 @@ def handle(h,method,s):
    h._send(200,{'token':token}); return True
   actor=authorize(h,s)
   if route=='me' and method=='GET': h._send(200,actor); return True
+  if route=='me/password' and method=='POST':
+   d=h._body(); current=str(d.get('current','')); fresh=str(d.get('password',''))
+   if actor.get('id') is None: raise ValueError('حساب المالك يدخل بالمفتاح الرئيسي؛ لا توجد له كلمة مرور هنا')
+   if len(fresh)<12: raise ValueError('كلمة المرور الإدارية 12 حرفًا على الأقل')
+   if fresh==current: raise ValueError('اختر كلمة مرور مختلفة عن الحالية')
+   with s.db() as c:
+    row=c.execute('SELECT password_hash,password_salt FROM platform_admins WHERE id=? AND active=1',(actor['id'],)).fetchone()
+    if not row or not s.verify_password(current,row['password_hash'],row['password_salt']): raise s.ApiError(403,'كلمة المرور الحالية غير صحيحة')
+    hashed,salt=s.hash_password(fresh)
+    c.execute('UPDATE platform_admins SET password_hash=?,password_salt=? WHERE id=?',(hashed,salt,actor['id']))
+    # تنتهي كل الجلسات الأخرى؛ تبقى الجلسة الحالية فقط.
+    c.execute('DELETE FROM platform_sessions WHERE admin_id=? AND token_hash<>?',(actor['id'],hashlib.sha256(h.headers.get('X-Admin-Session','').encode()).hexdigest()))
+    audit(c,actor['name'],'password_reset','admins/'+str(actor['id'])+' (self)'); c.commit()
+   h._send(200,{'saved':True}); return True
   q={k:v[0] for k,v in parse_qs(urlparse(h.path).query).items()}; page=max(1,min(int(q.get('page',1)),100000)); d=h._body() if method in ('POST','PUT') else {}
+  if route=='technical-ai/ask' and method=='POST' and not d.get('_rule'):
+   answered=ask_technical_agent(d,page,actor,h,s)
+   if answered is not None: h._send(200,answered); return True
+   d={**d,'_rule':True}
   with s.db() as c:
    result=dispatch(c,route,method,d,q,page,actor,h,s)
    if method in ('POST','PUT','DELETE') and route!='logout': audit(c,actor['name'],method,route)
@@ -353,11 +501,11 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='summary' and m=='GET':
   out={}; today=stamp()[:10]; month=today[:7]+'-01'; p=a['permissions']
   if 'organizations.view' in p:
-   out['organizations']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE archived_at IS NULL'); out['activeSubscribers']=scalar(c,"SELECT COUNT(*) n FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id WHERE COALESCE(z.suspended,0)=0 AND (s.expires_at IS NULL OR s.expires_at>?)",(stamp(),)); out['expiringSubscriptions']=scalar(c,"SELECT COUNT(*) n FROM subscriptions WHERE expires_at>? AND expires_at<=?",(stamp(),(datetime.now(timezone.utc)+timedelta(days=14)).isoformat())); out['packages']=rows(c,"SELECT COALESCE(s.package,'free') package,COUNT(*) total FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id WHERE o.archived_at IS NULL GROUP BY s.package")
+   out['organizations']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE archived_at IS NULL'); out['activeSubscribers']=scalar(c,"SELECT COUNT(*) n FROM organizations o JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id WHERE o.archived_at IS NULL AND COALESCE(z.suspended,0)=0 AND s.package IN ('basic','vip') AND (s.expires_at IS NULL OR s.expires_at>?)",(stamp(),)); out['expiringList']=rows(c,"SELECT o.id,o.name,o.phone,s.package,s.expires_at FROM subscriptions s JOIN organizations o ON o.id=s.organization_id WHERE o.archived_at IS NULL AND s.package IN ('basic','vip') AND s.expires_at>? AND s.expires_at<=? ORDER BY s.expires_at LIMIT 25",(stamp(),(datetime.now(timezone.utc)+timedelta(days=14)).isoformat())); out['expiringSubscriptions']=scalar(c,"SELECT COUNT(*) n FROM subscriptions WHERE expires_at>? AND expires_at<=?",(stamp(),(datetime.now(timezone.utc)+timedelta(days=14)).isoformat())); out['packages']=rows(c,"SELECT COALESCE(s.package,'free') package,COUNT(*) total FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id WHERE o.archived_at IS NULL GROUP BY s.package")
    out['newToday']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE archived_at IS NULL AND created_at>=?',(today,)); out['newMonth']=scalar(c,'SELECT COUNT(*) n FROM organizations WHERE archived_at IS NULL AND created_at>=?',(month,))
    out['problemOrganizations']=scalar(c,"SELECT COUNT(DISTINCT o.id) n FROM organizations o LEFT JOIN platform_org_state z ON z.organization_id=o.id LEFT JOIN login_failures f ON f.organization_id=o.id AND f.created_at>=? WHERE COALESCE(z.suspended,0)=1 OR f.id IS NOT NULL",((datetime.now(timezone.utc)-timedelta(hours=24)).isoformat(),)) if table_exists(c,'login_failures',s) else scalar(c,'SELECT COUNT(*) n FROM organizations o JOIN platform_org_state z ON z.organization_id=o.id WHERE z.suspended=1')
    out['recentActivity']=rows(c,"SELECT o.name organization_name,a.action,a.summary,a.created_at FROM audit_logs a JOIN organizations o ON o.id=a.organization_id ORDER BY a.id DESC LIMIT 8") if table_exists(c,'audit_logs',s) else []
-   out['serviceStatus']={'server':'ready','database':'ready','ai':'ready' if os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip() else 'warning','whatsapp':'ready' if table_exists(c,'whatsapp_connections',s) and scalar(c,'SELECT COUNT(*) n FROM whatsapp_connections') else 'warning','calls':'ready' if table_exists(c,'call_connections',s) and scalar(c,"SELECT COUNT(*) n FROM call_connections WHERE status='ready'") else 'warning','payment':'ready' if os.environ.get('KHDOOM_PAYMENT_MODE','').strip().lower() in ('sandbox','test','test_mode') else 'warning'}
+   out['serviceStatus']={'server':'ready','database':'ready','ai':'ready' if os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip() else 'warning','whatsapp':'ready' if table_exists(c,'whatsapp_connections',s) and scalar(c,'SELECT COUNT(*) n FROM whatsapp_connections') else 'warning','calls':'ready' if table_exists(c,'call_connections',s) and scalar(c,"SELECT COUNT(*) n FROM call_connections WHERE status='ready'") else 'warning'}
   if 'usage' in p:
    out['ai']=scalar(c,'SELECT COUNT(*) n FROM ai_usage'); out['calls']=0; out['callFailures']=0
    if table_exists(c,'call_logs',s):
@@ -365,8 +513,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    out['whatsapp']=scalar(c,'SELECT COUNT(*) n FROM whatsapp_messages') if table_exists(c,'whatsapp_messages',s) else None
    out['lowBalanceOrganizations']=0
    if 'organizations.view' in p:
-    for org in rows(c,'SELECT id FROM organizations'):
-     credits=credits_summary(c,org['id'],s)
+    for credits in credits_bulk(c,s,None,with_ledger=False).values():
      if any(v['base']>0 and v['remaining']<=max(1,math.ceil(v['base']*.1)) for v in credits['services'].values()): out['lowBalanceOrganizations']+=1
   if 'support' in p: out['support']=scalar(c,"SELECT COUNT(*) n FROM support_tickets WHERE status IN ('open','under_review','in_progress','awaiting_user')")
   if 'ads' in p: out['ads']=scalar(c,'SELECT COUNT(*) n FROM advertisements WHERE active=1 AND approved=1 AND (scheduled_at IS NULL OR scheduled_at<=?) AND (expires_at IS NULL OR expires_at>?)',(stamp(),stamp()))
@@ -375,26 +522,43 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    out['logins']+=scalar(c,'SELECT COUNT(*) n FROM platform_unknown_logins WHERE created_at>=?',(today,))
   return out
  if r=='service-health' and m=='GET':
-  services=[]
+  # الحالة تأتي من المراقب الفعلي (فحص كل بضع دقائق)، لا من قيم ثابتة.
+  names={'openai':'ai','push':'notifications'}; status_map={'ok':'ready','warning':'warning','error':'error','unknown':'unknown','unconfigured':'not_configured'}
+  services=[]; monitored=True
+  try:
+   import service_monitor
+   # start() لا يكرر التشغيل؛ يضمن فقط أن المراقب مهيأ قبل قراءة حالته.
+   service_monitor.start(s.db,s.DB_PATH,bool(s.DATABASE_URL),getattr(s,'PORT',None))
+   snap=service_monitor.snapshot()
+  except Exception:
+   snap={'services':[]}; monitored=False
+  for x in snap['services']:
+   key=names.get(x['service'],x['service'])
+   if key in ('whatsapp','calls'): continue
+   checked=datetime.fromtimestamp(x['checked'],timezone.utc).isoformat() if x.get('checked') else None
+   services.append({'service':key,'label':x.get('name') or key,'status':status_map.get(x['status'],'unknown'),'affected':0,'lastError':'' if x['status']=='ok' else x.get('detail',''),'detail':x.get('detail',''),'checkedAt':checked,'requests24h':x.get('requests24h') or 0,'failures24h':x.get('failures24h') or 0})
   whatsapp_count=scalar(c,'SELECT COUNT(*) n FROM whatsapp_connections') if table_exists(c,'whatsapp_connections',s) else 0
-  whatsapp_errors=scalar(c,"SELECT COUNT(*) n FROM whatsapp_webhooks WHERE received_at<?",(int((datetime.now(timezone.utc)-timedelta(hours=24)).timestamp()),)) if table_exists(c,'whatsapp_webhooks',s) else 0
-  services.append({'service':'whatsapp','label':'واتساب','status':'ready' if whatsapp_count and not whatsapp_errors else 'warning' if whatsapp_count else 'not_connected','affected':whatsapp_count,'lastError':'لا توجد مزامنة خلال 24 ساعة' if whatsapp_count and whatsapp_errors else ''})
-  ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip())
-  services.append({'service':'ai','label':'الذكاء الاصطناعي','status':'ready' if ai_ready else 'not_configured','affected':scalar(c,'SELECT COUNT(*) n FROM organizations') if not ai_ready else 0,'lastError':'' if ai_ready else 'مفتاح خدمة الذكاء غير مهيأ على الخادم'})
+  whatsapp_recent=scalar(c,"SELECT COUNT(*) n FROM whatsapp_webhooks WHERE received_at>=?",(int((datetime.now(timezone.utc)-timedelta(hours=24)).timestamp()),)) if table_exists(c,'whatsapp_webhooks',s) else 0
+  services.append({'service':'whatsapp','label':'واتساب','status':'not_connected' if not whatsapp_count else 'ready' if whatsapp_recent else 'warning','affected':whatsapp_count,'lastError':'لم تصل أي رسالة واردة من واتساب خلال 24 ساعة' if whatsapp_count and not whatsapp_recent else '','detail':f'{whatsapp_count} مؤسسة مربوطة'})
   if table_exists(c,'call_connections',s):
    call_count=scalar(c,"SELECT COUNT(*) n FROM call_connections WHERE status='ready'"); call_failures=scalar(c,"SELECT COUNT(*) n FROM call_logs WHERE status IN ('failed','no_answer','busy') AND created_at>=?",((datetime.now(timezone.utc)-timedelta(hours=24)).isoformat(),)) if table_exists(c,'call_logs',s) else 0
-   services.append({'service':'calls','label':'المكالمات','status':'warning' if call_failures else 'ready' if call_count else 'not_connected','affected':call_count,'lastError':f'{call_failures} مكالمة فاشلة خلال 24 ساعة' if call_failures else ''})
-  services.extend([{'service':'payment','label':'الدفع','status':'ready','affected':0,'lastError':''},{'service':'server','label':'السيرفر','status':'ready','affected':0,'lastError':''},{'service':'notifications','label':'الإشعارات','status':'ready','affected':0,'lastError':''}])
-  return {'checkedAt':stamp(),'services':services,'incidents':[x for x in services if x['status'] not in ('ready',)]}
+   services.append({'service':'calls','label':'المكالمات','status':'warning' if call_failures else 'ready' if call_count else 'not_connected','affected':call_count,'lastError':f'{call_failures} مكالمة فاشلة خلال 24 ساعة' if call_failures else '','detail':f'{call_count} مؤسسة مربوطة'})
+  return {'checkedAt':stamp(),'monitored':monitored,'services':services,'alerts':snap.get('alerts',[])[:20],'incidents':[x for x in services if x['status'] in ('warning','error')]}
  if r=='security-center' and m=='GET':
   failed=rows(c,"SELECT account,ip,success,created_at FROM platform_login_events WHERE success=0 ORDER BY id DESC LIMIT 30")
   blocked=rows(c,"SELECT organization_id,device_id,device_name,blocked_at FROM blocked_devices ORDER BY blocked_at DESC LIMIT 30") if table_exists(c,'blocked_devices',s) else []
   return {'firewall':'application-rate-limit','rateLimit':{'windowSeconds':60,'maxRequestsPerWindow':120},'failedLogins':failed,'blockedDevices':blocked,'https':'استضافة Render مسؤولة عن TLS؛ فعّل فرض HTTPS من إعدادات الاستضافة','secrets':'محفوظة في متغيرات البيئة ولا تعرض في اللوحة','backups':'تحتاج تخزينًا خارجيًا منفصلًا من إعدادات الاستضافة'}
  if r=='service-health/check' and m=='POST':
   service=str(d.get('service','')).strip()
-  if service not in ('whatsapp','ai','calls','payment','server','notifications'): raise ValueError('الخدمة غير معروفة')
+  if service not in ('whatsapp','ai','calls','server','database','notifications'): raise ValueError('الخدمة غير معروفة')
   audit(c,a['name'],'service_check','service-health/'+service)
-  return {'checkedAt':stamp(),'service':service,'message':'تم تسجيل طلب الفحص؛ النتيجة الحالية متاحة في مركز الأعطال'}
+  started=False
+  try:
+   import service_monitor, threading
+   service_monitor.start(s.db,s.DB_PATH,bool(s.DATABASE_URL),getattr(s,'PORT',None))
+   threading.Thread(target=service_monitor.run_checks,args=(s.db,s.DB_PATH,bool(s.DATABASE_URL),getattr(s,'PORT',None)),daemon=True).start(); started=True
+  except Exception: started=False
+  return {'checkedAt':stamp(),'service':service,'started':started,'message':'بدأ فحص فعلي للخدمات الآن؛ حدّث الصفحة بعد لحظات لرؤية النتيجة' if started else 'تعذر بدء الفحص الآن؛ النتيجة المعروضة هي آخر فحص دوري'}
  if r=='technical-ai/ask' and m=='POST':
   question=str(d.get('question','')).strip()[:1000]
   if len(question)<4: raise ValueError('اكتب وصف المشكلة أولًا')
@@ -540,7 +704,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   expected=os.environ.get('KHDOOM_TECHNICAL_AI_SECRET','').strip()
   if not expected or not hmac.compare_digest(secret,expected): raise s.ApiError(401,'تعذر التحقق من موظف التقنية')
   task=str(d.get('task',''))[:500]; check=str(d.get('check',''))[:200]
-  c.execute("INSERT INTO technical_agent_state(id,status,last_heartbeat,last_check,last_task,updated_at) VALUES(1,'online',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status='online',last_heartbeat=excluded.last_heartbeat,last_check=excluded.last_check,last_task=excluded.last_task,updated_at=excluded.updated_at",(stamp(),stamp(),task,check,stamp()))
+  c.execute("INSERT INTO technical_agent_state(id,status,last_heartbeat,last_check,last_task,updated_at) VALUES(1,'online',?,?,?,?) ON CONFLICT(id) DO UPDATE SET status='online',last_heartbeat=excluded.last_heartbeat,last_check=excluded.last_check,last_task=excluded.last_task,updated_at=excluded.updated_at",(stamp(),check or stamp(),task,stamp()))
   return {'saved':True,'status':'online'}
  if r=='integrations' and m=='GET':
   return {'items':rows(c,'SELECT key,name,category,status,required_permission,provider_configured,notes,updated_at FROM platform_integrations ORDER BY id'),'note':'هذه الوحدات مجهزة للتوسع فقط. لا توجد خدمة مستقبلية مفعلة دون تكامل رسمي وإعداد خادم وصلاحية مناسبة.'}
@@ -601,7 +765,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     elif action=='complete': reply='تمت معالجة المشكلة والتحقق من النتيجة. إذا استمرت عندك، أرسل نتيجة التجربة عبر الدعم.'
     else: reply='لم تكتمل المعالجة؛ الطلب يحتاج متابعة ومعلومات إضافية، ولم يتم إعلان الحل.'
     next_status='resolved' if action=='complete' else 'in_progress' if action in ('start','report','approve') else ticket['status']
-    c.execute('UPDATE support_tickets SET status=?,owner_reply=?,updated_at=? WHERE id=?',(next_status,reply,ts,ticket['id']))
+    next_status=automated_ticket_update(c,ticket['id'],next_status,reply,ts,force_status=action=='complete')
     support_event(c,dict(ticket),actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_'+action,body=reply,from_status=ticket['status'],to_status=next_status)
   audit(c,a['name'],'technical_task_'+action,json.dumps({'task':ident,'service':service},ensure_ascii=False))
   return {'saved':True,'message':message,'taskId':ident,'action':action}
@@ -668,12 +832,12 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    device=str(d.get('device','')); c.execute('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE organization_id=?)'+(' AND token_hash=?' if device else ''),[ident]+([device] if device else []))
   else:
    kind=d.get('kind'); amount=number(d.get('amount'),1,3650,True); reason=str(d.get('reason','')).strip()
-   if not reason or kind not in ('days','month','vip','ai'): raise ValueError('اختر المكافأة واكتب سببها')
-   if kind=='ai': c.execute('INSERT INTO platform_daily_credits VALUES(?,?,?) ON CONFLICT(organization_id,day) DO UPDATE SET units=platform_daily_credits.units+excluded.units',(ident,stamp()[:10],amount))
-   else:
-    sub=c.execute('SELECT * FROM subscriptions WHERE organization_id=?',(ident,)).fetchone(); pkg='vip' if kind=='vip' else sub['package'] if sub and sub['package']!='free' else 'basic'; base=max(stamp(),sub['expires_at'] or stamp()) if sub and (kind!='vip' or sub['package']=='vip') else stamp(); expiry=(datetime.fromisoformat(base)+timedelta(days=30 if kind=='month' else amount)).isoformat()
-    c.execute('INSERT INTO subscriptions(organization_id,package,starts_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET package=excluded.package,expires_at=excluded.expires_at',(ident,pkg,stamp(),expiry))
-   c.execute('INSERT INTO platform_rewards(organization_id,kind,amount,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(ident,kind,amount,reason[:500],a['name'],stamp()))
+   apply_reward(c,ident,kind,amount,reason,a['name'])
+  detail={'organization_id':ident}
+  if action=='status': detail['suspended']=bool(d.get('suspended'))
+  elif action=='logout': detail['device']='one' if d.get('device') else 'all'
+  else: detail.update({'kind':kind,'amount':amount,'reason':reason[:200]})
+  audit(c,a['name'],'organization_'+action,json.dumps(detail,ensure_ascii=False))
   return {'saved':True}
  if r=='packages' and m=='GET':
   out=rows(c,'SELECT * FROM platform_packages ORDER BY monthly')
@@ -744,7 +908,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   condition='WHERE 1=1'; args=['free']
   if q.get('package') in ('free','basic','vip'): condition+=' AND COALESCE(s.package,?)=?'; args.extend(['free',q['package']])
   items=rows(c,'SELECT o.id,o.name,COALESCE(s.package,?) package FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id '+condition,args)
-  for item in items: item['credits']=credits_summary(c,item['id'],s)
+  bulk=credits_bulk(c,s,[item['id'] for item in items])
+  for item in items: item['credits']=bulk[item['id']]
   return {'items':items,'total':len(items),'page':1,'pageSize':len(items)}
  if r=='expenses' and m=='GET':
   return finance_summary(c)
@@ -752,6 +917,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   provider=str(d.get('provider','')).strip()[:160]; service=str(d.get('service','other')).strip()[:40]
   issued=str(d.get('issued_at','')).strip()[:40]; due=str(d.get('due_at','')).strip()[:40]
   if not provider or not issued or not due: raise ValueError('المزود وتاريخ الإصدار والاستحقاق مطلوبة')
+  try: issued=datetime.fromisoformat(issued[:10]).date().isoformat(); due=datetime.fromisoformat(due[:10]).date().isoformat()
+  except ValueError: raise ValueError('اكتب تاريخ الإصدار والاستحقاق بصيغة سنة-شهر-يوم مثل 2026-10-15')
   subtotal=number(d.get('subtotal',0),0,100000000); tax=number(d.get('tax',0),0,100000000); total=round(subtotal+tax,2)
   status=d.get('status','unpaid')
   if status not in ('paid','unpaid'): status='unpaid'
@@ -780,7 +947,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if service not in SERVICE_LABELS: raise ValueError('اختر خدمة صحيحة')
   if units==0 or not reason: raise ValueError('اكتب كمية غير صفرية وسبب التعديل')
   if not c.execute('SELECT id FROM organizations WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'المؤسسة غير موجودة')
-  c.execute('INSERT INTO platform_credit_ledger(organization_id,service,units,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(ident,service,units,a['name'],reason,stamp()))
+  c.execute('INSERT INTO platform_credit_ledger(organization_id,service,units,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(ident,service,units,reason,a['name'],stamp()))
   audit(c,a['name'],'credit_adjustment',f'{ident}/{service}/{units}/{reason}')
   return {'saved':True,'credits':credits_summary(c,ident,s)}
  if r=='offers' and m=='POST':
@@ -821,8 +988,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     ts=stamp(); reply='تم استلام طلبك وإسناده إلى موظف التقنية AI. بدأ الفحص الأولي، وسيظهر التقرير هنا عند اكتماله.'
     c.execute("UPDATE technical_tasks SET status='diagnosing',action_taken=?,started_at=?,finished_at=NULL WHERE id=?",('بدأ موظف التقنية AI الفحص الأولي الآمن',ts,task['id']))
     if t['status'] in ('open','under_review'):
-     c.execute("UPDATE support_tickets SET status='in_progress',owner_reply=?,updated_at=? WHERE id=?",(reply,ts,t['id']))
-     support_event(c,t,actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_assigned',body=reply,from_status=t['status'],to_status='in_progress')
+     applied=automated_ticket_update(c,t['id'],'in_progress',reply,ts)
+     support_event(c,t,actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_assigned',body=reply,from_status=t['status'],to_status=applied)
     task=c.execute('SELECT id,status,diagnosis,proposal,action_taken,result,started_at,finished_at FROM technical_tasks WHERE id=?',(task['id'],)).fetchone()
    if task:
     t['technical_task']=dict(task)
@@ -843,17 +1010,17 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   else:
    cur=c.execute('INSERT INTO technical_tasks(organization_id,user_id,support_ticket_id,service,problem,severity,status,diagnosis,proposal,action_taken,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',(ticket['organization_id'],ticket['user_id'],ident,'support',f"طلب دعم #{ident}: {ticket['category']} — {ticket['message']}",'medium','queued','تم تحويل الطلب إلى الموظف التقني AI لجمع مؤشرات الحساب والخدمة','تشخيص السجلات والصلاحيات والربط دون تغيير كلمة المرور أو حذف البيانات','بانتظار فحص الموظف التقني AI',ts,'support-followup'))
    task_id=cur.fetchone()['id']
-  c.execute("UPDATE support_tickets SET status='in_progress',updated_at=? WHERE id=?",(ts,ident))
-  c.execute("UPDATE support_tickets SET owner_reply=? WHERE id=?",('تم استلام طلبك وتحويله إلى الموظف التقني AI. جاري فحص المشكلة، وسيتم إبلاغك بالنتيجة بعد اكتمال المتابعة.',ident))
+  automated_ticket_update(c,ident,'in_progress','تم استلام طلبك وتحويله إلى الموظف التقني AI. جاري فحص المشكلة، وسيتم إبلاغك بالنتيجة بعد اكتمال المتابعة.',ts,force_status=True)
   fresh=dict(c.execute('SELECT id,organization_id,user_id FROM support_tickets WHERE id=?',(ident,)).fetchone())
   support_event(c,fresh,actor_type='admin',actor_name=a['name'],event_type='technical_followup',body='تم إرسال الطلب للمتابعة مع الموظف التقني AI',from_status='open',to_status='in_progress')
   c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,'تم إرسال الطلب للمتابعة مع الموظف التقني AI','لوحة أمن خدووم',ts))
   audit(c,a['name'],'support_technical_followup',json.dumps({'ticket_id':ident,'task_id':task_id},ensure_ascii=False))
   return {'saved':True,'taskId':task_id,'message':'تم إرسال الطلب للمتابعة مع الموظف التقني AI'}
  if re.fullmatch(r'support/\d+',r) and m=='DELETE':
-  ident=int(r.split('/')[1])
-  if not c.execute('SELECT id FROM support_tickets WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'Support request not found')
-  c.execute('DELETE FROM platform_notes WHERE ticket_id=?',(ident,)); c.execute('DELETE FROM support_tickets WHERE id=?',(ident,)); return {'deleted':True}
+  ident=int(r.split('/')[1]); require_senior(a,s,'حذف طلب الدعم نهائيًا')
+  if not c.execute('SELECT id FROM support_tickets WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'طلب الدعم غير موجود')
+  gone=c.execute('SELECT organization_id,category,status FROM support_tickets WHERE id=?',(ident,)).fetchone()
+  c.execute('DELETE FROM platform_notes WHERE ticket_id=?',(ident,)); c.execute('DELETE FROM support_tickets WHERE id=?',(ident,)); audit(c,a['name'],'support_ticket_deleted',json.dumps({'ticket_id':ident,'organization_id':gone['organization_id'],'category':gone['category'],'status':gone['status']},ensure_ascii=False)); return {'deleted':True}
  if re.fullmatch(r'support/\d+',r) and m=='PUT':
   ident=int(r.split('/')[1]); status=d.get('status')
   if status not in ('open','under_review','in_progress','awaiting_user','resolved','closed'): raise ValueError('حالة غير صحيحة')
@@ -864,7 +1031,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   scope=str(d.get('scope') or ticket['scope'] or 'private')
   if scope not in ('private','global'): raise ValueError('نطاق المشكلة غير صحيح')
   assigned=d.get('assigned_admin_id') or a['id']
-  c.execute('UPDATE support_tickets SET status=?,scope=?,last_error=?,owner_reply=?,assigned_admin_id=COALESCE(?,assigned_admin_id),updated_at=? WHERE id=?',(status,scope,last_error,reply,assigned,stamp(),ident))
+  c.execute('UPDATE support_tickets SET status=?,scope=?,last_error=?,owner_reply=?,owner_reply_by=?,assigned_admin_id=COALESCE(?,assigned_admin_id),updated_at=? WHERE id=?',(status,scope,last_error,reply,'admin' if reply.strip() else '',assigned,stamp(),ident))
   event_type='scope_changed' if scope!=ticket['scope'] else 'status_changed' if status!=ticket['status'] else 'reply_updated'
   support_event(c,dict(ticket),actor_type='admin',actor_name=a['name'],event_type=event_type,body=note or reply or last_error,from_status=ticket['status'],to_status=status)
   if scope=='global' and ticket['scope']!='global':
@@ -875,12 +1042,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   latest=c.execute("SELECT a.id,a.created_at,o.name organization_name,u.name user_name,a.summary FROM audit_logs a JOIN organizations o ON o.id=a.organization_id LEFT JOIN users u ON u.id=a.actor_user_id WHERE a.action IN ('new_device','login') ORDER BY a.id DESC LIMIT 1").fetchone()
   return {'latest':dict(latest) if latest else None}
  if r=='security' and m=='GET':
-  cutoff=(datetime.now(timezone.utc)-timedelta(days=30)).isoformat()
-  for table in ('audit_logs','platform_audit','platform_login_events','platform_unknown_logins'):
-   try: c.execute('DELETE FROM '+table+' WHERE created_at<?',(cutoff,))
-   except Exception: pass
-  try: c.execute('DELETE FROM sessions WHERE expires_at<?',(stamp(),))
-  except Exception: pass
+  for table,keep_days in (('audit_logs',180),('platform_audit',400),('platform_login_events',90),('platform_unknown_logins',90)):
+   if table_exists(c,table,s): c.execute('DELETE FROM '+table+' WHERE created_at<?',((datetime.now(timezone.utc)-timedelta(days=keep_days)).isoformat(),))
+  c.execute('DELETE FROM sessions WHERE expires_at<?',(stamp(),)); c.execute('DELETE FROM platform_sessions WHERE expires_at<?',(stamp(),))
   category=q.get('type','login')
   if category=='audit': return paged(c,'SELECT *','FROM platform_audit',[],'id DESC',page)
   if category=='devices': return paged(c,'SELECT se.device_name,se.device_id,se.token_hash session_id,se.last_seen_at,se.trusted,u.name,u.organization_id','FROM sessions se JOIN users u ON u.id=se.user_id WHERE se.expires_at>?',[stamp()],'se.created_at DESC',page)
