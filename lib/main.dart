@@ -2865,17 +2865,17 @@ class _DashboardPageState extends State<DashboardPage> {
 
   String _assistantDateStatus(dynamic rawDate) {
     final date = DateTime.tryParse(rawDate?.toString() ?? '');
-    if (date == null) return 'التاريخ غير مضاف';
+    if (date == null) return 'التاريخ ما انضاف';
     final today = DateTime.now();
     final startToday = DateTime(today.year, today.month, today.day);
     final days = date.difference(startToday).inDays;
     final formatted =
         '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
     if (days < 0) {
-      return '$formatted — منتهي منذ ${days.abs()} يوم';
+      return '$formatted — منتهي من ${days.abs()} يوم';
     }
     if (days == 0) return '$formatted — ينتهي اليوم';
-    return '$formatted — متبقي $days يوم';
+    return '$formatted — باقي $days يوم';
   }
 
   List<String> _assistantUpcomingItems(
@@ -2892,7 +2892,7 @@ class _DashboardPageState extends State<DashboardPage> {
           .difference(DateTime(now.year, now.month, now.day))
           .inDays;
       if (days <= 30) {
-        items.add('â€¢ $title: ${_assistantDateStatus(rawDate)}');
+        items.add('• $title: ${_assistantDateStatus(rawDate)}');
       }
     }
 
@@ -2999,22 +2999,22 @@ class _DashboardPageState extends State<DashboardPage> {
           text.contains('ملخص') ||
           text.contains('وضعي')) {
         final lines = <String>[
-          'ملخص المؤسسة:',
+          'هذا ملخص مؤسستك:',
           '• الباقة: $_subscriptionPackage',
-          if (_can('vehicles')) '• المركبات المسجلة: ${vehicles.length}',
-          if (_can('employees')) '• الموظفون المسجلون: ${employees.length}',
+          if (_can('vehicles')) '• المركبات المسجّلة: ${vehicles.length}',
+          if (_can('employees')) '• الموظفين المسجّلين: ${employees.length}',
           if (_can('appointments'))
             '• التجديدات القريبة أو المنتهية: ${upcoming.length}',
           if (_can('appointments'))
             '• مواعيد وطلبات اليوم: ${todayItems.length}',
           if (_can('appointments'))
-            '• الطلبات المعلقة: ${pendingRequests.length}',
+            '• الطلبات المعلّقة: ${pendingRequests.length}',
           if (_can('appointments'))
-            '• فواتير الكهرباء غير المسددة: ${unpaidBills.length}',
+            '• فواتير الكهرباء اللي ما انسددت: ${unpaidBills.length}',
         ];
         if (_can('appointments') && upcoming.isNotEmpty) {
           lines.add('');
-          lines.add('الأهم الآن:');
+          lines.add('الأهم الحين:');
           lines.addAll(upcoming.take(5));
         }
         answer = lines.join('\n');
@@ -3026,7 +3026,7 @@ class _DashboardPageState extends State<DashboardPage> {
             if (title.isEmpty) return false;
             if (text.contains(title) || title.contains(text)) return true;
             return title
-                .split(RegExp(r'\s+|â€“|-'))
+                .split(RegExp(r'\s+|–|-'))
                 .where((word) => word.length >= 3)
                 .any(text.contains);
           })) {
@@ -3036,7 +3036,7 @@ class _DashboardPageState extends State<DashboardPage> {
           );
           if (text.contains(title) || title.contains(text)) return true;
           return title
-              .split(RegExp(r'\s+|â€“|-'))
+              .split(RegExp(r'\s+|–|-'))
               .where((word) => word.length >= 3)
               .any(text.contains);
         });
@@ -3055,12 +3055,13 @@ class _DashboardPageState extends State<DashboardPage> {
             (record['imageData']?.toString().trim().isNotEmpty ?? false);
         attachedRecords.add(record);
         answer = [
-          'ملخص ${isCommercialRecord ? 'السجل التجاري' : title}:',
-          'تاريخ الانتهاء: ${_assistantDateStatus(date)}',
+          _assistantExpirySentence(
+            isCommercialRecord ? 'السجل التجاري' : title,
+            date,
+          ),
           if (shortDetails.isNotEmpty) 'ملاحظة: $shortDetails',
-          if (hasPreview) 'توجد صورة للمعاينة أسفل الرد.',
-          if (website.isNotEmpty)
-            'يوجد رابط التجديد أو الموقع الرسمي أسفل الرد.',
+          if (hasPreview) 'وصورته تلقاها تحت الرد.',
+          if (website.isNotEmpty) 'ورابط التجديد أو الموقع الرسمي تحت الرد.',
         ].join('\n');
         action = website.isNotEmpty
             ? () => openDocumentWebsite(context, website)
@@ -3075,7 +3076,7 @@ class _DashboardPageState extends State<DashboardPage> {
           text.contains('طلب') ||
           text.contains('عميل')) {
         if (!_can('appointments')) {
-          answer = 'ليس لديك صلاحية لعرض المواعيد والطلبات.';
+          answer = 'ما عندك صلاحية تشوف المواعيد والطلبات.';
         } else {
           final wantsAll = text.contains('جميع') || text.contains('الكل');
           String? requestedType;
@@ -3106,18 +3107,18 @@ class _DashboardPageState extends State<DashboardPage> {
                 });
           if (text.contains('كم') || text.contains('عدد')) {
             final label = requestedType ?? 'المواعيد والطلبات';
-            answer = 'عدد $label المعلقة: ${pending.length}.';
+            answer = 'عدد $label المعلّقة: ${pending.length}.';
           } else if (pending.isEmpty) {
             answer = requestedType == null
-                ? 'لا توجد مواعيد أو طلبات معلقة.'
-                : 'لا يوجد ' + requestedType + ' معلق حاليًا.';
+                ? 'ما فيه مواعيد ولا طلبات معلّقة.'
+                : 'ما فيه ' + requestedType + ' معلّق الحين.';
           } else {
             final heading = requestedType == null
-                ? 'جميع المواعيد والطلبات القادمة (' +
+                ? 'كل المواعيد والطلبات الجاية (' +
                       pending.length.toString() +
                       ')'
                 : requestedType +
-                      ' القادمة (' +
+                      ' الجاية (' +
                       pending.length.toString() +
                       ')';
             final details = pending
@@ -3129,7 +3130,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   final customerText = customer.isEmpty
                       ? ''
                       : ' — العميل: ' + customer;
-                  return 'â€¢ ' +
+                  return '• ' +
                       type +
                       ': ' +
                       title +
@@ -3156,12 +3157,12 @@ class _DashboardPageState extends State<DashboardPage> {
           text.contains('تنبيه') ||
           text.contains('قريب')) {
         if (!_can('appointments')) {
-          answer = 'ليس لديك صلاحية لعرض التنبيهات والتجديدات.';
+          answer = 'ما عندك صلاحية تشوف التنبيهات والتجديدات.';
         } else if (upcoming.isEmpty) {
-          answer = 'لا توجد تواريخ منتهية أو تنتهي خلال 30 يومًا حسب البيانات المسجلة.';
+          answer = 'ما فيه شي منتهي ولا بينتهي خلال 30 يوم حسب البيانات المسجّلة.';
         } else {
           answer =
-              'التواريخ المنتهية أو القريبة خلال 30 يومًا:\n${upcoming.take(10).join('\n')}';
+              'هذي التواريخ المنتهية أو القريبة خلال 30 يوم:\n${upcoming.take(10).join('\n')}';
           action = () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const AlertsPage()),
@@ -3169,21 +3170,21 @@ class _DashboardPageState extends State<DashboardPage> {
         }
       } else if (text.contains('كهرب') || text.contains('فاتور')) {
         if (!_can('appointments')) {
-          answer = 'ليس لديك صلاحية لعرض الفواتير والتنبيهات.';
+          answer = 'ما عندك صلاحية تشوف الفواتير والتنبيهات.';
         } else if (bills.isEmpty) {
-          answer = 'لا توجد فواتير كهرباء مسجلة.';
+          answer = 'ما فيه فواتير كهرباء مسجّلة.';
         } else if (unpaidBills.isEmpty) {
-          answer = 'جميع فواتير الكهرباء المسجلة مسددة.';
+          answer = 'كل فواتير الكهرباء المسجّلة مسدّدة.';
         } else {
           final details = unpaidBills
               .take(8)
               .map(
                 (bill) =>
-                    '• ${bill['month']?.toString() ?? 'شهر غير محدد'}: ${bill['amount']?.toString() ?? '0'} ريال — غير مسددة',
+                    '• ${bill['month']?.toString() ?? 'شهر غير محدد'}: ${bill['amount']?.toString() ?? '0'} ريال — ما انسددت',
               )
               .join('\n');
           answer =
-              'فواتير الكهرباء غير المسددة (${unpaidBills.length}):\n$details';
+              'فواتير الكهرباء اللي ما انسددت (${unpaidBills.length}):\n$details';
           action = () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const OrganizationAlertsPage()),
@@ -3196,13 +3197,13 @@ class _DashboardPageState extends State<DashboardPage> {
           text.contains('فحص') ||
           text.contains('استمار')) {
         if (!_can('vehicles')) {
-          answer = 'ليس لديك صلاحية لعرض بيانات المركبات.';
+          answer = 'ما عندك صلاحية تشوف بيانات المركبات.';
         } else if (vehicles.isEmpty) {
-          answer = 'لا توجد مركبات مسجلة حتى الآن.';
+          answer = 'ما فيه مركبات مسجّلة للحين.';
         } else if (text.contains('كم') || text.contains('عدد')) {
           answer = vehicles.length == 1
-              ? 'لديك مركبة واحدة مسجلة.'
-              : 'لديك ${vehicles.length} مركبات مسجلة.';
+              ? 'عندك مركبة وحدة مسجّلة.'
+              : 'عندك ${vehicles.length} مركبات مسجّلة.';
           action = () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const VehiclesPage()),
@@ -3233,7 +3234,7 @@ class _DashboardPageState extends State<DashboardPage> {
           answer = selected
               .map(
                 (vehicle) =>
-                    '🚗 ${vehicle['name']?.toString() ?? 'مركبة'}${(vehicle['plate']?.toString() ?? '').isEmpty ? '' : '\nاللوحة: ${vehicle['plate']}'}\nالموظف المسؤول: ${(vehicle['assignedEmployee']?.toString() ?? '').isEmpty ? 'غير محدد' : vehicle['assignedEmployee']}\nالحالة: ${const {'working': 'تعمل', 'stopped': 'متوقفة', 'broken': 'عطلانة', 'maintenance': 'تحت الصيانة'}[vehicle['status']] ?? 'تعمل'}\nالتأمين: ${_assistantDateStatus(vehicle['insurance'])}\nالفحص: ${_assistantDateStatus(vehicle['inspection'])}\nالاستمارة: ${_assistantDateStatus(vehicle['registration'])}',
+                    '🚗 ${vehicle['name']?.toString() ?? 'مركبة'}${(vehicle['plate']?.toString() ?? '').isEmpty ? '' : '\nاللوحة: ${vehicle['plate']}'}\nالموظف المسؤول: ${(vehicle['assignedEmployee']?.toString() ?? '').isEmpty ? 'غير محدد' : vehicle['assignedEmployee']}\nالحالة: ${const {'working': 'شغّالة', 'stopped': 'متوقفة', 'broken': 'عطلانة', 'maintenance': 'تحت الصيانة'}[vehicle['status']] ?? 'شغّالة'}\nالتأمين: ${_assistantDateStatus(vehicle['insurance'])}\nالفحص: ${_assistantDateStatus(vehicle['inspection'])}\nالاستمارة: ${_assistantDateStatus(vehicle['registration'])}',
               )
               .join('\n\n');
           action = () => Navigator.push(
@@ -3247,9 +3248,9 @@ class _DashboardPageState extends State<DashboardPage> {
           text.contains('اقامة') ||
           text.contains('عقد')) {
         if (!_can('employees')) {
-          answer = 'ليس لديك صلاحية لعرض بيانات الموظفين.';
+          answer = 'ما عندك صلاحية تشوف بيانات الموظفين.';
         } else if (employees.isEmpty) {
-          answer = 'لا يوجد موظفون مسجلون حتى الآن.';
+          answer = 'ما فيه موظفين مسجّلين للحين.';
         } else {
           final matching = employees.where((employee) {
             final name = _normalizeAssistantText(
@@ -3277,17 +3278,17 @@ class _DashboardPageState extends State<DashboardPage> {
         }
       } else if (text.contains('فرع') || text.contains('فروع')) {
         answer =
-            'أنت الآن في ${prefs.branchName}. تبي تعرض بيانات هذا الفرع أو تبدّل لفرع آخر؟ التبديل من الإعدادات ← إدارة الفروع.';
+            'أنت الحين في ${prefs.branchName}. تبي تشوف بيانات هذا الفرع ولا تبدّل لفرع ثاني؟ التبديل من الإعدادات ← إدارة الفروع.';
       } else if (text.contains('باقه') ||
           text.contains('اشتراك') ||
           text.contains('خطه')) {
-        answer = 'الباقة الحالية: $_subscriptionPackage.';
+        answer = 'باقتك الحالية: $_subscriptionPackage.';
       } else if (text.contains('مؤسس') ||
           text.contains('نشاط') ||
           text.contains('تواصل') ||
           text.contains('رقم')) {
         if (!_can('settings')) {
-          answer = 'ليس لديك صلاحية لعرض بيانات المؤسسة.';
+          answer = 'ما عندك صلاحية تشوف بيانات المؤسسة.';
         } else {
           final name = _businessName.isEmpty ? 'غير محددة' : _businessName;
           final activity = prefs.getString('activity') ?? 'غير محدد';
@@ -3321,7 +3322,7 @@ class _DashboardPageState extends State<DashboardPage> {
       if (!mounted) return;
       setState(() {
         _assistantAnswer =
-            'تعذر تجهيز الرد الآن. تأكد من الاتصال ثم حاول مرة أخرى.';
+            'ما قدرت أجهّز الرد الحين. تأكد من الاتصال وجرّب مرة ثانية.';
       });
     } finally {
       if (mounted) {
@@ -11682,6 +11683,28 @@ class AiEmployeesPage extends StatelessWidget {
   }
 }
 
+/// جملة وحدة واضحة عن انتهاء مستند، بدل سرد المكتوب كله.
+String _assistantExpirySentence(String title, dynamic rawDate) {
+  final date = DateTime.tryParse(rawDate?.toString() ?? '');
+  if (date == null) return '$title: تاريخ الانتهاء ما انضاف.';
+  final today = DateTime.now();
+  final days = DateTime(
+    date.year,
+    date.month,
+    date.day,
+  ).difference(DateTime(today.year, today.month, today.day)).inDays;
+  final formatted =
+      '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+  if (days < 0) {
+    return '$title منتهي من ${days.abs()} يوم، تاريخه $formatted. الأحسن تجدده بأسرع وقت.';
+  }
+  if (days == 0) return '$title ينتهي اليوم $formatted. حاول تجدده اليوم.';
+  if (days <= 30) {
+    return '$title ينتهي في $formatted، باقي $days يوم. حاول تبدأ التجديد من الحين.';
+  }
+  return '$title ينتهي في $formatted، باقي $days يوم.';
+}
+
 class KhdoomAiAssistantPage extends StatefulWidget {
   const KhdoomAiAssistantPage({super.key});
 
@@ -11697,6 +11720,11 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
   final _scrollController = ScrollController();
   final _speech = stt.SpeechToText();
   final _tts = FlutterTts();
+  // صوت الذكاء الاصطناعي يشتغل من أندرويد مباشرة؛ وإذا تعذر يكمل الرد بصوت الجوال.
+  static const _voiceChannel = MethodChannel('khdoom/assistant_voice');
+  static const _voiceGenderKey = 'assistant_voice_gender';
+  String _voiceGender = 'male';
+  int _speechTurn = 0;
   bool _voiceReady = false;
   bool _isListening = false;
   bool _speakReplies = true;
@@ -11705,7 +11733,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
   final Map<int, List<Map<String, dynamic>>> _messageAttachments = {};
   final List<({String text, bool fromUser, bool voice})> _messages = [
     (
-      text: 'حياك الله 👋 أنا مساعد خدوم. اسألني عن استخدام التطبيق، أو عن بيانات المؤسسة الظاهرة لك.',
+      text: 'حياك الله 👋 أنا مساعد خدوم. اسألني عن التطبيق وطريقة استخدامه، أو عن بيانات مؤسستك.',
       fromUser: false,
       voice: false,
     ),
@@ -11728,33 +11756,76 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
         if (mounted) setState(() => _isListening = false);
       },
     );
-    await _tts.setLanguage('ar-SA');
-    await _tts.setSpeechRate(0.42);
-    await _tts.setPitch(0.82);
-    await _tts.setVolume(1.0);
     try {
+      final prefs = await _branchPrefs;
+      if (prefs.raw.getString(_voiceGenderKey) == 'female') {
+        _voiceGender = 'female';
+      }
+    } catch (_) {
+      // يبقى الاختيار الافتراضي.
+    }
+    await _applyDeviceVoice();
+    if (mounted) setState(() => _voiceReady = available);
+  }
+
+  /// صوت الجوال الاحتياطي: يحاول يطابق الاختيار (رجل / امرأة) إذا الجهاز عنده صوت عربي مناسب.
+  Future<void> _applyDeviceVoice() async {
+    final female = _voiceGender == 'female';
+    try {
+      await _tts.setLanguage('ar-SA');
+      await _tts.setSpeechRate(0.42);
+      await _tts.setPitch(female ? 1.0 : 0.82);
+      await _tts.setVolume(1.0);
       final voices = await _tts.getVoices;
       if (voices is List) {
-        final maleVoice = voices.cast<dynamic>().firstWhere((voice) {
-          final name = voice is Map ? '${voice['name']}' : '$voice';
+        final match = voices.cast<dynamic>().firstWhere((voice) {
+          final name = (voice is Map ? '${voice['name']}' : '$voice')
+              .toLowerCase();
           final locale = voice is Map ? '${voice['locale']}' : '';
-          final normalized = name.toLowerCase();
-          return locale.toLowerCase().startsWith('ar') &&
-              (normalized.contains('male') ||
-                  normalized.contains('man') ||
-                  normalized.contains('m1'));
+          if (!locale.toLowerCase().startsWith('ar')) return false;
+          final isFemale =
+              name.contains('female') ||
+              name.contains('woman') ||
+              name.contains('f1');
+          final isMale =
+              !isFemale &&
+              (name.contains('male') ||
+                  name.contains('man') ||
+                  name.contains('m1'));
+          return female ? isFemale : isMale;
         }, orElse: () => null);
-        if (maleVoice is Map && maleVoice['name'] != null) {
+        if (match is Map && match['name'] != null) {
           await _tts.setVoice({
-            'name': maleVoice['name'].toString(),
-            'locale': (maleVoice['locale'] ?? 'ar-SA').toString(),
+            'name': match['name'].toString(),
+            'locale': (match['locale'] ?? 'ar-SA').toString(),
           });
         }
       }
     } catch (_) {
-      // Keep the device Arabic voice if a male Arabic voice is unavailable.
+      // Keep the device Arabic voice if a matching Arabic voice is unavailable.
     }
-    if (mounted) setState(() => _voiceReady = available);
+  }
+
+  Future<void> _setVoiceGender(String gender) async {
+    if (gender != 'male' && gender != 'female') return;
+    await _stopSpeaking();
+    if (!mounted) return;
+    setState(() => _voiceGender = gender);
+    try {
+      final prefs = await _branchPrefs;
+      await prefs.raw.setString(_voiceGenderKey, gender);
+    } catch (_) {
+      // الاختيار يبقى ساري لهذي الجلسة حتى لو ما انحفظ.
+    }
+    await _applyDeviceVoice();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          gender == 'female' ? 'تم اختيار صوت امرأة.' : 'تم اختيار صوت رجل.',
+        ),
+      ),
+    );
   }
 
   Future<void> _toggleVoiceInput() async {
@@ -11765,7 +11836,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'اسمح لخدووم باستخدام الميكروفون لتفعيل المحادثة الصوتية.',
+                'اسمح لخدووم يستخدم المايكروفون عشان تشتغل المحادثة الصوتية.',
               ),
             ),
           );
@@ -11778,7 +11849,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       if (mounted) setState(() => _isListening = false);
       return;
     }
-    await _tts.stop();
+    await _stopSpeaking();
     _voiceDraft = '';
     if (mounted) setState(() => _isListening = true);
     await _speech.listen(
@@ -11803,19 +11874,94 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     );
   }
 
+  Future<void> _stopSpeaking() async {
+    _speechTurn++;
+    try {
+      await _tts.stop();
+    } catch (_) {}
+    try {
+      await _voiceChannel.invokeMethod<void>('stop');
+    } catch (_) {}
+  }
+
   Future<void> _speak(String text) async {
     if (!_speakReplies || !_voiceReady) return;
-    await _tts.stop();
-    final speechText = text.length > 420
-        ? '${text.substring(0, 420).trim()}... التفاصيل والصورة والرابط ظاهرة في المحادثة.'
-        : text;
+    await _stopSpeaking();
+    final turn = _speechTurn;
+    final spoken = text
+        .replaceAll('←', ' ثم ')
+        .replaceAll(RegExp(r'[•—«»]'), ' ')
+        .replaceAll(
+          RegExp(r'[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]', unicode: true),
+          ' ',
+        )
+        .replaceAll(RegExp(r'[ \t]+'), ' ')
+        .trim();
+    if (spoken.isEmpty) return;
+    final speechText = spoken.length > 420
+        ? '${spoken.substring(0, 420).trim()}... وباقي التفاصيل تلقاها مكتوبة في المحادثة.'
+        : spoken;
+    final played = await _playServerVoice(speechText, turn);
+    if (played || turn != _speechTurn || !mounted || !_speakReplies) return;
     await _tts.speak(speechText);
+  }
+
+  /// يطلب صوت الرد من الخادم ويشغّله. يرجع false عند أي تعذر حتى يكمل صوت الجوال.
+  Future<bool> _playServerVoice(String text, int turn) async {
+    if (!Platform.isAndroid) return false;
+    HttpClient? client;
+    try {
+      final prefs = await _branchPrefs;
+      const storage = FlutterSecureStorage();
+      final token = await storage.read(key: 'cloud_session_token');
+      if (token == null || token.isEmpty) return false;
+      final base =
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com';
+      client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+      final request = await client.postUrl(
+        Uri.parse(base).resolve('/api/ai/speech'),
+      );
+      final payload = utf8.encode(
+        jsonEncode({'text': text, 'voice': _voiceGender}),
+      );
+      request.headers.contentType = ContentType.json;
+      request.headers.set('Authorization', 'Bearer $token');
+      request.headers.set('X-Branch-Id', prefs.branchId);
+      request.contentLength = payload.length;
+      request.add(payload);
+      final response = await request.close().timeout(
+        const Duration(seconds: 10),
+      );
+      final mime = response.headers.contentType?.mimeType ?? '';
+      if (response.statusCode != 200 || !mime.startsWith('audio/')) {
+        return false;
+      }
+      final builder = await response
+          .fold<BytesBuilder>(
+            BytesBuilder(copy: false),
+            (buffer, chunk) => buffer..add(chunk),
+          )
+          .timeout(const Duration(seconds: 8));
+      final audio = builder.takeBytes();
+      if (audio.length < 200 || turn != _speechTurn || !mounted) return false;
+      final file = File(
+        '${Directory.systemTemp.path}/khdoom_assistant_voice.mp3',
+      );
+      await file.writeAsBytes(audio, flush: true);
+      if (turn != _speechTurn || !mounted || !_speakReplies) return false;
+      await _voiceChannel.invokeMethod<void>('play', {'path': file.path});
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      client?.close(force: true);
+    }
   }
 
   @override
   void dispose() {
     _speech.stop();
-    _tts.stop();
+    unawaited(_stopSpeaking());
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -11860,15 +12006,15 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
 
   String _assistantDateStatus(dynamic rawDate) {
     final date = DateTime.tryParse(rawDate?.toString() ?? '');
-    if (date == null) return 'تاريخ الانتهاء غير مضاف';
+    if (date == null) return 'تاريخ الانتهاء ما انضاف';
     final today = DateTime.now();
     final startToday = DateTime(today.year, today.month, today.day);
     final days = date.difference(startToday).inDays;
     final formatted =
         '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
-    if (days < 0) return '$formatted — منتهي منذ ${days.abs()} يوم';
+    if (days < 0) return '$formatted — منتهي من ${days.abs()} يوم';
     if (days == 0) return '$formatted — ينتهي اليوم';
-    return '$formatted — متبقي $days يوم';
+    return '$formatted — باقي $days يوم';
   }
 
   bool _hasAny(String text, List<String> words) => words.any(text.contains);
@@ -11882,7 +12028,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     final prefs = await _branchPrefs;
     _conversation.bind(prefs.branchId);
     if (_hasAny(text, ['فرع', 'فروع'])) {
-      return 'الفرع الحالي هو: ${prefs.branchName}. للتبديل، افتح «الإعدادات ← إدارة الفروع».';
+      return 'أنت الحين في ${prefs.branchName}. وإذا تبي تبدّل الفرع، افتح «الإعدادات ← إدارة الفروع».';
     }
     final organizationRecords = KhdoomNotifications._storedList(
       prefs,
@@ -11925,14 +12071,14 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       );
       if (vehicle.isNotEmpty) {
         attachments?.add(vehicle);
-        return 'تأمين ${vehicle['name'] ?? 'المركبة'}: ${_assistantDateStatus(vehicle['insurance'])}. إذا كان موعد الانتهاء قريبًا، يفضل بدء التجديد من الآن.';
+        return 'تأمين ${vehicle['name'] ?? 'المركبة'}: ${_assistantDateStatus(vehicle['insurance'])}. وإذا الموعد قريب، الأحسن تبدأ التجديد من الحين.';
       }
     }
 
     // Keep common how-to instructions available even if the API is temporarily
     // unavailable. These paths mirror actual screens and buttons in the app.
     if (_hasAny(text, ['بصم', 'face id', 'فيس ايدي'])) {
-      return 'لتفعيل البصمة: افتح «الإعدادات ← الخصوصية والأمان»، فعّل أولًا «قفل التطبيق برمز PIN» واختر رمزًا احتياطيًا، ثم فعّل «الدخول بالبصمة أو Face ID» ووافق على تحقق الجهاز.';
+      return 'عشان تفعّل البصمة: افتح «الإعدادات ← الخصوصية والأمان»، وأول شي فعّل «قفل التطبيق برمز PIN» واختر رمز احتياطي، وبعدها فعّل «الدخول بالبصمة أو Face ID» ووافق على تحقق الجهاز.';
     }
     if (_hasAny(text, [
       'معلومات المؤسسه',
@@ -11942,13 +12088,13 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       'رقم تواصل المؤسسه',
       'سجل المؤسسه',
     ])) {
-      return 'لتعديل معلومات المؤسسة: من الرئيسية افتح «مؤسستي ← تعديل بيانات المؤسسة»، ثم عدّل الاسم أو النشاط أو رقم التواصل واضغط «حفظ التعديلات».';
+      return 'عشان تعدّل معلومات المؤسسة: من الرئيسية افتح «مؤسستي ← تعديل بيانات المؤسسة»، وعدّل الاسم أو النشاط أو رقم التواصل، وبعدها اضغط «حفظ التعديلات».';
     }
     if (_hasAny(text, ['اسم المستخدم', 'يوزر', 'اليوزر'])) {
-      return 'لتغيير اسم المستخدم أو كلمة المرور للمدير: افتح «الإعدادات ← اسم المستخدم وكلمة المرور»، أدخل البيانات الجديدة ثم اضغط حفظ. عند النسيان اختر «نسيت اسم المستخدم؟» أو «نسيت كلمة المرور؟» من صفحة الدخول.';
+      return 'عشان تغيّر اسم المستخدم أو كلمة المرور للمدير: افتح «الإعدادات ← اسم المستخدم وكلمة المرور»، واكتب البيانات الجديدة واضغط حفظ. وإذا نسيتها، اختر «نسيت اسم المستخدم؟» أو «نسيت كلمة المرور؟» من صفحة الدخول.';
     }
     if (_hasAny(text, ['vip', 'في اي بي', 'ترقيه الباقه', 'تفعيل باقه'])) {
-      return 'لتفعيل أو ترقية باقتك إلى VIP: افتح «الإعدادات ← الباقات والاشتراك»، اختر «VIP»، ثم أكمل طلب الاشتراك أو أدخل كود التفعيل إذا كان لديك كود.';
+      return 'عشان تفعّل أو ترقّي باقتك إلى VIP: افتح «الإعدادات ← الباقات والاشتراك»، واختر «VIP»، وبعدها كمّل طلب الاشتراك أو دخّل كود التفعيل إذا عندك كود.';
     }
 
     if (_hasAny(text, ['مقاس', 'مقاسات', 'صيان', 'صيانه'])) {
@@ -11961,13 +12107,13 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       if (_hasAny(text, ['كم', 'عدد'])) {
         final label = wantsMaintenance ? 'مواعيد الصيانة' : 'مواعيد المقاسات';
         return matching.isEmpty
-            ? 'لا توجد $label معلقة.'
-            : 'عدد $label المعلقة: ${matching.length}.';
+            ? 'ما فيه $label معلّقة.'
+            : 'عدد $label المعلّقة: ${matching.length}.';
       }
       if (matching.isEmpty) {
         return wantsMaintenance
-            ? 'لا توجد مواعيد صيانة معلقة.'
-            : 'لا توجد مواعيد مقاسات معلقة.';
+            ? 'ما فيه مواعيد صيانة معلّقة.'
+            : 'ما فيه مواعيد مقاسات معلّقة.';
       }
       return matching
           .take(8)
@@ -12017,8 +12163,8 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     }
     if (_hasAny(text, ['كم موظف', 'عدد الموظفين', 'كم عامل', 'عدد العمال'])) {
       return employees.length == 1
-          ? 'لديك موظف واحد مسجل.'
-          : 'لديك ${employees.length} موظفين مسجلين.';
+          ? 'عندك موظف واحد مسجّل.'
+          : 'عندك ${employees.length} موظفين مسجّلين.';
     }
 
     Map<String, dynamic>? matchedRecord;
@@ -12040,49 +12186,41 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
           'record:${_normalizeArabic(matchedRecord['title']?.toString() ?? '')}';
       attachments?.add(matchedRecord);
       final title = matchedRecord['title']?.toString() ?? 'المستند';
-      final date = DateTime.tryParse(matchedRecord['date']?.toString() ?? '');
-      final dateText = date == null
-          ? 'تاريخ الانتهاء غير مضاف'
-          : _assistantDateStatus(date.toIso8601String());
-      return [
-        '$title:',
-        dateText,
-        'الأفضل تبدأ إجراءات التجديد قريبًا إذا كان التاريخ قريبًا.',
-      ].join('\n');
+      return _assistantExpirySentence(title, matchedRecord['date']);
     }
 
     if (_hasAny(text, ['فاتور', 'فواتير', 'كهرب', 'سداد', 'مدفوع'])) {
       if (wantsAdd) {
-        return 'لإضافة فاتورة: افتح «التنبيهات ← فواتير الكهرباء الشهرية»، واضغط «إضافة فاتورة»، ثم اكتب الشهر والمبلغ وحدد حالة السداد واحفظ.';
+        return 'عشان تضيف فاتورة: افتح «التنبيهات ← فواتير الكهرباء الشهرية»، واضغط «إضافة فاتورة»، واكتب الشهر والمبلغ وحدد حالة السداد واحفظ.';
       }
       if (wantsDelete) {
-        return 'لحذف فاتورة: افتح «التنبيهات ← فواتير الكهرباء الشهرية»، واضغط رمز الحذف بجانب الفاتورة ثم أكد. حساب الموظف يحتاج الصلاحية المناسبة.';
+        return 'عشان تحذف فاتورة: افتح «التنبيهات ← فواتير الكهرباء الشهرية»، واضغط علامة الحذف جنب الفاتورة وأكّد. وحساب الموظف لازم تكون عنده الصلاحية.';
       }
-      return 'الفواتير موجودة داخل «التنبيهات ← فواتير الكهرباء الشهرية». تستطيع إضافة الشهر والمبلغ وحالة السداد، ثم تعديل الفاتورة أو حذفها. اكتب «كيف أضيف فاتورة؟» للحصول على الخطوات.';
+      return 'الفواتير تلقاها في «التنبيهات ← فواتير الكهرباء الشهرية». تقدر تضيف الشهر والمبلغ وحالة السداد، وبعدين تعدّل الفاتورة أو تحذفها. وإذا تبي الخطوات اكتب «كيف أضيف فاتورة؟».';
     }
     if (_hasAny(text, ['اعلان', 'اعلانات', 'ترويج'])) {
       if (wantsAdd) {
-        return 'افتح «الإعدادات ← إعلانات المؤسسة» لإضافة إعلانك، اختيار الصورة والألوان ومعاينة الشريط ثم إرساله للمراجعة. بعد الموافقة يظهر حسب مدة النشر المعتمدة.';
+        return 'افتح «الإعدادات ← إعلانات المؤسسة» وضيف إعلانك: اختر الصورة والألوان وشوف شكل الشريط، وبعدها ارسله للمراجعة. وإذا انقبل يطلع حسب مدة النشر المعتمدة.';
       }
       if (wantsView) {
-        return 'الإعلان المقبول يظهر كشريط أسفل خيارات الرئيسية للمجانية والأساسية. اضغط عليه لعرض المؤسسة والتفاصيل ورقم التواصل. VIP لا تظهر له الإعلانات.';
+        return 'الإعلان المقبول يطلع كشريط تحت خيارات الرئيسية للمجانية والأساسية. اضغط عليه وتشوف المؤسسة والتفاصيل ورقم التواصل. ومشترك VIP ما تطلع له الإعلانات.';
       }
-      return 'نظام الإعلان: مشترك VIP ينشئه، والمالك يراجعه، ثم يظهر للمجانية والأساسية في شريط الرئيسية ويُحذف تلقائيًا بعد 48 ساعة من الموافقة.';
+      return 'نظام الإعلانات: مشترك VIP يسوّي الإعلان، والمالك يراجعه، وبعدها يطلع للمجانية والأساسية في شريط الرئيسية وينحذف تلقائي بعد 48 ساعة من الموافقة.';
     }
     if (_hasAny(text, ['مركب', 'سيار', 'لوحه', 'استمار', 'فحص', 'تامين'])) {
       if (wantsAdd) {
-        return 'افتح «المركبات ← إضافة مركبة»، واكتب الاسم واللوحة وحدد انتهاء الاستمارة والفحص والتأمين. المجانية مركبة واحدة، الأساسية 5، وVIP دون حد.';
+        return 'افتح «المركبات ← إضافة مركبة»، واكتب الاسم واللوحة وحدد انتهاء الاستمارة والفحص والتأمين. المجانية مركبة وحدة، والأساسية 5، وVIP بدون حد.';
       }
       if (wantsDelete) {
-        return 'لحذف مركبة افتح قسم المركبات واضغط الحذف في بطاقتها ثم أكد. حساب الموظف يحتاج صلاحية حذف المركبات.';
+        return 'عشان تحذف مركبة: افتح قسم المركبات واضغط الحذف في بطاقتها وأكّد. وحساب الموظف لازم تكون عنده صلاحية حذف المركبات.';
       }
       if (vehicles.isEmpty) {
-        return 'لا توجد مركبات مسجلة حاليًا. افتح «المركبات ← إضافة مركبة» لإضافة بياناتها وصورتها.';
+        return 'ما عندك مركبات مسجّلة للحين. افتح «المركبات ← إضافة مركبة» وضيف بياناتها وصورتها.';
       }
       if (_hasAny(text, ['كم', 'عدد'])) {
         return vehicles.length == 1
-            ? 'لديك مركبة واحدة مسجلة.'
-            : 'لديك ${vehicles.length} مركبات مسجلة.';
+            ? 'عندك مركبة وحدة مسجّلة.'
+            : 'عندك ${vehicles.length} مركبات مسجّلة.';
       }
       final matching = vehicles.where((vehicle) {
         final name = _normalizeArabic(vehicle['name']?.toString() ?? '');
@@ -12113,12 +12251,12 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
             final employee = vehicle['assignedEmployee']?.toString() ?? '';
             final status =
                 const {
-                  'working': 'تعمل',
+                  'working': 'شغّالة',
                   'stopped': 'متوقفة',
-                  'broken': 'متوقفة بسبب عطل',
+                  'broken': 'عطلانة',
                   'maintenance': 'تحت الصيانة',
                 }[vehicle['status']] ??
-                'تعمل';
+                'شغّالة';
             return '🚗 $name\nاللوحة: $plate\nالموظف المسؤول: ${employee.isEmpty ? 'غير محدد' : employee}\nالحالة: $status\nالاستمارة: ${vehicle['registration'] ?? 'غير مضافة'}\nالفحص: ${vehicle['inspection'] ?? 'غير مضاف'}\nالتأمين: ${vehicle['insurance'] ?? 'غير مضاف'}';
           })
           .join('\n\n');
@@ -12130,19 +12268,19 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       'عميل محتمل',
       'اسعار السوق',
     ])) {
-      return 'موظف البحث التجاري ضمن VIP. يبحث عن المقاولين والعملاء والأسعار، ويكتب تقرير متابعة يتضمن طريقة الاتصال والنتيجة والسعر واحتمالية الموافقة والخطوة التالية.';
+      return 'موظف البحث التجاري من ضمن VIP. يدوّر لك على المقاولين والعملاء والأسعار، ويكتب لك تقرير متابعة فيه طريقة الاتصال والنتيجة والسعر واحتمال الموافقة والخطوة الجاية.';
     }
     if (_hasAny(text, ['موظف استقبال', 'استقبال العملاء'])) {
-      return 'موظف الاستقبال متاح في الأساسية وVIP. تضبط معلومات المؤسسة وساعات العمل وأسلوب الرد ليجمع بيانات العملاء ويرد على الاستفسارات الأولية.';
+      return 'موظف الاستقبال موجود في الأساسية وVIP. تضبط له معلومات المؤسسة وساعات العمل وأسلوب الرد، وهو يجمع بيانات العملاء ويرد على الاستفسارات الأولية.';
     }
     if (_hasAny(text, ['واتس', 'واتساب', 'مكالم', 'اتصالات'])) {
-      return 'موظفا واتساب والاتصالات متاحان ضمن باقة VIP. واتساب يحتاج حساب Meta Business وخادمًا عامًا، والاتصالات تحتاج مزود اتصال سحابي.';
+      return 'موظف واتساب وموظف الاتصالات موجودين في باقة VIP. واتساب يحتاج حساب Meta Business وخادم عام، والاتصالات تحتاج مزوّد اتصال سحابي.';
     }
     if (_hasAny(text, ['موظف', 'موظفين', 'صلاحيات', 'مستخدم'])) {
       if (wantsAdd) {
-        return 'من «الإعدادات ← الموظفون والصلاحيات» اضغط إضافة، واكتب البيانات وكلمة مرور 8 خانات وحدد الصلاحيات. المجانية موظف واحد، الأساسية 5، وVIP دون حد.';
+        return 'من «الإعدادات ← الموظفون والصلاحيات» اضغط إضافة، واكتب البيانات وكلمة مرور من 8 خانات وحدد الصلاحيات. المجانية موظف واحد، والأساسية 5، وVIP بدون حد.';
       }
-      return 'الموظفون العاديون حسابات لفريق المؤسسة، أما موظفو AI فهم مساعدين ذكيين. المجانية تشمل اسأل موظف، الأساسية تضيف الاستقبال، وVIP يفتح الجميع.';
+      return 'الموظفين العاديين حسابات لفريق المؤسسة، أما موظفين AI فهم مساعدين أذكياء. المجانية فيها «اسأل موظف»، والأساسية تزيد عليها الاستقبال، وVIP يفتح لك الكل.';
     }
     if (_hasAny(text, [
       'باقه',
@@ -12157,7 +12295,7 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       return _conversation.ask(prefs, question);
     }
     if (_hasAny(text, ['كود', 'تفعيل', 'رمز الاشتراك'])) {
-      return 'لتفعيل كود: من صفحة الدخول اختر تفعيل الكود، اكتب اسم المستخدم والكود وأكد. يحدد الكود الباقة والمدة، وبعد انتهائها يعود الحساب للمجانية.';
+      return 'عشان تفعّل كود: من صفحة الدخول اختر تفعيل الكود، واكتب اسم المستخدم والكود وأكّد. الكود يحدد الباقة والمدة، وإذا خلصت المدة يرجع الحساب للمجانية.';
     }
     if (_hasAny(text, [
       'شعار',
@@ -12166,10 +12304,10 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       'اسم المؤسسه',
       'نشاط المؤسسه',
     ])) {
-      return 'افتح «مؤسستي» لتعديل الاسم والنشاط والتواصل، أو اختر «إضافة شعار المؤسسة». بعد الحفظ يظهر الشعار تلقائيًا قبل الترحيب في الرئيسية.';
+      return 'افتح «مؤسستي» وعدّل الاسم والنشاط والتواصل، أو اختر «إضافة شعار المؤسسة». وبعد الحفظ يطلع الشعار تلقائي قبل الترحيب في الرئيسية.';
     }
     if (_hasAny(text, ['تنبيه', 'موعد', 'مواعيد', 'تجديد', 'انتهاء'])) {
-      return 'قسم التنبيهات يجمع المواعيد وتجديدات المؤسسة والموظفين والمركبات والفواتير. فعّل الإشعارات والتذكيرات من الإعدادات.';
+      return 'قسم التنبيهات يجمع لك المواعيد وتجديدات المؤسسة والموظفين والمركبات والفواتير. فعّل الإشعارات والتذكيرات من الإعدادات.';
     }
     if (_hasAny(text, [
       'دخول',
@@ -12179,16 +12317,16 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
       'نسيت',
       'حساب',
     ])) {
-      return 'استخدم اسم المستخدم وكلمة المرور في صفحة الدخول. عند النسيان اختر استعادة الاسم أو كلمة المرور، ويمكن للمدير تغيير بيانات الدخول من الإعدادات.';
+      return 'ادخل باسم المستخدم وكلمة المرور من صفحة الدخول. وإذا نسيتها اختر استعادة الاسم أو كلمة المرور، والمدير يقدر يغيّر بيانات الدخول من الإعدادات.';
     }
     if (_hasAny(text, ['خادم', 'سيرفر', 'اجهزه', 'جهاز ثاني', 'مزامنه'])) {
-      return 'يمكن استخدام خدووم على عدة أجهزة متصلة بالخادم نفسه. للاستخدام خارج الشبكة المحلية نحتاج نشر الخادم على رابط HTTPS عام.';
+      return 'تقدر تستخدم خدووم على أكثر من جهاز متصلة بنفس الخادم. وللاستخدام برّا الشبكة المحلية لازم الخادم يكون منشور على رابط HTTPS عام.';
     }
     if (_hasAny(text, ['سلام', 'مرحبا', 'هلا', 'اهلا'])) {
       return 'وعليكم السلام، حياك الله 👋 وش تحب تعرف؟';
     }
     if (_hasAny(text, ['مساعده', 'ساعدني', 'مميزات', 'وش تعرف'])) {
-      return 'أقدر أساعدك في بيانات المؤسسة، الموظفين، المركبات، الفواتير، التنبيهات، الباقات، الإعلانات، والدخول. اكتب سؤالك بطريقتك العادية.';
+      return 'أقدر أساعدك في بيانات المؤسسة، والموظفين، والمركبات، والفواتير، والتنبيهات، والباقات، والإعلانات، والدخول. اكتب سؤالك بطريقتك وأنا معك.';
     }
     return _conversation.ask(prefs, question);
   }
@@ -12218,13 +12356,34 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
                   : 'قراءة الردود بصوت',
               onPressed: () {
                 setState(() => _speakReplies = !_speakReplies);
-                if (!_speakReplies) unawaited(_tts.stop());
+                if (!_speakReplies) unawaited(_stopSpeaking());
               },
               icon: Icon(
                 _speakReplies
                     ? Icons.volume_up_outlined
                     : Icons.volume_off_outlined,
               ),
+            ),
+            PopupMenuButton<String>(
+              tooltip: 'صوت اسألني: رجل / امرأة',
+              icon: const Icon(Icons.record_voice_over_outlined),
+              onSelected: _setVoiceGender,
+              itemBuilder: (_) => [
+                const PopupMenuItem<String>(
+                  enabled: false,
+                  child: Text('صوت اسألني — مولّد بالذكاء الاصطناعي'),
+                ),
+                CheckedPopupMenuItem<String>(
+                  value: 'male',
+                  checked: _voiceGender == 'male',
+                  child: const Text('صوت رجل'),
+                ),
+                CheckedPopupMenuItem<String>(
+                  value: 'female',
+                  checked: _voiceGender == 'female',
+                  child: const Text('صوت امرأة'),
+                ),
+              ],
             ),
             const Padding(
               padding: EdgeInsetsDirectional.only(end: 8),

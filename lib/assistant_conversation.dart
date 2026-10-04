@@ -14,16 +14,16 @@ class AssistantConversation {
 
   Future<String> ask(BranchPreferences prefs, String question) async {
     bind(prefs.branchId);
-    if (busy) return 'لحظة، أكمل جواب رسالتك السابقة أولًا.';
+    if (busy) return 'لحظة، خلني أخلّص جواب رسالتك الأولى.';
     if (prefs.getString('session_user_type') == 'employee') {
-      return 'المحادثة الموسعة تحتاج صلاحية إدارة إعدادات المؤسسة. تقدر تستخدم الاستعلامات المتاحة لحسابك.';
+      return 'المحادثة الموسّعة تحتاج صلاحية إدارة إعدادات المؤسسة. تقدر تستخدم الاستعلامات المتاحة لحسابك.';
     }
     busy = true;
     KhdoomCloudApi? api;
     try {
       const storage = FlutterSecureStorage();
       final token = await storage.read(key:'cloud_session_token');
-      if (token == null || token.isEmpty) return 'سجل الدخول لتشغيل المحادثة الذكية وربطها بتعليم المؤسسة.';
+      if (token == null || token.isEmpty) return 'سجّل دخولك عشان تشتغل المحادثة الذكية وتنربط بتعليم المؤسسة.';
       int count(String key) {
         try { final value=jsonDecode(prefs.getString(key) ?? '[]'); return value is List ? value.length : 0; }
         catch (_) { return 0; }
@@ -36,13 +36,13 @@ class AssistantConversation {
         'appointments':count('business_appointments_requests'),
         'documents':count('organization_alert_records'),
       });
-      final reply=response['text']?.toString() ?? 'لم يصل جواب من الخادم. حاول مجددًا.';
+      final reply=response['text']?.toString() ?? 'ما وصل جواب من الخادم. جرّب مرة ثانية.';
       remember(question,reply);
       return reply;
     } on CloudApiException catch (e) {
-      return e.statusCode == 404 ? 'تحديث المحادثة الذكية لم يصل للخادم بعد. الاستعلامات المحلية ما زالت متاحة.' : e.message;
+      return e.statusCode == 404 ? 'تحديث المحادثة الذكية ما وصل للخادم للحين. الاستعلامات المحلية شغّالة.' : e.message;
     } catch (_) {
-      return 'تعذر الاتصال الآن. لم أنفّذ أو أحفظ أي إجراء؛ حاول مرة ثانية.';
+      return 'ما قدرت أتصل الحين. ما نفّذت ولا حفظت أي شي؛ جرّب مرة ثانية.';
     } finally { api?.close(); busy=false; }
   }
 
