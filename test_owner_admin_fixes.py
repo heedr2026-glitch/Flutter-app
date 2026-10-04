@@ -221,6 +221,32 @@ class OwnerAdminFixesTest(unittest.TestCase):
         self.assertEqual(fetch('/owner/api/v2/ads/image/../me')[0], 404)
         self.assertEqual(fetch('/owner/api/v2/ads/image/' + digest, key='wrong')[0], 401)
 
+    def test_admin_account_can_be_deleted_only_after_it_is_disabled(self):
+        account = {'name': 'موظف مؤقت', 'username': 'temp.staff', 'role': 'support', 'password': 'temporary-pass-123'}
+        self.assertEqual(self.call('/owner/api/v2/admins', 'POST', account)[0], 200)
+        ident = next(x['id'] for x in self.call('/owner/api/v2/admins')[1]['items'] if x['username'] == 'temp.staff')
+        token = self.call('/owner/api/v2/login', 'POST', {'username': 'temp.staff', 'password': 'temporary-pass-123'}, headers={'X-Owner-Key': ''})[1]['token']
+        staff = {'X-Owner-Key': '', 'X-Admin-Session': token}
+        self.assertEqual(self.call('/owner/api/v2/me', headers=staff)[0], 200)
+        # حساب نشط لا يُحذف، والموظف نفسه لا يملك صلاحية الحذف
+        self.assertEqual(self.call(f'/owner/api/v2/admins/{ident}', 'DELETE')[0], 400)
+        self.assertEqual(self.call(f'/owner/api/v2/admins/{ident}', 'DELETE', headers=staff)[0], 403)
+        with server.db() as c:
+            c.execute('UPDATE support_tickets SET assigned_admin_id=?', (ident,))
+            tickets = c.execute('SELECT COUNT(*) n FROM support_tickets WHERE assigned_admin_id=?', (ident,)).fetchone()['n']
+            c.commit()
+        self.assertEqual(self.call(f'/owner/api/v2/admins/{ident}', 'PUT', {**account, 'password': '', 'active': False})[0], 200)
+        self.assertEqual(self.call('/owner/api/v2/me', headers=staff)[0], 401)
+        self.assertEqual(self.call(f'/owner/api/v2/admins/{ident}', 'DELETE'), (200, {'deleted': True}))
+        self.assertNotIn('temp.staff', [x['username'] for x in self.call('/owner/api/v2/admins')[1]['items']])
+        self.assertEqual(self.call('/owner/api/v2/login', 'POST', {'username': 'temp.staff', 'password': 'temporary-pass-123'}, headers={'X-Owner-Key': ''})[0], 401)
+        self.assertEqual(self.call(f'/owner/api/v2/admins/{ident}', 'DELETE')[0], 404)
+        with server.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) n FROM support_tickets WHERE assigned_admin_id=?', (ident,)).fetchone()['n'], 0)
+            logged = c.execute("SELECT target FROM platform_audit WHERE action='admin_deleted'").fetchone()
+        self.assertIn('temp.staff', logged['target'])
+        self.assertGreaterEqual(tickets, 0)
+
     def test_platform_ad_draft_is_not_published_until_asked(self):
         status, body = self.call('/owner/api/platform-ads', 'POST', {'title': 'عرض', 'message': 'نص', 'status': 'draft'})
         self.assertEqual((status, body['published']), (201, False))

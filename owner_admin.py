@@ -924,6 +924,20 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     c.execute("UPDATE platform_admins SET totp_secret='',totp_enabled=0,totp_last_step=0 WHERE id=?",(ident,)); audit(c,a['name'],'two_factor_reset','admins/'+str(ident))
    c.execute('DELETE FROM platform_sessions WHERE admin_id=?',(ident,))
   return {'saved':True}
+ if re.fullmatch(r'admins/\d+',r) and m=='DELETE':
+  # الحذف النهائي للمالك فقط، ولحساب موقوف فقط: الإيقاف أولًا يمنع حذف حساب يعمل بالخطأ.
+  if a.get('role')!='owner': raise s.ApiError(403,'حذف الحسابات الإدارية للمالك فقط')
+  ident=int(r.split('/')[1])
+  if ident==a.get('id'): raise ValueError('لا يمكنك حذف حسابك الحالي')
+  row=c.execute('SELECT name,username,active FROM platform_admins WHERE id=?',(ident,)).fetchone()
+  if not row: raise s.ApiError(404,'الحساب غير موجود')
+  if row['active']: raise ValueError('أوقف الحساب أولًا ثم احذفه')
+  c.execute('DELETE FROM platform_sessions WHERE admin_id=?',(ident,))
+  c.execute('UPDATE support_tickets SET assigned_admin_id=NULL WHERE assigned_admin_id=?',(ident,))
+  c.execute('DELETE FROM platform_admins WHERE id=?',(ident,))
+  # الاسم يبقى في السجل نصًا حتى بعد حذف الحساب.
+  audit(c,a['name'],'admin_deleted',str(row['name'])+' ('+str(row['username'])+')')
+  return {'deleted':True}
  if r=='organizations' and m=='GET':
   conditions=['1=1']; args=[]
   if q.get('package') in ('free','basic','vip'): conditions.append("COALESCE(s.package,'free')=?"); args.append(q['package'])
