@@ -157,6 +157,37 @@ def migrate(c,postgres=False):
  c.execute("UPDATE platform_credit_ledger SET reason=actor,actor=reason WHERE (reason='المالك' OR reason IN (SELECT name FROM platform_admins)) AND actor<>'المالك' AND actor NOT IN (SELECT name FROM platform_admins)")
  for key,package in [('free','free'),('basic','basic'),('vip','vip')]: c.execute('INSERT INTO readiness_test_accounts(account_key,package,active,created_at) VALUES(?,?,1,?) ON CONFLICT(account_key) DO UPDATE SET package=excluded.package,active=1',(f'__readiness_{key}__',package,stamp()))
 
+# صور الإعلانات: قوائم لوحة الإدارة ترسل مرجعًا قصيرًا بدل الصورة كاملة (images=ref)،
+# والمتصفح يجلب كل صورة مرة واحدة برابط ثابت يحفظه عنده. المرجع بصمة المحتوى نفسه.
+AD_IMAGE_PREFIX='khdoom-image:'
+_AD_IMAGES={}
+_AD_IMAGES_LIMIT=400
+def ad_image_ref(value):
+ if not isinstance(value,str) or len(value)<2048 or not value.startswith('data:image/'): return value
+ digest=hashlib.sha256(value.encode()).hexdigest()[:40]
+ _AD_IMAGES.pop(digest,None); _AD_IMAGES[digest]=value
+ while len(_AD_IMAGES)>_AD_IMAGES_LIMIT: _AD_IMAGES.pop(next(iter(_AD_IMAGES)))
+ return AD_IMAGE_PREFIX+digest
+def ad_images_as_refs(row):
+ row=dict(row)
+ if 'image_data' in row: row['image_data']=ad_image_ref(row['image_data'])
+ raw=row.get('banner_config'); config=raw
+ if isinstance(raw,str) and ('ImageData' in raw or 'image_data' in raw):
+  try: config=json.loads(raw)
+  except ValueError: config=raw
+ if isinstance(config,dict) and any(key in config for key in ('bannerImageData','banner_image_data')):
+  config={**config,**{key:ad_image_ref(config[key]) for key in ('bannerImageData','banner_image_data') if key in config}}
+  row['banner_config']=json.dumps(config,ensure_ascii=False) if isinstance(raw,str) else config
+ return row
+def ad_image_lookup(digest,s):
+ if not re.fullmatch(r'[0-9a-f]{40}',digest or ''): return None
+ if digest in _AD_IMAGES: return _AD_IMAGES[digest]
+ # بعد إعادة تشغيل الخادم تكون الذاكرة فارغة: نبحث في الجدولين مرة ونعيد تسجيل الصور.
+ with s.db() as c:
+  for table in ('advertisements','platform_advertisements'):
+   if not table_exists(c,table,s): continue
+   for row in c.execute('SELECT image_data,banner_config FROM '+table).fetchall(): ad_images_as_refs(row)
+ return _AD_IMAGES.get(digest)
 def permission(path,method):
  p=path.removeprefix('/owner/api/')
  if p.startswith('v2/'):
@@ -475,6 +506,14 @@ def handle(h,method,s):
    h._send(200,{'token':token}); return True
   actor=authorize(h,s)
   if route=='me' and method=='GET': h._send(200,actor); return True
+  if route.startswith('ads/image/') and method=='GET':
+   value=ad_image_lookup(route[len('ads/image/'):],s)
+   if not value: raise s.ApiError(404,'صورة الإعلان غير موجودة')
+   body=value.encode(); h._last_status=200; h.send_response(200)
+   h.send_header('Content-Type','text/plain; charset=utf-8'); h.send_header('Content-Length',str(len(body)))
+   # المرجع بصمة المحتوى، فالصورة لا تتغير أبدًا تحت نفس الرابط؛ يحفظها متصفح المدير فقط.
+   h.send_header('Cache-Control','private, max-age=31536000, immutable'); h.send_header('X-Content-Type-Options','nosniff')
+   h.end_headers(); h.wfile.write(body); return True
   if route.startswith('me/2fa'):
    if actor.get('id') is None: raise ValueError('حساب المالك يدخل بالمفتاح الرئيسي؛ التحقق بخطوتين لحسابات الموظفين')
    d=h._body() if method=='POST' else {}
@@ -1197,7 +1236,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='ads/live' and m=='GET':
   import ad_policy
   ensure_owner_tables(c,s,('advertisements','platform_advertisements'))
-  return ad_policy.public_ads(c,stamp())
+  live=ad_policy.public_ads(c,stamp())
+  return [ad_images_as_refs(ad) for ad in live] if q.get('images')=='ref' else live
  if r=='ads' and m=='GET':
   ensure_owner_tables(c,s,('advertisements',))
   condition="CASE WHEN a.approved=1 AND a.expires_at IS NOT NULL AND a.expires_at<=? THEN 'expired' WHEN a.active=0 AND a.approved=0 THEN 'rejected' WHEN a.active=0 THEN 'stopped' WHEN a.approved=0 THEN 'pending' WHEN a.scheduled_at>? THEN 'scheduled' ELSE 'published' END"
@@ -1205,7 +1245,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   # Status expression is in the projection; use a subquery for pagination and filtering.
   src='FROM (SELECT a.*,o.name organization_name,'+condition+' status '+where+') ads WHERE 1=1'
   if q.get('status'): src+=' AND status=?'; args.append(q['status'])
-  return paged(c,'SELECT *',src,args,'id DESC',page)
+  out=paged(c,'SELECT *',src,args,'id DESC',page)
+  if q.get('images')=='ref': out['items']=[ad_images_as_refs(ad) for ad in out['items']]
+  return out
  if re.fullmatch(r'ads/\d+/preview',r) and m=='GET':
   ensure_owner_tables(c,s,('advertisements',))
   ident=int(r.split('/')[1]); ad=c.execute("SELECT a.*,o.name organization_name FROM advertisements a JOIN organizations o ON o.id=a.organization_id WHERE a.id=? AND COALESCE(a.deleted,0)=0",(ident,)).fetchone()

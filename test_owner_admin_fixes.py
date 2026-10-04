@@ -186,6 +186,41 @@ class OwnerAdminFixesTest(unittest.TestCase):
         self.assertNotIn('bannerImageData', config)  # الصورة لا تتكرر داخل الإعدادات
         self.assertEqual(feed[0]['image_data'], image)  # التطبيق يقرأ الصورة من image_data
 
+    def test_ad_lists_send_image_references_and_images_are_cacheable(self):
+        import base64
+        image = 'data:image/png;base64,' + base64.b64encode(b'x' * 6000).decode()
+        self.assertEqual(self.call('/owner/api/platform-ads', 'POST', {'title': 'عرض', 'adMode': 'full_image', 'imageData': image})[0], 201)
+        with server.db() as c:
+            c.execute("INSERT INTO advertisements(organization_id,title,message,contact,active,approved,created_at,image_data,banner_config) VALUES(1,'طلب','نص','',1,0,?,?,?)", (server.now(), image, json.dumps({'adType': 'image', 'bannerImageData': image})))
+            c.commit()
+        # القوائم القديمة (بدون الطلب الصريح) تبقى كما هي بالصور كاملة
+        self.assertEqual(self.call('/owner/api/platform-ads')[1][0]['image_data'], image)
+        self.assertEqual(self.call('/owner/api/v2/ads?status=pending&page=1')[1]['items'][0]['image_data'], image)
+        platform = self.call('/owner/api/platform-ads?images=ref')[1][0]
+        pending = self.call('/owner/api/v2/ads?status=pending&page=1&images=ref')[1]['items'][0]
+        live = self.call('/owner/api/v2/ads/live?images=ref')[1][0]
+        reference = platform['image_data']
+        self.assertTrue(reference.startswith('khdoom-image:') and len(reference) < 60)
+        self.assertEqual((pending['image_data'], live['image_data']), (reference, reference))
+        self.assertEqual(json.loads(pending['banner_config']), {'adType': 'image', 'bannerImageData': reference})
+        digest = reference.split(':', 1)[1]
+
+        def fetch(path, key=KEY):
+            try:
+                with urlopen(Request(f'http://127.0.0.1:{self.httpd.server_port}{path}', headers={'X-Owner-Key': key}), timeout=10) as response:
+                    return response.status, response.read().decode(), response.headers.get('Cache-Control', '')
+            except HTTPError as error:
+                return error.code, '', ''
+        status, body, cache = fetch('/owner/api/v2/ads/image/' + digest)
+        self.assertEqual((status, body), (200, image))
+        self.assertIn('immutable', cache)
+        self.assertIn('private', cache)
+        owner_admin._AD_IMAGES.clear()  # كأن الخادم أعيد تشغيله
+        self.assertEqual(fetch('/owner/api/v2/ads/image/' + digest)[:2], (200, image))
+        self.assertEqual(fetch('/owner/api/v2/ads/image/' + '0' * 40)[0], 404)
+        self.assertEqual(fetch('/owner/api/v2/ads/image/../me')[0], 404)
+        self.assertEqual(fetch('/owner/api/v2/ads/image/' + digest, key='wrong')[0], 401)
+
     def test_platform_ad_draft_is_not_published_until_asked(self):
         status, body = self.call('/owner/api/platform-ads', 'POST', {'title': 'عرض', 'message': 'نص', 'status': 'draft'})
         self.assertEqual((status, body['published']), (201, False))

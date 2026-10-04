@@ -17,12 +17,18 @@ async function api(path,method='GET',data){
  if(cacheKey&&homeRequestCache.has(cacheKey))return homeRequestCache.get(cacheKey);
  if(method!=='GET')homeRequestCache.clear();
  const request=(async()=>{
-  const r=await fetch(path.startsWith('/')?path:'/owner/api/v2/'+path,{method,headers:{'Content-Type':'application/json',...(ownerKey?{'X-Owner-Key':ownerKey}:{}),...(token?{'X-Admin-Session':token}:{})},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});
-  const d=await r.json();if(!r.ok)throw Error(d.error||'تعذر تنفيذ الطلب');return d;
+  // قوائم الإعلانات تُطلب بمراجع للصور بدل الصور نفسها؛ كل صورة تُجلب مرة واحدة ويحفظها المتصفح.
+  const imageRefs=method==='GET'&&(/^ads(\?|$)/.test(path)||path==='ads/live'||path==='/owner/api/platform-ads');
+  const url=(path.startsWith('/')?path:'/owner/api/v2/'+path)+(imageRefs?(path.includes('?')?'&':'?')+'images=ref':'');
+  const r=await fetch(url,{method,headers:{'Content-Type':'application/json',...(ownerKey?{'X-Owner-Key':ownerKey}:{}),...(token?{'X-Admin-Session':token}:{})},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});
+  const d=await r.json();if(!r.ok)throw Error(d.error||'تعذر تنفيذ الطلب');if(imageRefs)await khdoomResolveAdImages(d);return d;
  })();
  if(cacheKey){homeRequestCache.set(cacheKey,request);request.catch(()=>{if(homeRequestCache.get(cacheKey)===request)homeRequestCache.delete(cacheKey)})}
  return request;
 }
+const khdoomAdImages=new Map();
+function khdoomAdImage(ref){const id=ref.slice('khdoom-image:'.length);if(!khdoomAdImages.has(id)){const pending=fetch('/owner/api/v2/ads/image/'+id,{headers:hdr()}).then(r=>r.ok?r.text():'').catch(()=>'');khdoomAdImages.set(id,pending);pending.then(value=>{if(!value)khdoomAdImages.delete(id)})}return khdoomAdImages.get(id)}
+async function khdoomResolveAdImages(data){const list=Array.isArray(data)?data:Array.isArray(data?.items)?data.items:[],isRef=v=>typeof v==='string'&&v.startsWith('khdoom-image:');await Promise.all(list.map(async ad=>{if(!ad||typeof ad!=='object')return;if(isRef(ad.image_data))ad.image_data=await khdoomAdImage(ad.image_data);const raw=ad.banner_config;let cfg=raw;if(typeof raw==='string'){if(!raw.includes('khdoom-image:'))return;try{cfg=JSON.parse(raw)}catch(_){return}}if(!cfg||typeof cfg!=='object')return;let changed=false;for(const key of ['bannerImageData','banner_image_data'])if(isRef(cfg[key])){cfg[key]=await khdoomAdImage(cfg[key]);changed=true}if(changed)ad.banner_config=typeof raw==='string'?JSON.stringify(cfg):cfg}))}
 // ترويسات الطلب نفسها التي تستخدمها api()؛ أزرار الفحص القديمة تعتمد على هذه الدالة.
 function hdr(){return {'Content-Type':'application/json',...(ownerKey?{'X-Owner-Key':ownerKey}:{}),...(token?{'X-Admin-Session':token}:{})}}
 // حقول التاريخ والوقت تعرض وتُدخل بتوقيت جهاز المدير، وتُرسل للخادم بصيغة عالمية صريحة.

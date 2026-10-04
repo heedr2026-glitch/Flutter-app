@@ -3082,7 +3082,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._owner()
             with db() as connection:
                 rows = connection.execute("SELECT id,title,message,promo_code,image_data,active,starts_at,expires_at,created_at,display_seconds,banner_config,published_at FROM platform_advertisements ORDER BY id DESC").fetchall()
-            self._send(200, [dict(row) for row in rows])
+            as_refs = parse_qs(urlparse(self.path).query).get("images", [""])[0] == "ref"
+            self._send(200, [owner_admin.ad_images_as_refs(row) if as_refs else dict(row) for row in rows])
             return
         if path == "/owner/api/platform-ads" and method == "POST":
             self._owner()
