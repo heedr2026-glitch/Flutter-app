@@ -247,6 +247,34 @@ class OwnerAdminFixesTest(unittest.TestCase):
         self.assertIn('temp.staff', logged['target'])
         self.assertGreaterEqual(tickets, 0)
 
+    def test_owner_view_groups_organizations_and_users_under_their_owner(self):
+        with server.db() as c:
+            c.execute('INSERT INTO organizations(id,name,created_at) VALUES(2,?,?)', ('الفرع الثاني للمالك', server.now()))
+            c.execute('INSERT INTO organizations(id,name,created_at) VALUES(3,?,?)', ('مؤسسة بلا مالك', server.now()))
+            c.execute('INSERT INTO organizations(id,name,created_at,archived_at) VALUES(4,?,?,?)', ('مؤسسة محذوفة', server.now(), server.now()))
+            c.execute("INSERT INTO users(id,organization_id,name,username,email,phone,password_hash,password_salt,role,job_title,created_at) VALUES(20,2,'سالم','salem.reception','','0555000111','x','x','employee','موظف استقبال',?)", (server.now(),))
+            c.execute("INSERT INTO users(id,organization_id,name,username,email,phone,password_hash,password_salt,role,created_at,archived_at) VALUES(21,2,'محذوف','gone.user','','','x','x','employee',?,?)", (server.now(), server.now()))
+            c.execute('INSERT INTO owner_accounts(id,owner_user_id,created_at) VALUES(1,1,?)', (server.now(),))
+            for organization, primary in ((1, 1), (2, 0)):
+                c.execute("INSERT INTO account_organizations(organization_id,account_id,is_primary,independent_package,verified_at,verified_by) VALUES(?,1,?,1,?,'test')", (organization, primary, server.now()))
+            c.commit()
+        status, body = self.call('/owner/api/v2/directory/owners')
+        self.assertEqual(status, 200)
+        owned = next(g for g in body['items'] if g['owner'])
+        self.assertEqual((owned['owner']['name'], owned['owner']['username']), ('مالك', 'owner1'))
+        self.assertEqual(sorted(o['name'] for o in owned['organizations']), ['الفرع الثاني للمالك', 'مؤسسة الاختبار'])
+        second = next(o for o in owned['organizations'] if o['id'] == 2)
+        self.assertEqual([(u['username'], u['job_title'], u['is_owner']) for u in second['users']], [('salem.reception', 'موظف استقبال', False)])
+        first = next(o for o in owned['organizations'] if o['id'] == 1)
+        self.assertTrue(first['users'][0]['is_owner'])
+        orphan = next(g for g in body['items'] if not g['owner'])
+        self.assertEqual([o['name'] for o in orphan['organizations']], ['مؤسسة بلا مالك'])
+        self.assertEqual((body['total'], body['counts']['owners']), (2, 1))
+        self.assertNotIn('مؤسسة محذوفة', json.dumps(body, ensure_ascii=False))
+        # البحث باسم موظف يُظهر مالكه؛ والبحث بما لا يوجد يرجع فارغًا
+        self.assertEqual([bool(g['owner']) for g in self.call('/owner/api/v2/directory/owners?search=salem')[1]['items']], [True])
+        self.assertEqual(self.call('/owner/api/v2/directory/owners?search=zzzz')[1]['items'], [])
+
     def test_platform_ad_draft_is_not_published_until_asked(self):
         status, body = self.call('/owner/api/platform-ads', 'POST', {'title': 'عرض', 'message': 'نص', 'status': 'draft'})
         self.assertEqual((status, body['published']), (201, False))

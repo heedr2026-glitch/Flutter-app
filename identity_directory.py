@@ -38,6 +38,36 @@ def handle(c, route, method, data, query, page, actor, admin, server):
         order={'name':'o.name ASC,o.id DESC','expiry':'CASE WHEN s.expires_at IS NULL THEN 1 ELSE 0 END,s.expires_at ASC,o.id DESC','oldest':'o.id ASC'}.get(query.get('sort'),'o.id DESC')
         out=admin.paged(c,"SELECT o.id,o.name,o.entity_type,o.phone,o.created_at,u.id owner_id,u.name owner_name,u.username owner_username,COALESCE(s.package,'free') package,s.expires_at,COALESCE(z.suspended,0) suspended",where,args,order,page)
         out['counts']=counts();return out
+    if route == 'directory/owners' and method == 'GET':
+        # عرض هرمي: المالك ← مؤسساته ← مستخدمو كل مؤسسة ووظائفهم.
+        organizations=admin.rows(c,"SELECT o.id,o.name,o.entity_type,o.phone,o.created_at,u.id owner_id,u.name owner_name,u.username owner_username,u.phone owner_phone,COALESCE(s.package,'free') package,s.expires_at,COALESCE(z.suspended,0) suspended FROM organizations o LEFT JOIN account_organizations ao ON ao.organization_id=o.id LEFT JOIN owner_accounts a ON a.id=ao.account_id LEFT JOIN users u ON u.id=a.owner_user_id LEFT JOIN subscriptions s ON s.organization_id=o.id LEFT JOIN platform_org_state z ON z.organization_id=o.id WHERE o.archived_at IS NULL ORDER BY o.id DESC LIMIT 5000")
+        groups={}
+        for org in organizations:
+            # مؤسسة بلا مالك مرتبط تظهر في مجموعة مستقلة حتى لا تختفي.
+            key=('owner',org['owner_id']) if org['owner_id'] else ('organization',org['id'])
+            group=groups.setdefault(key,{'owner':{'id':org['owner_id'],'name':org['owner_name'],'username':org['owner_username'],'phone':org['owner_phone']} if org['owner_id'] else None,'organizations':[]})
+            group['organizations'].append({k:org[k] for k in ('id','name','entity_type','phone','created_at','package','expires_at','suspended')})
+        items=list(groups.values())
+        term=str(query.get('search','')).strip().lower()[:100]
+        if term:
+            like='%'+term+'%'
+            by_user={r['organization_id'] for r in c.execute("SELECT DISTINCT organization_id FROM users WHERE archived_at IS NULL AND (LOWER(name) LIKE ? OR LOWER(username) LIKE ? OR COALESCE(phone,'') LIKE ? OR LOWER(COALESCE(email,'')) LIKE ?)",(like,like,like,like)).fetchall()}
+            def matches(group):
+                owner=group['owner'] or {}
+                if any(term in str(owner.get(k) or '').lower() for k in ('name','username','phone')): return True
+                return any(term in str(o['name'] or '').lower() or term in str(o['phone'] or '') or o['id'] in by_user for o in group['organizations'])
+            items=[g for g in items if matches(g)]
+        total=len(items); shown=items[(page-1)*30:page*30]
+        wanted=[o['id'] for g in shown for o in g['organizations']]; by_org={}
+        for start in range(0,len(wanted),400):
+            part=wanted[start:start+400]
+            for user in admin.rows(c,"SELECT id,name,username,phone,role,job_title,active,organization_id FROM users WHERE archived_at IS NULL AND organization_id IN ("+','.join('?'*len(part))+") ORDER BY CASE WHEN role='admin' THEN 0 ELSE 1 END,id",part):
+                by_org.setdefault(user['organization_id'],[]).append(user)
+        for group in shown:
+            owner_id=(group['owner'] or {}).get('id')
+            for org in group['organizations']:
+                org['users']=[{**u,'is_owner':u['id']==owner_id} for u in by_org.get(org['id'],[])]
+        return {'items':shown,'total':total,'page':page,'pageSize':30,'counts':{**counts(),'owners':sum(1 for g in groups.values() if g['owner'])}}
     if route == 'directory/users' and method == 'GET':
         where='FROM users u JOIN organizations o ON o.id=u.organization_id WHERE u.archived_at IS NULL AND o.archived_at IS NULL';args=[]
         if query.get('organization'):
