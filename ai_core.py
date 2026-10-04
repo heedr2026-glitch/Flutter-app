@@ -57,6 +57,18 @@ BASE_INSTRUCTIONS = """
 """.strip()
 
 
+# «اسألني» يكلم صاحب المؤسسة نفسه، فلهجته سعودية واضحة. موظف الاستقبال يكلم عملاء المؤسسات ويبقى على لغته المهنية.
+_WHITE_TONE = "تحدث بعربية سعودية بيضاء، طبيعية ومهنية ومختصرة. ابدأ بالجواب مباشرة، واستخدم كلمات مألوفة من دون تكلف أو مبالغة في اللهجة."
+SAUDI_STYLE = """تكلم بلهجة سعودية واضحة يفهمها كل أهل المملكة (قريبة من لهجة نجد)، كأنك موظف سعودي يسولف مع صاحب المؤسسة وجهًا لوجه.
+استخدم كلام الناس: «وش، أبي، تبي، الحين، زين، تمام، مرة، عشان، وين، ليش، كذا، شوي، لسا، ما فيه، أبشر، يعطيك العافية». لا تكتب بالفصحى ولا بعبارات مثل «يمكنك، يرجى، قم بـ، لديك، حيث إن، وفقًا لـ».
+ابدأ بالجواب مباشرة وخلّه قصير. إذا سأل عن معلومة (مثل تاريخ انتهاء سجل أو باقة) عطه المعلومة نفسها بجملة وحدة ولا تسرد باقي التفاصيل إلا إذا طلبها.
+إذا ما عرف يسوي شي اشرح له خطوة خطوة بأسماء الصفحات والأزرار كما هي في التطبيق، وإذا رجع يسأل اشرح بطريقة ثانية أبسط.
+خلك محترم وطبيعي: بدون مزح زايد ولا كلمات شبابية ولا مبالغة في اللهجة. لا تتكلم عن نفسك بصيغة مذكر أو مؤنث.
+أمثلة على الأسلوب: «سجلك التجاري ينتهي يوم 30 أكتوبر، باقي عليه 26 يوم. الأفضل تجدده من الحين.» — «عشان تربط واتساب: افتح الإعدادات، بعدها اضغط ربط واتساب، وكمّل الخطوات اللي تطلع لك.»"""
+assert _WHITE_TONE in BASE_INSTRUCTIONS
+SAUDI_INSTRUCTIONS = BASE_INSTRUCTIONS.replace(_WHITE_TONE, SAUDI_STYLE)
+
+
 ACTIVITY_PLAYBOOKS: dict[str, str] = {
     "مقاولات": "اجمع نوع المشروع، المدينة، المساحة، وجود المخطط، مرحلة المشروع، نوع التشطيب، موعد البدء، ورقم التواصل.",
     "زجاج ومرايا": "اجمع نوع العمل، المقاسات، نوع الزجاج، اللون، الموقع، هل يشمل التركيب، الصور، والموعد.",
@@ -99,12 +111,12 @@ ROLES: dict[str, AgentRole] = {
     ),
     "assistant": AgentRole(
         "مساعد المؤسسة",
-        BASE_INSTRUCTIONS + "\nساعد المالك والموظف ضمن بيانات حسابهما وصلاحياتهما فقط.",
+        SAUDI_INSTRUCTIONS + "\nساعد المالك والموظف ضمن بيانات حسابهما وصلاحياتهما فقط.",
         ("get_company_info", "get_company_services", "get_price", "get_available_appointments"),
     ),
     "training": AgentRole(
         "مساعد تدريب الموظفين",
-        BASE_INSTRUCTIONS + "\nاشرح المعرفة المحفوظة واقترح صياغة واضحة. لا تحفظ أو تحذف إلا عبر مسار الإدارة الصريح.",
+        SAUDI_INSTRUCTIONS + "\nاشرح المعرفة المحفوظة واقترح صياغة واضحة. لا تحفظ أو تحذف إلا عبر مسار الإدارة الصريح.",
         ("get_company_info", "get_company_services"),
     ),
 }
@@ -315,6 +327,55 @@ class ResponsesClient:
         if direct:
             return direct
         return "\n".join(str(content.get("text", "")) for item in response.get("output", []) if isinstance(item, dict) and item.get("type") == "message" for content in item.get("content", []) if isinstance(content, dict) and content.get("type") == "output_text").strip()
+
+
+SPEECH_URL = "https://api.openai.com/v1/audio/speech"
+SPEECH_MODEL = "gpt-4o-mini-tts"
+# الصوتان اللذان توصي بهما وثائق المزود لأفضل جودة؛ يمكن تغييرهما من إعدادات الخادم دون نشر جديد.
+SPEECH_VOICES = {"male": "cedar", "female": "marin"}
+SPEECH_INSTRUCTIONS = "تكلم بالعربية بلهجة سعودية طبيعية واضحة (قريبة من لهجة نجد)، بنبرة ودودة وهادئة وسرعة متوسطة، كموظف سعودي يكلم صاحب مؤسسة. انطق الأرقام والتواريخ بالعربية، ولا تقرأ علامات الترقيم."
+SPEECH_MAX_CHARS = 700
+
+
+def speech_voice(choice: str) -> str:
+    choice = "female" if str(choice).strip().lower() == "female" else "male"
+    return os.environ.get("KHDOOM_VOICE_" + choice.upper(), "").strip() or SPEECH_VOICES[choice]
+
+
+def synthesize_speech(text: str, choice: str = "male", transport: Callable[[dict[str, Any]], bytes] | None = None) -> bytes:
+    """صوت منطوق (MP3) لرد «اسألني» بلهجة سعودية. يرفع AIServiceError عند أي تعذر ليكمل التطبيق بصوت الجوال."""
+    text = " ".join(str(text or "").split())[:SPEECH_MAX_CHARS]
+    if not text:
+        raise AIServiceError(400, "لا يوجد نص للنطق")
+    payload = {"model": os.environ.get("KHDOOM_TTS_MODEL", "").strip() or SPEECH_MODEL, "voice": speech_voice(choice), "input": text, "instructions": SPEECH_INSTRUCTIONS, "response_format": "mp3"}
+    audio = (transport or _speech_http)(payload)
+    if not isinstance(audio, (bytes, bytearray)) or len(audio) < 100:
+        raise AIServiceError(502, "وصل صوت فارغ من خدمة الذكاء الاصطناعي")
+    return bytes(audio)
+
+
+def _speech_http(payload: dict[str, Any]) -> bytes:
+    api_key = (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip())
+    if not api_key:
+        raise AIServiceError(503, "خدمة AI لم تُفعّل في إعدادات الخادم بعد")
+    try:
+        api_key.encode("ascii")
+    except UnicodeEncodeError:
+        raise AIServiceError(503, "مفتاح OpenAI في الخادم قيمة إرشادية وليس مفتاحا صالحا")
+    request = Request(SPEECH_URL, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), method="POST", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json; charset=utf-8"})
+    try:
+        with urlopen(request, timeout=45) as response:
+            audio = response.read()
+            service_monitor.record("openai", True)
+            return audio
+    except HTTPError as error:
+        service_monitor.record("openai", False)
+        print(f"OPENAI SPEECH ERROR: {error.code}")
+        raise AIServiceError(502, "تعذر إنشاء الصوت بالذكاء الاصطناعي الآن")
+    except (URLError, TimeoutError) as error:
+        service_monitor.record("openai", False)
+        print(f"OPENAI SPEECH CONNECTION ERROR: {error}")
+        raise AIServiceError(502, "تعذر الاتصال بخدمة الذكاء الاصطناعي")
 
 
 class AgentService:

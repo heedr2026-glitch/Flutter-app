@@ -236,6 +236,40 @@ def record_login_failure(connection: Any, request: Any, *, organization_id: int 
         # Diagnostics must never prevent the normal login response.
         pass
 
+_SPEECH_CACHE: dict[str, bytes] = {}
+_SPEECH_WINDOW: dict[int, deque] = defaultdict(deque)
+
+
+def assistant_speech(organization_id: int, text: Any, voice: Any) -> bytes:
+    """MP3 لنص رد «اسألني». نفس النص بنفس الصوت يُخدم من الذاكرة، ولكل مؤسسة حد في الساعة يحمي التكلفة."""
+    text = " ".join(str(text or "").split())[:ai_core.SPEECH_MAX_CHARS]
+    if len(text) < 2:
+        raise ApiError(400, "لا يوجد نص للنطق")
+    choice = "female" if str(voice or "").strip().lower() == "female" else "male"
+    key = hashlib.sha256((choice + "|" + ai_core.speech_voice(choice) + "|" + text).encode()).hexdigest()
+    cached = _SPEECH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        hourly = max(1, int(os.environ.get("KHDOOM_SPEECH_HOURLY", "90")))
+    except ValueError:
+        hourly = 90
+    window, current = _SPEECH_WINDOW[organization_id], time.monotonic()
+    while window and current - window[0] > 3600:
+        window.popleft()
+    if len(window) >= hourly:
+        raise ApiError(429, "وصلت حد الصوت لهذه الساعة؛ الرد يكمل بصوت الجوال")
+    window.append(current)
+    try:
+        audio = ai_core.synthesize_speech(text, choice)
+    except ai_core.AIServiceError as error:
+        raise ApiError(error.status, error.message)
+    if len(_SPEECH_CACHE) >= 40:
+        _SPEECH_CACHE.pop(next(iter(_SPEECH_CACHE)))
+    _SPEECH_CACHE[key] = audio
+    return audio
+
+
 _ORG_ERROR_SEEN: dict[tuple, float] = {}
 
 
@@ -3772,6 +3806,24 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.execute("UPDATE subscriptions SET package=?,starts_at=?,expires_at=? WHERE organization_id=?", (code["package"], now(), package_expires, target_user["organization_id"]))
                 connection.commit()
             self._send(200, {"activated": True, "package": code["package"], "expiresAt": package_expires})
+            return
+
+        if path == "/api/ai/speech" and method == "POST":
+            # صوت «اسألني» بالذكاء الاصطناعي. التحقق من المستخدم باتصال قصير، ثم يُطلب الصوت
+            # من المزود بلا اتصال قاعدة بيانات مفتوح. أي تعذر يرجع خطأ والتطبيق يكمل بصوت الجوال.
+            data = self._body()
+            with db() as connection:
+                user = self._user(connection)
+                connection.commit()
+            audio = assistant_speech(user["organization_id"], data.get("text"), data.get("voice"))
+            self._last_status = 200
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(audio)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(audio)
             return
 
         with db() as connection:
