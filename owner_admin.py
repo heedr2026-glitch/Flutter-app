@@ -130,6 +130,9 @@ def migrate(c,postgres=False):
   ,f'''attendance_exceptions(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT NOT NULL,branch_id TEXT,kind TEXT NOT NULL,starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,approved_by TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '')'''
   ,f'''attendance_devices(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT NOT NULL,device_id TEXT NOT NULL,device_name TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'planned',last_seen_at TEXT NOT NULL DEFAULT '',UNIQUE(organization_id,user_id,device_id))'''
  ]
+ # سجل آخر الأخطاء لكل مؤسسة، وما تعلّمه الموظف التقني من الشكاوى التي أغلقتها الإدارة.
+ schemas+=[f'''organization_api_errors(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT,method TEXT NOT NULL DEFAULT '',route TEXT NOT NULL DEFAULT '',status INTEGER NOT NULL DEFAULT 0,message TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
+  f'''technical_playbooks(id {identity},title TEXT NOT NULL DEFAULT '',signals TEXT NOT NULL DEFAULT '[]',solution TEXT NOT NULL DEFAULT '',ticket_id BIGINT,uses INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''']
  for schema in schemas: c.execute('CREATE TABLE IF NOT EXISTS '+schema)
  for key,name,category,permission,notes in [('renewals','التجديدات والخدمات الحكومية','خدمات حكومية','integrations.renewals','جاهز لإضافة API رسمي مستقبلًا؛ التنبيهات فقط حاليًا'),('vehicles','تتبع المركبات','مركبات','integrations.vehicles','يحتاج جهازًا أو مزود تتبع معتمدًا'),('attendance','الحضور والبصمة','الموظفون','integrations.attendance','يرتبط بملف الموظف عند توفر جهاز أو API'),('cameras','كاميرات المؤسسة','أمن المؤسسة','integrations.cameras','الوصول مقيد بصلاحية مستقلة وغير مفعّل حاليًا'),('payments','بوابات الدفع','فوترة','integrations.payments','يحتاج مزود دفع رسمي'),('communications','مزودو الاتصالات','اتصالات','integrations.communications','يحتاج قناة خادم معتمدة')]:
   c.execute('INSERT INTO platform_integrations(key,name,category,status,required_permission,provider_configured,notes,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(key) DO NOTHING',(key,name,category,'planned',permission,0,notes,stamp()))
@@ -145,13 +148,13 @@ def migrate(c,postgres=False):
    legacy=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=? AND bonus_months=0 ORDER BY id LIMIT 1',(package,months)).fetchone()
    value=float(legacy['price_sar']) if legacy else fallback
    c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO NOTHING',(package,months,value,stamp()))
- for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''"),('owner_reply_by',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT")],'platform_admins':[('totp_secret',"TEXT NOT NULL DEFAULT ''"),('totp_enabled','INTEGER NOT NULL DEFAULT 0'),('totp_last_step','BIGINT NOT NULL DEFAULT 0')],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
+ for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''"),('owner_reply_by',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT"),('knowledge',"TEXT NOT NULL DEFAULT ''"),('problem_type',"TEXT NOT NULL DEFAULT ''"),('needs_owner',"INTEGER NOT NULL DEFAULT 0"),('facts',"TEXT NOT NULL DEFAULT ''"),('interpretation',"TEXT NOT NULL DEFAULT ''")],'platform_admins':[('totp_secret',"TEXT NOT NULL DEFAULT ''"),('totp_enabled','INTEGER NOT NULL DEFAULT 0'),('totp_last_step','BIGINT NOT NULL DEFAULT 0')],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
  ad_columns={row['column_name'] for row in c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='advertisements'").fetchall()} if postgres else {row['name'] for row in c.execute('PRAGMA table_info(advertisements)')}
  if 'published_by' not in ad_columns: c.execute("ALTER TABLE advertisements ADD COLUMN "+('IF NOT EXISTS ' if postgres else '')+"published_by TEXT NOT NULL DEFAULT ''")
- for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('support_tickets','reference_code'),('support_ticket_events','ticket_id,created_at'),('page_performance_events','created_at,page_name'),('employee_invitations','organization_id,status,created_at'),('organization_cameras','organization_id,branch_id,updated_at'),('vehicle_location_events','organization_id,vehicle_key,recorded_at'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('login_failures','created_at,username'),('readiness_results','run_id,service_key'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('platform_expenses','status,due_at'),('platform_payments','created_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
+ for table,cols in [('ai_usage','organization_id,created_at'),('audit_logs','action,created_at'),('sessions','user_id,expires_at'),('support_tickets','status,id'),('support_tickets','reference_code'),('support_ticket_events','ticket_id,created_at'),('page_performance_events','created_at,page_name'),('employee_invitations','organization_id,status,created_at'),('organization_cameras','organization_id,branch_id,updated_at'),('vehicle_location_events','organization_id,vehicle_key,recorded_at'),('platform_audit','created_at'),('platform_login_events','ip,created_at'),('login_failures','created_at,username'),('readiness_results','run_id,service_key'),('organizations','created_at'),('subscriptions','package,organization_id'),('platform_credit_ledger','organization_id,service,created_at'),('platform_expenses','status,due_at'),('platform_payments','created_at'),('attendance_events','organization_id,user_id,occurred_at'),('attendance_exceptions','organization_id,user_id,starts_at'),('attendance_devices','organization_id,user_id'),('organization_api_errors','organization_id,created_at')]: c.execute(f'CREATE INDEX IF NOT EXISTS platform_idx_{table} ON {table}({cols})')
  # الطلبات المعتمدة قبل إضافة سجل المدفوعات تُنقل إليه مرة واحدة (المفتاح الفريد يمنع التكرار).
  c.execute("INSERT INTO platform_payments(organization_id,package,months,amount,discount_code,source,request_id,approved_by,created_at) SELECT r.organization_id,r.requested_package,r.paid_months,r.quoted_price,r.discount_code,'transfer',r.id,'',COALESCE(r.processed_at,r.created_at) FROM subscription_requests r WHERE r.status='approved' AND EXISTS (SELECT 1 FROM organizations o WHERE o.id=r.organization_id) ON CONFLICT(request_id) DO NOTHING")
  c.execute("UPDATE platform_credit_ledger SET reason=actor,actor=reason WHERE (reason='المالك' OR reason IN (SELECT name FROM platform_admins)) AND actor<>'المالك' AND actor NOT IN (SELECT name FROM platform_admins)")
@@ -621,6 +624,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     for credits in credits_bulk(c,s,None,with_ledger=False).values():
      if any(v['base']>0 and v['remaining']<=max(1,math.ceil(v['base']*.1)) for v in credits['services'].values()): out['lowBalanceOrganizations']+=1
   if 'support' in p: out['support']=scalar(c,"SELECT COUNT(*) n FROM support_tickets WHERE status IN ('open','under_review','in_progress','awaiting_user')")
+  if 'support' in p and table_exists(c,'technical_tasks',s) and table_exists(c,'support_tickets',s):
+   # ما يحتاج المدير أن يعرفه من الموظف التقني: شكاوى جديدة عليه، أو معروفة تنتظر قرار الإدارة.
+   out['technicalAttention']=rows(c,"SELECT t.id ticket_id,t.reference_code,t.title,t.category,o.name organization_name,k.knowledge,k.problem_type,k.diagnosis,k.proposal,t.created_at FROM technical_tasks k JOIN support_tickets t ON t.id=k.support_ticket_id JOIN organizations o ON o.id=t.organization_id WHERE k.needs_owner=1 AND k.knowledge IN ('novel','learned','known') AND t.status NOT IN ('resolved','closed') AND k.id=(SELECT MAX(k2.id) FROM technical_tasks k2 WHERE k2.support_ticket_id=t.id) ORDER BY CASE k.knowledge WHEN 'novel' THEN 0 WHEN 'learned' THEN 1 ELSE 2 END,t.id DESC LIMIT 20")
   if 'ads' in p: out['ads']=scalar(c,'SELECT COUNT(*) n FROM advertisements WHERE active=1 AND approved=1 AND (scheduled_at IS NULL OR scheduled_at<=?) AND (expires_at IS NULL OR expires_at>?)',(stamp(),stamp()))
   if 'security' in p:
    out['logins']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action IN ('login','failed_login','new_device') AND created_at>=?",(today,)); out['alerts']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action IN ('failed_login','blocked_device_login','new_device','owner_account_status') AND created_at>=?",(today,)); out['passwordResets']=scalar(c,"SELECT COUNT(*) n FROM audit_logs WHERE action='password_reset' AND created_at>=?",(today,))+scalar(c,"SELECT COUNT(*) n FROM platform_audit WHERE action='password_reset' AND created_at>=?",(today,))
@@ -800,6 +806,14 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   out['serverRegion']=os.environ.get('RENDER_REGION','') or os.environ.get('KHDOOM_REGION','')
   out['note']='القياس من داخل الخادم لهذه النسخة العاملة فقط ويبدأ من آخر تشغيل. زمن قاعدة البيانات هو زمن أبسط استعلام؛ كل صفحة تدفعه مرة لكل استعلام.'
   return out
+ if r=='technical-ai/playbooks' and m=='GET':
+  ensure_owner_tables(c,s,('technical_playbooks',))
+  return {'items':rows(c,'SELECT id,title,solution,ticket_id,uses,created_by,created_at FROM technical_playbooks WHERE active=1 ORDER BY id DESC LIMIT 200')}
+ if re.fullmatch(r'technical-ai/playbooks/\d+',r) and m=='DELETE':
+  # «نسيان» حل تعلّمه الموظف التقني؛ يبقى السجل للمراجعة ولا يُستخدم بعدها.
+  ensure_owner_tables(c,s,('technical_playbooks',)); ident=int(r.split('/')[2])
+  if not c.execute('SELECT id FROM technical_playbooks WHERE id=? AND active=1',(ident,)).fetchone(): raise s.ApiError(404,'الحل غير موجود')
+  c.execute('UPDATE technical_playbooks SET active=0 WHERE id=?',(ident,)); return {'deleted':True}
  if r=='technical-ai' and m=='GET':
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks','technical_incidents','login_failures'))
   state=c.execute('SELECT * FROM technical_agent_state WHERE id=1').fetchone()
@@ -1156,7 +1170,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if q.get('status'): where+=' AND t.status=?'; args.append(q['status'])
   out=paged(c,'SELECT t.*,o.name organization_name,s.package,pa.name assigned_admin_name',where,args,'t.id DESC',page)
   ids=[t['id'] for t in out['items']]; marks=','.join('?' for _ in ids)
-  task_columns='id,support_ticket_id,status,diagnosis,proposal,action_taken,result,started_at,finished_at'
+  task_columns='id,support_ticket_id,status,diagnosis,proposal,action_taken,result,started_at,finished_at,knowledge,problem_type,needs_owner'
   # مهام ومتابعات وملاحظات كل الطلبات المعروضة تُجلب دفعة واحدة بدل استعلامات لكل طلب.
   tasks={}
   if ids:
@@ -1178,7 +1192,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
      applied=automated_ticket_update(c,t['id'],'in_progress',reply,ts)
      support_event(c,t,actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_assigned',body=reply,from_status=t['status'],to_status=applied)
     task=dict(c.execute(f'SELECT {task_columns} FROM technical_tasks WHERE id=?',(task['id'],)).fetchone())
-   t['technical_task']={k:task[k] for k in ('id','status','diagnosis','proposal','action_taken','result','started_at','finished_at')}
+   t['technical_task']={k:task.get(k) for k in ('id','status','diagnosis','proposal','action_taken','result','started_at','finished_at','knowledge','problem_type','needs_owner')}
    t['technical_task_id']=task['id']
    t['technical_status']=task['status']
    t['notes']=[]; t['events']=[]
@@ -1227,10 +1241,16 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   c.execute('UPDATE support_tickets SET status=?,scope=?,last_error=?,owner_reply=?,owner_reply_by=?,assigned_admin_id=COALESCE(?,assigned_admin_id),updated_at=? WHERE id=?',(status,scope,last_error,reply,'admin' if reply.strip() else '',assigned,stamp(),ident))
   event_type='scope_changed' if scope!=ticket['scope'] else 'status_changed' if status!=ticket['status'] else 'reply_updated'
   support_event(c,dict(ticket),actor_type='admin',actor_name=a['name'],event_type=event_type,body=note or reply or last_error,from_status=ticket['status'],to_status=status)
+  learned=None
+  if status in ('resolved','closed') and (reply.strip() or note.strip()):
+   import technical_support
+   full=c.execute('SELECT id,organization_id,category,title,message FROM support_tickets WHERE id=?',(ident,)).fetchone()
+   learned=technical_support.learn_from_resolution(c,dict(full),note.strip() or reply.strip(),a['name'],__import__(__name__),s)
+   if learned: audit(c,a['name'],'technical_playbook_learned',json.dumps({'ticket_id':ident,'playbook_id':learned},ensure_ascii=False))
   if scope=='global' and ticket['scope']!='global':
    c.execute('INSERT INTO technical_incidents(service,organization_id,problem,root_cause,proposal,severity,test_status,deployment_status,affected_organizations,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',('support',None,'عطل عام معلن من مركز الدعم','تحتاج عدة مؤسسات إلى مراجعة موحدة؛ لا يتم إصلاح الإنتاج تلقائيًا','فحص آمن ثم اختبار وموافقة قبل أي تطبيق عام','high','not_tested','proposed',0,stamp(),stamp()))
   if note: c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,note,a['name'],stamp()))
-  return {'saved':True}
+  return {'saved':True,'learned':bool(learned)}
  if r=='security/login-alerts' and m=='GET':
   latest=c.execute("SELECT a.id,a.created_at,o.name organization_name,u.name user_name,a.summary FROM audit_logs a JOIN organizations o ON o.id=a.organization_id LEFT JOIN users u ON u.id=a.actor_user_id WHERE a.action IN ('new_device','login') ORDER BY a.id DESC LIMIT 1").fetchone()
   return {'latest':dict(latest) if latest else None}

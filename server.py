@@ -236,6 +236,43 @@ def record_login_failure(connection: Any, request: Any, *, organization_id: int 
         # Diagnostics must never prevent the normal login response.
         pass
 
+_ORG_ERROR_SEEN: dict[tuple, float] = {}
+
+
+def record_organization_error(handler, method: str, status: int, message: str) -> None:
+    """يحفظ رسالة الخطأ التي ظهرت للمشترك حتى يعرف الموظف التقني السبب دون أن يسأله.
+
+    لطلبات المشتركين المسجلين فقط، دون جسم الطلب أو أي بيانات مدخلة، وبحد تكرار دقيقة
+    لكل (مؤسسة، مسار، رسالة). أي فشل هنا يُتجاهل: التسجيل لا يعطل الرد أبدًا.
+    """
+    try:
+        actor = getattr(handler, "_actor", None)
+        if not actor or status in (401, 429):
+            return
+        route = urlparse(handler.path).path[:200]
+        if not route.startswith("/api/"):
+            return
+        key = (actor[0], route, str(message)[:80])
+        current = time.monotonic()
+        if current - _ORG_ERROR_SEEN.get(key, -1e9) < 60:
+            return
+        if len(_ORG_ERROR_SEEN) > 5000:
+            _ORG_ERROR_SEEN.clear()
+        _ORG_ERROR_SEEN[key] = current
+        with db() as connection:
+            if not owner_admin.table_exists(connection, "organization_api_errors", __import__('sys').modules[__name__]):
+                return
+            connection.execute(
+                "INSERT INTO organization_api_errors(organization_id,user_id,method,route,status,message,created_at) VALUES(?,?,?,?,?,?,?)",
+                (actor[0], actor[1], method, route, int(status), str(message)[:300], now()),
+            )
+            # السجل للتشخيص القريب فقط؛ ما مضى عليه 30 يومًا يُحذف.
+            connection.execute("DELETE FROM organization_api_errors WHERE created_at<?", ((datetime.now(timezone.utc) - timedelta(days=30)).isoformat(),))
+            connection.commit()
+    except Exception:
+        pass
+
+
 def technical_auto_monitor() -> None:
     """Create a bounded diagnostic task when a login outage pattern appears."""
     while True:
@@ -285,6 +322,8 @@ def technical_auto_monitor() -> None:
                 import owner_admin
                 technical_support.run_pending(connection, owner_admin, __import__('sys').modules[__name__])
                 connection.commit()
+            # فهم الشكاوى الجديدة بالذكاء يجري بعد إغلاق الاتصال حتى لا يُحجز أثناء الانتظار.
+            technical_support.interpret_pending(__import__('sys').modules[__name__], owner_admin)
         except Exception as error:
             print(f"TECHNICAL MONITOR ERROR: {type(error).__name__}", flush=True)
         time.sleep(60)
@@ -2199,6 +2238,8 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
         if owner_admin.suspended(connection, row["organization_id"]):
             raise ApiError(403, "المؤسسة موقوفة؛ تواصل مع الدعم")
         REQUEST_SCOPE.set((row["organization_id"],row.get("current_branch")))
+        # تُستخدم فقط لتسجيل رسالة الخطأ باسم المؤسسة إن رُفض الطلب لاحقًا.
+        self._actor = (row["organization_id"], row["id"])
         return row
 
     def _owner(self) -> None:
@@ -4942,14 +4983,17 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
     def _run(self, method: str) -> None:
         started = time.perf_counter()
         self._last_status = 0
+        self._actor = None
         try:
             self._dispatch(method)
         except ApiError as error:
             print(f"API ERROR {error.status} {self.path}: {error.message}")
             self._send(error.status, {"error": error.message})
+            record_organization_error(self, method, error.status, error.message)
         except Exception as error:
             print(f"ERROR: {error}")
             self._send(500, {"error": "حدث خطأ داخل الخادم"})
+            record_organization_error(self, method, 500, "خطأ داخل الخادم: " + type(error).__name__)
         finally:
             try:
                 record_request_timing(method, urlparse(self.path).path, getattr(self, "_last_status", 0), (time.perf_counter() - started) * 1000)
