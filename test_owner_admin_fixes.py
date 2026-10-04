@@ -390,6 +390,154 @@ class OwnerAdminFixesTest(unittest.TestCase):
             self.assertEqual(response.headers['X-Frame-Options'], 'SAMEORIGIN')
             self.assertEqual(response.headers['X-Content-Type-Options'], 'nosniff')
 
+    def test_two_step_login_setup_enforcement_replay_and_owner_reset(self):
+        session = self.staff('otp1', 'support')
+        password = 'staff-password-otp1'
+        self.assertEqual(self.call('/owner/api/v2/me/2fa', headers=session)[1], {'enabled': False})
+        status, setup = self.call('/owner/api/v2/me/2fa/setup', 'POST', {}, session)
+        self.assertEqual(status, 200)
+        secret = setup['secret']
+        self.assertIn(secret, setup['uri'])
+        self.assertEqual(self.call('/owner/api/v2/me/2fa/enable', 'POST', {'code': '000000'}, session)[0], 400)
+        # قبل التفعيل لا يُطلب رمز عند الدخول.
+        self.assertEqual(self.call('/owner/api/v2/login', 'POST', {'username': 'otp1', 'password': password}, {'X-Owner-Key': ''})[0], 200)
+        now_step = int(__import__('time').time() // 30)
+        self.assertEqual(self.call('/owner/api/v2/me/2fa/enable', 'POST', {'code': owner_admin.totp_at(secret, now_step)}, session)[0], 200)
+        status, body = self.call('/owner/api/v2/login', 'POST', {'username': 'otp1', 'password': password}, {'X-Owner-Key': ''})
+        self.assertEqual((status, body.get('needsCode')), (401, True))
+        self.assertEqual(self.call('/owner/api/v2/login', 'POST', {'username': 'otp1', 'password': password, 'code': '123456'}, {'X-Owner-Key': ''})[0], 401)
+        # الرمز الذي استُخدم للتفعيل لا يُقبل مرة ثانية؛ رمز الفترة التالية يُقبل.
+        self.assertEqual(self.call('/owner/api/v2/login', 'POST', {'username': 'otp1', 'password': password, 'code': owner_admin.totp_at(secret, now_step)}, {'X-Owner-Key': ''})[0], 401)
+        status, body = self.call('/owner/api/v2/login', 'POST', {'username': 'otp1', 'password': password, 'code': owner_admin.totp_at(secret, now_step + 1)}, {'X-Owner-Key': ''})
+        self.assertEqual(status, 200)
+        fresh = {'X-Owner-Key': '', 'X-Admin-Session': body['token']}
+        self.assertEqual(self.call('/owner/api/v2/me/2fa/disable', 'POST', {'current': 'wrong', 'code': '1'}, fresh)[0], 403)
+        admins = self.call('/owner/api/v2/admins')[1]['items']
+        target = next(x for x in admins if x['username'] == 'otp1')
+        self.assertEqual(target['totp_enabled'], 1)
+        # المالك يصفّر التحقق لمن فقد جواله.
+        self.assertEqual(self.call(f"/owner/api/v2/admins/{target['id']}", 'PUT', {'name': 'otp1', 'username': 'otp1', 'role': 'support', 'reset2fa': True})[0], 200)
+        self.assertEqual(self.call('/owner/api/v2/login', 'POST', {'username': 'otp1', 'password': password}, {'X-Owner-Key': ''})[0], 200)
+        self.assertEqual(self.call('/owner/api/v2/me/2fa', headers={'X-Owner-Key': KEY})[0], 400)
+
+    def test_totp_matches_the_published_reference_vectors(self):
+        # RFC 6238 Appendix B, SHA-1, secret "12345678901234567890" (آخر 6 أرقام من القيم المرجعية).
+        secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+        self.assertEqual(owner_admin.totp_at(secret, 59 // 30), '287082')
+        self.assertEqual(owner_admin.totp_at(secret, 1111111109 // 30), '081804')
+        self.assertEqual(owner_admin.totp_at(secret, 1234567890 // 30), '005924')
+        self.assertEqual(owner_admin.totp_match(secret, '287082', now=59), 1)
+        self.assertIsNone(owner_admin.totp_match(secret, '287082', now=59 + 120))
+
+    def test_approved_transfer_and_manual_payment_feed_the_revenue_report(self):
+        self.set_subscription('free', None)
+        with server.db() as c:
+            c.execute("INSERT INTO subscription_requests(id,organization_id,requested_package,paid_months,quoted_price,discount_code,created_at) VALUES(1,1,'basic',3,139,'SAVE',?)", (server.now(),))
+            c.execute("INSERT INTO subscription_requests(id,organization_id,requested_package,paid_months,quoted_price,status,processed_at,created_at) VALUES(2,1,'vip',1,99,'approved',?,?)", (iso(days=-40), iso(days=-41)))
+            owner_admin.migrate(c)
+            owner_admin.migrate(c)
+            self.assertEqual(c.execute('SELECT COUNT(*) n FROM platform_payments').fetchone()['n'], 1)
+        self.assertEqual(self.call('/owner/api/subscription-requests/1', 'PUT', {'action': 'approve', 'durationDays': 90, 'amount': 130})[0], 200)
+        self.assertEqual(self.call('/owner/api/v2/finance/payments', 'POST', {'organization_id': 1, 'package': 'vip', 'months': 1, 'amount': 99, 'note': 'نقدًا'})[0], 200)
+        self.assertEqual(self.call('/owner/api/v2/finance/payments', 'POST', {'organization_id': 999, 'package': 'vip', 'months': 1, 'amount': 99, 'note': 'x'})[0], 404)
+        status, report = self.call('/owner/api/v2/finance/revenue?months=3')
+        self.assertEqual(status, 200)
+        self.assertEqual((report['thisMonth']['total'], report['thisMonth']['count']), (229.0, 2))
+        self.assertEqual((report['thisMonth']['basic'], report['thisMonth']['vip']), (130.0, 99.0))
+        self.assertEqual(report['periodTotal'], 328.0)
+        self.assertEqual(len(report['months']), 3)
+        transfer = next(x for x in report['payments'] if x['source'] == 'transfer' and x['amount'] == 130)
+        self.assertEqual((transfer['months'], transfer['discount_code'], transfer['organization_name']), (3, 'SAVE', 'مؤسسة الاختبار'))
+        self.assertEqual(self.call('/owner/api/v2/expenses')[1]['actualIncome'], 229.0)
+
+    def test_exports_follow_permissions_and_are_audited(self):
+        self.seed_directory()
+        status, data = self.call('/owner/api/v2/export/organizations')
+        self.assertEqual((status, len(data['rows']), data['truncated']), (200, 3, False))
+        self.assertEqual([c[0] for c in data['columns']][:3], ['id', 'name', 'phone'])
+        self.assertTrue(data['filename'].endswith('.csv'))
+        accounting = self.staff('acc2', 'accounting')
+        support = self.staff('sup2', 'support')
+        self.assertEqual(self.call('/owner/api/v2/export/payments', headers=accounting)[0], 200)
+        self.assertEqual(self.call('/owner/api/v2/export/expenses', headers=accounting)[0], 200)
+        self.assertEqual(self.call('/owner/api/v2/export/audit', headers=accounting)[0], 403)
+        self.assertEqual(self.call('/owner/api/v2/export/payments', headers=support)[0], 403)
+        self.assertEqual(self.call('/owner/api/v2/export/unknown')[0], 404)
+        audit = self.call('/owner/api/v2/export/audit')[1]
+        self.assertTrue(any(row['action'] == 'data_export' for row in audit['rows']))
+
+    def test_server_timings_and_light_technical_state(self):
+        server._REQUEST_TIMINGS.clear()
+        self.call('/owner/api/v2/summary')
+        self.call('/owner/api/v2/organizations/1')
+        # القياس يُسجَّل بعد إرسال الرد بلحظة، فنعيد القراءة حتى يظهر الطلب السابق.
+        for _ in range(40):
+            status, timings = self.call('/owner/api/v2/service-health/timings?minutes=5')
+            self.assertEqual(status, 200)
+            routes = {(x['method'], x['route']) for x in timings['routes']}
+            if ('GET', '/owner/api/v2/organizations/:id') in routes:
+                break
+            __import__('time').sleep(0.05)
+        self.assertIn(('GET', '/owner/api/v2/summary'), routes)
+        self.assertIn(('GET', '/owner/api/v2/organizations/:id'), routes)
+        self.assertIsInstance(timings['databaseLatencyMs'], float)
+        ads = self.staff('ads2', 'ads')
+        self.assertEqual(self.call('/owner/api/v2/service-health/timings', headers=ads)[0], 403)
+        status, state = self.call('/owner/api/v2/technical-ai/state', headers=ads)
+        self.assertEqual((status, state['state']['status']), (200, 'offline'))
+
+    def test_support_list_keeps_notes_events_and_task_per_ticket(self):
+        with server.db() as c:
+            for ticket in (1, 2):
+                c.execute("INSERT INTO support_tickets(id,organization_id,user_id,category,message,status,created_at,updated_at) VALUES(?,1,1,'مشكلة','نص','open',?,?)", (ticket, server.now(), server.now()))
+        self.assertEqual(self.call('/owner/api/v2/support/1', 'PUT', {'status': 'open', 'note': 'ملاحظة داخلية'})[0], 200)
+        status, page = self.call('/owner/api/v2/support')
+        self.assertEqual((status, page['total']), (200, 2))
+        by_id = {t['id']: t for t in page['items']}
+        self.assertEqual([n['note'] for n in by_id[1]['notes']], ['ملاحظة داخلية'])
+        self.assertEqual(by_id[2]['notes'], [])
+        for ticket in by_id.values():
+            self.assertEqual(ticket['technical_status'], 'diagnosing')
+            self.assertTrue(ticket['technical_task_id'])
+            self.assertTrue(any(e['event_type'] == 'technical_assigned' for e in ticket['events']))
+        with server.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) n FROM technical_tasks').fetchone()['n'], 2)
+        self.call('/owner/api/v2/support')
+        with server.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) n FROM technical_tasks').fetchone()['n'], 2)
+
+    def test_suspension_check_and_last_seen_throttle(self):
+        self.set_subscription('free', None)
+        with server.db() as c:
+            self.assertFalse(owner_admin.suspended(c, 1))
+            self.assertFalse(owner_admin.suspended(c, 424242))
+            c.execute('INSERT INTO platform_org_state(organization_id,suspended) VALUES(1,1)')
+            self.assertTrue(owner_admin.suspended(c, 1))
+            c.execute('UPDATE platform_org_state SET suspended=0 WHERE organization_id=1')
+            c.execute('UPDATE organizations SET archived_at=? WHERE id=1', (server.now(),))
+            self.assertTrue(owner_admin.suspended(c, 1))
+            c.execute('UPDATE organizations SET archived_at=NULL WHERE id=1')
+            import hashlib
+            digest = hashlib.sha256(b'customer-token').hexdigest()
+            c.execute("INSERT INTO sessions(token_hash,user_id,expires_at,created_at,last_seen_at) VALUES(?,1,?,?,?)", (digest, iso(days=1), server.now(), iso(seconds=-10)))
+        customer = {'X-Owner-Key': '', 'Authorization': 'Bearer customer-token'}
+        recent = iso(seconds=-10)[:16]
+        self.assertEqual(self.call('/api/subscription', headers=customer)[0], 200)
+        with server.db() as c:
+            # ظهور قبل عشر ثوانٍ: لا كتابة جديدة.
+            self.assertEqual(c.execute('SELECT last_seen_at FROM sessions WHERE token_hash=?', (digest,)).fetchone()['last_seen_at'][:16], recent)
+            c.execute('UPDATE sessions SET last_seen_at=? WHERE token_hash=?', (iso(seconds=-600), digest))
+        self.assertEqual(self.call('/api/subscription', headers=customer)[0], 200)
+        # الرد يُرسل قبل تثبيت العملية بلحظة، فننتظر التثبيت.
+        deadline = __import__('time').time() + 3
+        while True:
+            with server.db() as c:
+                seen = c.execute('SELECT last_seen_at FROM sessions WHERE token_hash=?', (digest,)).fetchone()['last_seen_at']
+            if seen > iso(seconds=-60) or __import__('time').time() > deadline:
+                break
+            __import__('time').sleep(0.05)
+        self.assertGreater(seen, iso(seconds=-60))
+
 
 if __name__ == '__main__':
     unittest.main()

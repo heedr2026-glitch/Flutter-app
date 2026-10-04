@@ -1953,6 +1953,69 @@ body{margin:0;background:#071126;color:#eef6ff;font-family:Tahoma,Arial;line-hei
 </main></body></html>"""
 
 
+_REQUEST_TIMINGS: deque = deque(maxlen=4000)
+_REQUEST_TIMINGS_LOCK = threading.Lock()
+
+
+def _route_key(path: str) -> str:
+    """Collapse ids and tokens so timings group by endpoint, never by customer data."""
+    parts = []
+    for part in path.split("/")[:8]:
+        if part.isdigit():
+            parts.append(":id")
+        elif len(part) > 24 or (len(part) >= 12 and any(ch.isdigit() for ch in part)):
+            parts.append(":token")
+        else:
+            parts.append(part)
+    return "/".join(parts)[:120] or "/"
+
+
+def record_request_timing(method: str, path: str, status: int, elapsed_ms: float) -> None:
+    with _REQUEST_TIMINGS_LOCK:
+        _REQUEST_TIMINGS.append((time.time(), method, _route_key(path), int(status or 0), float(elapsed_ms)))
+
+
+def request_timings(minutes: int = 30) -> dict[str, Any]:
+    """Server-side response times per endpoint over the recent window (this instance only)."""
+    cutoff = time.time() - max(1, min(int(minutes), 720)) * 60
+    with _REQUEST_TIMINGS_LOCK:
+        recent = [item for item in _REQUEST_TIMINGS if item[0] >= cutoff]
+    groups: dict[tuple[str, str], list[tuple[int, float]]] = defaultdict(list)
+    for _, method, route, status, elapsed in recent:
+        groups[(method, route)].append((status, elapsed))
+    routes = []
+    for (method, route), samples in groups.items():
+        times = sorted(elapsed for _, elapsed in samples)
+        routes.append({
+            "method": method, "route": route, "count": len(times),
+            "avgMs": round(sum(times) / len(times)), "p95Ms": round(times[min(len(times) - 1, int(len(times) * 0.95))]),
+            "maxMs": round(times[-1]), "errors": sum(1 for status, _ in samples if status >= 500),
+        })
+    routes.sort(key=lambda item: (-item["avgMs"] * item["count"], -item["maxMs"]))
+    all_times = sorted(item[4] for item in recent)
+    return {
+        "minutes": minutes, "requests": len(recent),
+        "avgMs": round(sum(all_times) / len(all_times)) if all_times else None,
+        "p95Ms": round(all_times[min(len(all_times) - 1, int(len(all_times) * 0.95))]) if all_times else None,
+        "routes": routes[:60],
+    }
+
+
+def database_latency_ms(samples: int = 3) -> float | None:
+    """Median round trip of a trivial query: the cost every database call pays."""
+    results = []
+    try:
+        with db() as probe:
+            for _ in range(max(1, samples)):
+                started = time.perf_counter()
+                probe.execute("SELECT 1").fetchone()
+                results.append((time.perf_counter() - started) * 1000)
+    except Exception:
+        return None
+    results.sort()
+    return round(results[len(results) // 2], 1)
+
+
 def _json_default(value: object) -> object:
     """PostgreSQL aggregates arrive as Decimal; send them as plain numbers."""
     if isinstance(value, decimal.Decimal):
@@ -1975,6 +2038,7 @@ class Handler(BaseHTTPRequestHandler):
                 owner_admin.audit(audit_connection, self.platform_actor['name'], self.command, urlparse(self.path).path)
                 audit_connection.commit()
         body = json.dumps(payload, ensure_ascii=False, default=_json_default).encode()
+        self._last_status = status
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -2019,6 +2083,7 @@ renderDevices=function(active,blocked,accounts,organizations=[]){if(!organizatio
 setupAuditOrganizations=function(accounts,organizations=[]){const select=document.getElementById('auditOrg');if(!select)return;const seen=new Map(khdoomOrganizations(organizations).map(x=>[x.id,x.name]));(accounts||[]).forEach(x=>seen.set(x.organization_id,x.organization_name));select.innerHTML='<option value="">جميع المؤسسات</option>'+[...seen].map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('')};
 </script></body>''')
         body = html.encode("utf-8")
+        self._last_status = status
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -2074,20 +2139,24 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
             raise ApiError(401, "يلزم تسجيل الدخول")
         token_hash = hashlib.sha256(authorization[7:].encode()).hexdigest()
         row = connection.execute(
-            """SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id
+            """SELECT users.*,sessions.last_seen_at AS session_last_seen FROM sessions JOIN users ON users.id=sessions.user_id
                WHERE sessions.token_hash=? AND sessions.expires_at>? AND users.active=1 AND users.archived_at IS NULL""",
             (token_hash, now()),
         ).fetchone()
         if row is None:
             raise ApiError(401, "جلسة الدخول منتهية")
-        connection.execute(
-            "UPDATE sessions SET last_seen_at=? WHERE token_hash=?",
-            (now(), token_hash),
-        )
+        # «آخر ظهور» يكفيه تحديث كل دقيقة؛ كتابة مع كل طلب كانت تكلفة بلا فائدة.
+        seen = row["session_last_seen"]
+        if not seen or seen < (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat():
+            connection.execute(
+                "UPDATE sessions SET last_seen_at=? WHERE token_hash=?",
+                (now(), token_hash),
+            )
         try:
             row = organization_addons.customer_context(connection, row, self)
         except ValueError as error:
             raise ApiError(403, str(error))
+        row.pop("session_last_seen", None)
         if owner_admin.suspended(connection, row["organization_id"]):
             raise ApiError(403, "المؤسسة موقوفة؛ تواصل مع الدعم")
         REQUEST_SCOPE.set((row["organization_id"],row.get("current_branch")))
@@ -3242,6 +3311,18 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                         (request_row["organization_id"], selected_package, now(), expires_at),
                     )
                     owner_admin.clear_gift_fallback(connection, request_row["organization_id"], __import__('sys').modules[__name__])
+                    if selected_package != "free":
+                        # الدفعة المعتمدة تدخل سجل الإيرادات بالمبلغ المستلم فعليًا (أو المبلغ المطلوب إن لم يُعدَّل).
+                        try:
+                            received = float(data["amount"]) if data.get("amount") not in (None, "") else float(request_row["quoted_price"] or 0)
+                        except (TypeError, ValueError):
+                            raise ApiError(400, "المبلغ المستلم يجب أن يكون رقمًا")
+                        if not 0 <= received <= 10_000_000:
+                            raise ApiError(400, "المبلغ المستلم غير منطقي")
+                        connection.execute(
+                            "INSERT INTO platform_payments(organization_id,package,months,amount,discount_code,source,request_id,approved_by,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+                            (request_row["organization_id"], selected_package, max(1, round(days / 30)), received, request_row["discount_code"] or "", "transfer", request_id, (self.platform_actor or {}).get("name", "المالك"), now()),
+                        )
                     owner_admin.audit(connection, (self.platform_actor or {}).get("name", "المالك"), "subscription_request_approved", json.dumps({"request_id": request_id, "organization_id": request_row["organization_id"], "package": selected_package, "expires_at": expires_at, "previous": dict(held) if held else None}, ensure_ascii=False))
                     if selected_package != "free" and request_row["discount_code"]:
                         code_hash = hashlib.sha256(request_row["discount_code"].encode()).hexdigest()
@@ -4816,6 +4897,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         self._run("DELETE")
 
     def _run(self, method: str) -> None:
+        started = time.perf_counter()
+        self._last_status = 0
         try:
             self._dispatch(method)
         except ApiError as error:
@@ -4824,6 +4907,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         except Exception as error:
             print(f"ERROR: {error}")
             self._send(500, {"error": "حدث خطأ داخل الخادم"})
+        finally:
+            try:
+                record_request_timing(method, urlparse(self.path).path, getattr(self, "_last_status", 0), (time.perf_counter() - started) * 1000)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
