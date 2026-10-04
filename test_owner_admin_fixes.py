@@ -538,6 +538,21 @@ class OwnerAdminFixesTest(unittest.TestCase):
             __import__('time').sleep(0.05)
         self.assertGreater(seen, iso(seconds=-60))
 
+    def test_database_location_never_leaks_credentials(self):
+        cases = {
+            'postgresql://u:TopSecret9@dpg-abc123-a.frankfurt-postgres.render.com/khd': ('Render', 'external', '***.frankfurt-postgres.render.com'),
+            'postgresql://u:TopSecret9@dpg-abc123-a/khd': ('Render', 'internal', '***'),
+            'postgres://u:TopSecret9@ep-cool-123456.eu-central-1.aws.neon.tech/db?sslmode=require': ('Neon', 'external', '***.eu-central-1.aws.neon.tech'),
+        }
+        for url, (provider, link, host) in cases.items():
+            with patch.object(server, 'DATABASE_URL', url):
+                found = server.database_location()
+            self.assertEqual((found['provider'], found['link'], found['host']), (provider, link, host))
+            self.assertNotIn('TopSecret9', json.dumps(found))
+            self.assertNotIn('dpg-abc123', json.dumps(found))
+        status, timings = self.call('/owner/api/v2/service-health/timings')
+        self.assertEqual((status, timings['database']['engine']), (200, 'SQLite'))
+
 
 if __name__ == '__main__':
     unittest.main()

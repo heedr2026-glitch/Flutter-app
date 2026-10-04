@@ -352,8 +352,10 @@ def postgres_pool():
         with _postgres_pool_lock:
             if _postgres_pool is None:
                 size = max(2, min(16, int(os.environ.get("KHDOOM_DB_POOL_SIZE", "8"))))
+                # فتح اتصال جديد يكلف عدة رحلات لقاعدة البيانات؛ نبقي عددًا جاهزًا للطلبات المتزامنة.
+                ready = max(1, min(size, int(os.environ.get("KHDOOM_DB_POOL_MIN", "4"))))
                 pool = ConnectionPool(
-                    conninfo=DATABASE_URL, min_size=1, max_size=size,
+                    conninfo=DATABASE_URL, min_size=ready, max_size=size,
                     kwargs={"row_factory": dict_row, "connect_timeout": 10},
                     timeout=20, max_idle=300, max_lifetime=1800, open=True,
                 )
@@ -1999,6 +2001,43 @@ def request_timings(minutes: int = 30) -> dict[str, Any]:
         "p95Ms": round(all_times[min(len(all_times) - 1, int(len(all_times) * 0.95))]) if all_times else None,
         "routes": routes[:60],
     }
+
+
+def database_location() -> dict[str, Any]:
+    """Where the database lives, without exposing credentials or the full host name."""
+    if not DATABASE_URL:
+        return {"engine": "SQLite", "provider": "ملف محلي على الخادم", "region": "", "host": "", "link": "local"}
+    host = ""
+    try:
+        if "://" in DATABASE_URL:
+            host = (urlparse(DATABASE_URL).hostname or "").lower()
+        else:
+            match = re.search(r"(?:^|\s)host=(\S+)", DATABASE_URL)
+            host = (match.group(1) if match else "").lower()
+    except ValueError:
+        host = ""
+    labels = host.split(".") if host else []
+    providers = [("render.com", "Render"), ("neon.tech", "Neon"), ("supabase.co", "Supabase"), ("supabase.com", "Supabase"),
+                 ("railway.app", "Railway"), ("rlwy.net", "Railway"), ("amazonaws.com", "Amazon RDS"), ("aivencloud.com", "Aiven"),
+                 ("digitalocean.com", "DigitalOcean"), ("azure.com", "Azure"), ("elephantsql.com", "ElephantSQL"), ("cockroachlabs.cloud", "CockroachDB")]
+    provider = next((name for suffix, name in providers if host.endswith(suffix)), "")
+    link = "external"
+    if not host or host.startswith(("/", "localhost", "127.")):
+        provider, link, labels = "نفس جهاز الخادم", "local", []
+    elif len(labels) == 1:
+        # Render's internal address is a bare service name with no domain.
+        provider, link = provider or "Render", "internal"
+    region = ""
+    known = ("frankfurt", "oregon", "ohio", "virginia", "singapore", "eu-central", "eu-west", "eu-north", "us-east", "us-west",
+             "ap-south", "ap-southeast", "ap-northeast", "me-south", "me-central", "sa-east", "ca-central", "af-south")
+    for label in labels:
+        if any(marker in label for marker in known):
+            region = label
+            break
+    # First label identifies the customer database; hide it and keep only the provider part.
+    masked = ".".join(["***"] + labels[1:]) if len(labels) > 1 else ("***" if host else "")
+    return {"engine": "PostgreSQL", "provider": provider or "مزود غير معروف", "region": region, "host": masked, "link": link,
+            "pooled": "pooler" in host or "pgbouncer" in host}
 
 
 def database_latency_ms(samples: int = 3) -> float | None:

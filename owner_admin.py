@@ -757,7 +757,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='service-health/timings' and m=='GET':
   try: minutes=max(5,min(720,int(q.get('minutes',30))))
   except (TypeError,ValueError): minutes=30
-  out=s.request_timings(minutes); out['databaseLatencyMs']=s.database_latency_ms(); out['checkedAt']=stamp()
+  out=s.request_timings(minutes); out['databaseLatencyMs']=s.database_latency_ms(); out['database']=s.database_location(); out['checkedAt']=stamp()
+  out['serverRegion']=os.environ.get('RENDER_REGION','') or os.environ.get('KHDOOM_REGION','')
   out['note']='القياس من داخل الخادم لهذه النسخة العاملة فقط ويبدأ من آخر تشغيل. زمن قاعدة البيانات هو زمن أبسط استعلام؛ كل صفحة تدفعه مرة لكل استعلام.'
   return out
  if r=='technical-ai' and m=='GET':
