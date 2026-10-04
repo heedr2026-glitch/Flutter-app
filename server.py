@@ -3112,8 +3112,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 raise ApiError(400, "نوع الإعلان غير صحيح")
             banner_config = {key: data.get(key) for key in ("textColor", "barColor", "textAlign", "logoPosition", "fontSize", "logoScale", "height", "imageWidth", "imageHeight", "textLayers") if data.get(key) not in (None, "")}
             banner_config["adType"] = "image" if ad_mode == "full_image" else "text"
-            if ad_mode == "full_image" and image_data:
-                banner_config["bannerImageData"] = image_data
+            # الصورة تُحفظ مرة واحدة في image_data؛ التطبيق واللوحة يقرآنها من هناك
+            # عند غياب bannerImageData، فلا نكررها داخل banner_config (كان يضاعف حجم الرد).
+            design_mode = str(data.get("designMode", "")).strip()
+            if design_mode in ("logo_text", "full_image"):
+                banner_config["designMode"] = design_mode
             if banner_config.get("textAlign") not in (None, "right", "center", "left"):
                 raise ApiError(400, "محاذاة الإعلان غير صحيحة")
             if banner_config.get("logoPosition") not in (None, "right", "center", "left"):

@@ -173,6 +173,19 @@ class OwnerAdminFixesTest(unittest.TestCase):
         self.assertIn(429, codes)
         self.assertEqual(self.call('/owner/api/v2/me', headers={'X-Forwarded-For': '198.51.100.99'})[0], 200)
 
+    def test_designed_platform_ad_is_stored_once_as_a_full_image(self):
+        image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+        status, body = self.call('/owner/api/platform-ads', 'POST', {'title': 'عرض', 'message': 'نص', 'adMode': 'full_image', 'designMode': 'logo_text', 'imageData': image, 'textLayers': [{'key': 'title', 'x': 62, 'y': 28, 'fontSize': 22}]})
+        self.assertEqual(status, 201)
+        with server.db() as c:
+            row = c.execute('SELECT image_data,banner_config FROM platform_advertisements WHERE id=?', (body['id'],)).fetchone()
+            feed = [ad for ad in server.ad_policy.public_ads(c, server.now()) if ad['ad_source'] == 'platform']
+        config = json.loads(row['banner_config'])
+        self.assertEqual(row['image_data'], image)
+        self.assertEqual((config['adType'], config['designMode']), ('image', 'logo_text'))
+        self.assertNotIn('bannerImageData', config)  # الصورة لا تتكرر داخل الإعدادات
+        self.assertEqual(feed[0]['image_data'], image)  # التطبيق يقرأ الصورة من image_data
+
     def test_platform_ad_draft_is_not_published_until_asked(self):
         status, body = self.call('/owner/api/platform-ads', 'POST', {'title': 'عرض', 'message': 'نص', 'status': 'draft'})
         self.assertEqual((status, body['published']), (201, False))
