@@ -100,6 +100,8 @@ def configs(db_conn=None):
         raise Error(503, "إعدادات واتساب على الخادم غير صحيحة")
 
 def initialize(c):
+    # أرقام اعتمدتها إدارة المنصة لكل مؤسسة (نفس جدول لوحة الإدارة).
+    c.execute("""CREATE TABLE IF NOT EXISTS service_number_grants(organization_id BIGINT NOT NULL,service TEXT NOT NULL,phone TEXT NOT NULL,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,PRIMARY KEY(organization_id,service))""")
     c.execute("""CREATE TABLE IF NOT EXISTS whatsapp_connections(
       organization_id BIGINT PRIMARY KEY, phone_number TEXT NOT NULL,
       phone_number_id TEXT UNIQUE NOT NULL, waba_id TEXT NOT NULL,
@@ -594,6 +596,12 @@ def handle(h, method, db, on_inbound=None):
                 if phone.startswith("00"): phone = phone[2:]
                 if not re.fullmatch(r"[1-9][0-9]{7,14}", phone):
                     raise Error(400, "أدخل رقم المؤسسة مع رمز الدولة")
+                # وجود الرقم في حساب Meta المشترك لا يثبت ملكيته: لا تُربط مؤسسة إلا برقم
+                # اعتمدته لها إدارة المنصة، أو بالرقم المرتبط بها أصلًا من قبل.
+                current = c.execute("SELECT phone_number FROM whatsapp_connections WHERE organization_id=?", (org,)).fetchone()
+                granted = c.execute("SELECT phone FROM service_number_grants WHERE organization_id=? AND service='whatsapp'", (org,)).fetchone()
+                if phone != (str(granted["phone"]) if granted else "") and phone != (str(current["phone_number"]) if current else ""):
+                    raise Error(403, "هذا الرقم غير معتمد لمؤسستك. تواصل مع إدارة خدوم لاعتماد رقم واتساب المؤسسة ثم أعد المحاولة.")
                 bases = configs()
                 if not bases: raise Error(503, "ربط واتساب الأساسي غير مهيأ على الخادم")
                 match, match_base = None, None
@@ -619,6 +627,9 @@ def handle(h, method, db, on_inbound=None):
                     raise Error(409, "أضف رقم المؤسسة في Meta وتحقق منه أولًا، ثم أعد الفحص")
                 owner = c.execute("SELECT organization_id FROM whatsapp_connections WHERE phone_number_id=? AND organization_id<>?", (str(match["id"]), org)).fetchone()
                 if owner: raise Error(409, "هذا الرقم مرتبط بمؤسسة أخرى في خدوم")
+                # رقم مخصص في إعدادات الخادم لمؤسسة أخرى لا يُسجَّل لغيرها؛ تكراره يعطل واتساب للجميع.
+                if any(str(base.get("phone_number_id", "")) == str(match["id"]) and int(base.get("organization_id") or 0) != int(org) for base in bases):
+                    raise Error(409, "هذا الرقم مرتبط بمؤسسة أخرى في خدوم")
                 now = int(time.time())
                 c.execute("""INSERT INTO whatsapp_connections(organization_id,phone_number,phone_number_id,waba_id,created_at,updated_at)
                   VALUES(?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET phone_number=excluded.phone_number,

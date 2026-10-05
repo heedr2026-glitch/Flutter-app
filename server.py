@@ -3790,17 +3790,21 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     "SELECT id,organization_id,username FROM users WHERE username=? COLLATE NOCASE AND active=1",
                     (username,),
                 ).fetchone()
-                if target_user is None:
-                    raise ApiError(404, "اسم المستخدم غير موجود في الخادم")
                 code = connection.execute(
                     """SELECT * FROM activation_codes WHERE code_hash=? AND active=1
                        AND code_kind='activation' AND used_count<max_uses AND (expires_at IS NULL OR expires_at>?)""",
                     (code_hash, now()),
                 ).fetchone()
-                if code is None:
-                    raise ApiError(400, "كود التفعيل غير صحيح أو منتهي")
-                if code["assigned_username"] and normalize_username(code["assigned_username"]) != username:
-                    raise ApiError(403, "هذا الكود مخصص لمستخدم آخر")
+                # هذا المسار بلا تسجيل دخول، فلا يغيّر اشتراك مؤسسة إلا بكود خصّصته الإدارة
+                # لاسم هذا المستخدم بالذات. الكود غير المخصص يُفعَّل بعد الدخول فقط، حتى لا
+                # يطبّقه حامله على مؤسسة غيره. والرسالة واحدة حتى لا تكشف وجود اسم المستخدم.
+                if (
+                    target_user is None
+                    or code is None
+                    or not code["assigned_username"]
+                    or normalize_username(code["assigned_username"]) != username
+                ):
+                    raise ApiError(400, "اسم المستخدم أو كود التفعيل غير صحيح. الكود غير المخصص لاسم مستخدم يُفعَّل بعد تسجيل الدخول.")
                 package_expires = (datetime.now(timezone.utc) + timedelta(days=code["duration_days"])).isoformat()
                 connection.execute("UPDATE activation_codes SET used_count=used_count+1 WHERE id=?", (code["id"],))
                 connection.execute("UPDATE subscriptions SET package=?,starts_at=?,expires_at=? WHERE organization_id=?", (code["package"], now(), package_expires, target_user["organization_id"]))
@@ -3902,6 +3906,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 ).fetchone()
                 if conflict:
                     raise ApiError(409, "رقم المؤسسة مرتبط بمؤسسة أخرى في خدوم")
+                # رقم المؤسسة نص يكتبه المشترك ولا يثبت ملكيته: لا تُربط المكالمات إلا برقم
+                # اعتمدته إدارة المنصة لهذه المؤسسة، أو بالرقم المرتبط بها أصلًا من قبل.
+                linked = connection.execute("SELECT phone_number FROM call_connections WHERE organization_id=?", (organization_id,)).fetchone()
+                if phone != normalize_phone(owner_admin.granted_number(connection, organization_id, "calls")) and phone != normalize_phone(linked["phone_number"] if linked else ""):
+                    raise ApiError(403, "رقم المكالمات غير معتمد لمؤسستك. تواصل مع إدارة خدوم لاعتماده ثم أعد المحاولة.")
                 gateway_ready = any(os.environ.get(name, "").strip() for name in ("KHDOOM_CALLS_GATEWAY_URL", "KHDOOM_CALLS_API_KEY"))
                 status = "ready" if gateway_ready else "pending_setup"
                 message = "" if gateway_ready else "قناة المكالمات تحتاج إعداد الخادم"

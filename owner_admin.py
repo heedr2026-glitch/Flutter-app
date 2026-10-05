@@ -80,6 +80,33 @@ def clear_gift_fallback(c,org,s):
 def audit_if_ready(c,actor,action,target,s):
  if table_exists(c,'platform_audit',s): audit(c,actor,action,target)
 
+SERVICE_NUMBER_LABELS={'whatsapp':'واتساب','calls':'المكالمات'}
+def service_phone(value):
+ """أرقام فقط بصيغة دولية بلا + ولا 00، نفس صيغة توجيه واتساب والمكالمات."""
+ digits=re.sub(r'[^0-9]','',str(value or '').translate(str.maketrans('٠١٢٣٤٥٦٧٨٩','0123456789')))
+ return digits[2:] if digits.startswith('00') else digits
+def granted_number(c,org,service):
+ """الرقم الذي اعتمدته إدارة المنصة لهذه المؤسسة في الخدمة، أو نص فارغ."""
+ row=c.execute('SELECT phone FROM service_number_grants WHERE organization_id=? AND service=?',(int(org),service)).fetchone()
+ return str(row['phone']) if row else ''
+def service_numbers(c,org):
+ return {service:granted_number(c,org,service) for service in SERVICE_NUMBER_LABELS}
+def save_service_numbers(c,org,data,actor_name):
+ """اعتماد أو إلغاء رقم خدمة لمؤسسة. الرقم الواحد لا يُعتمد لمؤسستين في الخدمة نفسها."""
+ changed=[]
+ for service,label in SERVICE_NUMBER_LABELS.items():
+  if service not in data: continue
+  phone=service_phone(data.get(service))
+  if not phone:
+   c.execute('DELETE FROM service_number_grants WHERE organization_id=? AND service=?',(org,service)); changed.append(service+'=')
+   continue
+  if not re.fullmatch(r'[1-9][0-9]{7,14}',phone): raise ValueError('رقم '+label+' غير صالح؛ اكتبه مع رمز الدولة مثل 9665xxxxxxxx')
+  taken=c.execute('SELECT organization_id FROM service_number_grants WHERE service=? AND phone=? AND organization_id<>?',(service,phone,org)).fetchone()
+  if taken: raise ValueError('رقم '+label+' معتمد لمؤسسة أخرى (رقم '+str(taken['organization_id'])+')')
+  c.execute('INSERT INTO service_number_grants(organization_id,service,phone,created_by,created_at) VALUES(?,?,?,?,?) ON CONFLICT(organization_id,service) DO UPDATE SET phone=excluded.phone,created_by=excluded.created_by,created_at=excluded.created_at',(org,service,phone,str(actor_name)[:120],stamp()))
+  changed.append(service+'='+phone)
+ return changed
+
 def support_reference(ticket_id, created_at=''):
  year=str(created_at or '')[:4]
  if not year.isdigit(): year=str(datetime.now(timezone.utc).year)
@@ -114,6 +141,8 @@ def migrate(c,postgres=False):
  f'''platform_payments(id {identity},organization_id BIGINT NOT NULL,package TEXT NOT NULL,months INTEGER NOT NULL DEFAULT 1,amount REAL NOT NULL DEFAULT 0,discount_code TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT 'transfer',request_id BIGINT UNIQUE,note TEXT NOT NULL DEFAULT '',approved_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''']
  schemas += [f'''platform_expenses(id {identity},provider TEXT NOT NULL,service TEXT NOT NULL,invoice_number TEXT NOT NULL DEFAULT '',subtotal REAL NOT NULL DEFAULT 0,tax REAL NOT NULL DEFAULT 0,total REAL NOT NULL DEFAULT 0,issued_at TEXT NOT NULL,due_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'unpaid',payment_method TEXT NOT NULL DEFAULT '',paid_at TEXT, payment_reference TEXT NOT NULL DEFAULT '',notes TEXT NOT NULL DEFAULT '',attachment_data TEXT NOT NULL DEFAULT '',recurring INTEGER NOT NULL DEFAULT 0,recurrence TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)''']
  schemas += [
+  # أرقام الخدمات التي اعتمدتها إدارة المنصة لكل مؤسسة؛ لا تُربط خدمة برقم غير معتمد.
+  '''service_number_grants(organization_id BIGINT NOT NULL,service TEXT NOT NULL,phone TEXT NOT NULL,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,PRIMARY KEY(organization_id,service))''',
   '''call_connections(organization_id BIGINT PRIMARY KEY,phone_number TEXT NOT NULL DEFAULT '',activity TEXT NOT NULL DEFAULT '',enabled INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'not_connected',last_error TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL)''',
   f'''call_logs(id {identity},organization_id BIGINT NOT NULL,caller_phone TEXT NOT NULL DEFAULT '',caller_name TEXT NOT NULL DEFAULT '',direction TEXT NOT NULL DEFAULT 'inbound',status TEXT NOT NULL DEFAULT 'ended',started_at TEXT NOT NULL,duration_seconds INTEGER NOT NULL DEFAULT 0,transcript TEXT NOT NULL DEFAULT '',summary TEXT NOT NULL DEFAULT '',request_text TEXT NOT NULL DEFAULT '',appointment TEXT NOT NULL DEFAULT '',follow_up INTEGER NOT NULL DEFAULT 0,human_handoff INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
  f'''technical_incidents(id {identity},service TEXT NOT NULL,organization_id BIGINT,problem TEXT NOT NULL,root_cause TEXT NOT NULL,proposal TEXT NOT NULL,severity TEXT NOT NULL DEFAULT 'medium',test_status TEXT NOT NULL DEFAULT 'not_tested',deployment_status TEXT NOT NULL DEFAULT 'proposed',affected_organizations INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,approved_by TEXT NOT NULL DEFAULT '')'''
@@ -962,7 +991,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if re.fullmatch(r'organizations/\d+',r) and m=='GET':
   ident=int(r.split('/')[1]); org=c.execute(ORG_SELECT+',o.activity '+ORG_FROM+' WHERE o.id=?',(ident,)).fetchone()
   if not org: raise s.ApiError(404,'المؤسسة غير موجودة')
-  out=dict(org); out['account_id']=(c.execute('SELECT account_id FROM account_organizations WHERE organization_id=?',(ident,)).fetchone() or {'account_id':None})['account_id']; out['branches']=rows(c,'SELECT id,name,status FROM organization_branches WHERE organization_id=? ORDER BY created_at,id',(ident,)); out['users']=rows(c,"SELECT u.id,u.name,u.email,u.phone,u.role,u.active,(SELECT reason FROM login_failures f WHERE f.user_id=u.id ORDER BY f.id DESC LIMIT 1) last_login_failure FROM users u WHERE u.organization_id=? ORDER BY u.id LIMIT 100",(ident,)); out['devices']=rows(c,'SELECT se.token_hash id,se.device_name,se.device_id,se.last_seen_at,se.trusted,se.expires_at,u.name FROM sessions se JOIN users u ON u.id=se.user_id WHERE u.organization_id=? AND se.expires_at>? ORDER BY se.last_seen_at DESC LIMIT 100',(ident,stamp())); out['employees']=rows(c,'SELECT employee_type,COUNT(*) requests FROM ai_usage WHERE organization_id=? GROUP BY employee_type',(ident,)); out['ads']=rows(c,'SELECT id,title,active,approved,expires_at FROM advertisements WHERE organization_id=? ORDER BY id DESC LIMIT 50',(ident,)); out['rewards']=rows(c,'SELECT kind,amount,reason,actor,created_at FROM platform_rewards WHERE organization_id=? ORDER BY id DESC LIMIT 30',(ident,)); out['credits']=credits_summary(c,ident,s); wa=c.execute('SELECT phone_number,phone_number_id,waba_id,updated_at FROM whatsapp_connections WHERE organization_id=?',(ident,)).fetchone() if table_exists(c,'whatsapp_connections',s) else None; wa_messages=scalar(c,'SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=?',(ident,)) if table_exists(c,'whatsapp_messages',s) else 0; wa_hook=c.execute('SELECT received_at FROM whatsapp_webhooks WHERE phone_number_id=?',(wa['phone_number_id'],)).fetchone() if wa and table_exists(c,'whatsapp_webhooks',s) else None; call_link=c.execute('SELECT phone_number,status,last_error,updated_at FROM call_connections WHERE organization_id=?',(ident,)).fetchone() if table_exists(c,'call_connections',s) else None; ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip()); out['services']={'account':{'status':'ok','label':'الحساب'},'package':{'status':'ok' if org['package'] else 'warning','label':'الباقة'},'permissions':{'status':'ok' if out['users'] else 'warning','label':'الصلاحيات'},'whatsapp':{'status':'ok' if wa else 'not_connected','label':'واتساب','phone':wa['phone_number'] if wa else None,'messages':wa_messages,'webhook':bool(wa_hook)},'ai':{'status':'ok' if ai_ready else 'not_configured','label':'AI','requests':out['credits']['services']['ai']['used_month']},'calls':{'status':call_link['status'] if call_link else 'not_connected','label':'المكالمات','phone':call_link['phone_number'] if call_link else None,'last_error':call_link['last_error'] if call_link else ''},'payment':{'status':'ok','label':'الدفع'},'server':{'status':'ok','label':'السيرفر'}}; return out
+  out=dict(org); out['service_numbers']=service_numbers(c,ident); out['account_id']=(c.execute('SELECT account_id FROM account_organizations WHERE organization_id=?',(ident,)).fetchone() or {'account_id':None})['account_id']; out['branches']=rows(c,'SELECT id,name,status FROM organization_branches WHERE organization_id=? ORDER BY created_at,id',(ident,)); out['users']=rows(c,"SELECT u.id,u.name,u.email,u.phone,u.role,u.active,(SELECT reason FROM login_failures f WHERE f.user_id=u.id ORDER BY f.id DESC LIMIT 1) last_login_failure FROM users u WHERE u.organization_id=? ORDER BY u.id LIMIT 100",(ident,)); out['devices']=rows(c,'SELECT se.token_hash id,se.device_name,se.device_id,se.last_seen_at,se.trusted,se.expires_at,u.name FROM sessions se JOIN users u ON u.id=se.user_id WHERE u.organization_id=? AND se.expires_at>? ORDER BY se.last_seen_at DESC LIMIT 100',(ident,stamp())); out['employees']=rows(c,'SELECT employee_type,COUNT(*) requests FROM ai_usage WHERE organization_id=? GROUP BY employee_type',(ident,)); out['ads']=rows(c,'SELECT id,title,active,approved,expires_at FROM advertisements WHERE organization_id=? ORDER BY id DESC LIMIT 50',(ident,)); out['rewards']=rows(c,'SELECT kind,amount,reason,actor,created_at FROM platform_rewards WHERE organization_id=? ORDER BY id DESC LIMIT 30',(ident,)); out['credits']=credits_summary(c,ident,s); wa=c.execute('SELECT phone_number,phone_number_id,waba_id,updated_at FROM whatsapp_connections WHERE organization_id=?',(ident,)).fetchone() if table_exists(c,'whatsapp_connections',s) else None; wa_messages=scalar(c,'SELECT COUNT(*) n FROM whatsapp_messages WHERE organization_id=?',(ident,)) if table_exists(c,'whatsapp_messages',s) else 0; wa_hook=c.execute('SELECT received_at FROM whatsapp_webhooks WHERE phone_number_id=?',(wa['phone_number_id'],)).fetchone() if wa and table_exists(c,'whatsapp_webhooks',s) else None; call_link=c.execute('SELECT phone_number,status,last_error,updated_at FROM call_connections WHERE organization_id=?',(ident,)).fetchone() if table_exists(c,'call_connections',s) else None; ai_ready=bool(os.environ.get('KHDOOM_AI_API_KEY','').strip() or os.environ.get('OPENAI_API_KEY','').strip()); out['services']={'account':{'status':'ok','label':'الحساب'},'package':{'status':'ok' if org['package'] else 'warning','label':'الباقة'},'permissions':{'status':'ok' if out['users'] else 'warning','label':'الصلاحيات'},'whatsapp':{'status':'ok' if wa else 'not_connected','label':'واتساب','phone':wa['phone_number'] if wa else None,'messages':wa_messages,'webhook':bool(wa_hook)},'ai':{'status':'ok' if ai_ready else 'not_configured','label':'AI','requests':out['credits']['services']['ai']['used_month']},'calls':{'status':call_link['status'] if call_link else 'not_connected','label':'المكالمات','phone':call_link['phone_number'] if call_link else None,'last_error':call_link['last_error'] if call_link else ''},'payment':{'status':'ok','label':'الدفع'},'server':{'status':'ok','label':'السيرفر'}}; return out
  if re.fullmatch(r'organizations/\d+/users/\d+/status',r) and m=='POST':
   _,org_part,_,user_part,_=r.split('/'); ident=int(org_part); user_id=int(user_part)
   user=c.execute('SELECT id,name,active FROM users WHERE id=? AND organization_id=?',(user_id,ident)).fetchone()
@@ -972,6 +1001,13 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if not active: c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
   audit(c,a['name'],'organization_user_status',json.dumps({'organization_id':ident,'user_id':user_id,'active':bool(active)},ensure_ascii=False))
   return {'saved':True,'active':bool(active),'message':'تم إعادة تفعيل المستخدم' if active else 'تم إيقاف المستخدم وإنهاء جلساته'}
+ if re.fullmatch(r'organizations/\d+/service-numbers',r) and m=='POST':
+  ident=int(r.split('/')[1])
+  if not c.execute('SELECT id FROM organizations WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'المؤسسة غير موجودة')
+  try: changed=save_service_numbers(c,ident,d if isinstance(d,dict) else {},a['name'])
+  except ValueError as problem: raise s.ApiError(400,str(problem))
+  if changed: audit(c,a['name'],'organization_service_numbers','organization='+str(ident)+';'+';'.join(changed))
+  return {'saved':True,'service_numbers':service_numbers(c,ident)}
  if re.fullmatch(r'organizations/\d+/(status|logout|reward)',r) and m=='POST':
   ident=int(r.split('/')[1]); action=r.split('/')[2]
   if not c.execute('SELECT id FROM organizations WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'المؤسسة غير موجودة')
