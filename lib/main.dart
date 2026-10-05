@@ -18,6 +18,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import 'branch_store.dart';
+import 'local_data_owner.dart';
 import 'daily_work_page.dart';
 import 'daily_work_store.dart';
 import 'employee_management.dart';
@@ -397,6 +398,20 @@ class KhdoomNotifications {
   }
 
   static Future<void> _syncQueue = Future<void>.value();
+
+  /// يلغي كل التنبيهات المجدولة على الجوال (عند الخروج أو تبديل المؤسسة).
+  /// يمر بنفس طابور المزامنة حتى لا تعيد مزامنة جارية جدولة ما أُلغي.
+  static Future<void> cancelAll() {
+    final next = _syncQueue.then((_) async {
+      try {
+        await _plugin.cancelAll();
+      } catch (_) {
+        // تعذر الإلغاء لا يمنع الخروج.
+      }
+    });
+    _syncQueue = next.catchError((Object _) {});
+    return next;
+  }
 
   static Future<void> syncStoredAlerts() {
     final next = _syncQueue.then((_) => _syncStoredAlertsNow());
@@ -1112,7 +1127,18 @@ class _LoginPageState extends State<LoginPage> {
       final permissions = Map<String, dynamic>.from(
         user['permissions'] as Map? ?? {},
       );
+      final organizationId = loginResult['organizationId']?.toString() ?? '';
+      if (await LocalDataOwner.switchTo(
+        prefs.raw,
+        organizationId,
+        previousOwner: prefs.raw.getString('session_organization_id'),
+        username: username,
+        adminLogin: isEmployee ? null : username,
+      )) {
+        await KhdoomNotifications.cancelAll();
+      }
       await Future.wait([
+        prefs.setString('session_organization_id', organizationId),
         prefs.setBool('local_account_created', true),
         prefs.setString('remembered_login_username', username),
         prefs.setString('session_user_type', isEmployee ? 'employee' : 'admin'),
@@ -1201,12 +1227,36 @@ class _LoginPageState extends State<LoginPage> {
         user['permissions'] as Map? ?? {},
       );
 
+      // بيانات الجوال تتبع مؤسسة واحدة: دخول مؤسسة أخرى يبدّلها قبل كتابة أي شيء.
+      final switched = await LocalDataOwner.switchTo(
+        prefs.raw,
+        loginResult['organizationId']?.toString() ?? '',
+        previousOwner: prefs.raw.getString('session_organization_id'),
+        username: username,
+        adminLogin: isEmployee ? null : username,
+      );
+      if (switched) {
+        await KhdoomNotifications.cancelAll();
+        prefs = await BranchPreferences.getInstance();
+      }
+
       // Organization details are useful for the local dashboard but are not a
       // prerequisite for a valid account login.
       Map<String, dynamic> organization = const {};
+      final organizationApi = switched
+          ? (KhdoomCloudApi(
+              scope: prefs,
+              baseUrl:
+                  prefs.getString('cloud_api_url') ??
+                  'https://khdoom-api.onrender.com',
+            )..token = cloudToken)
+          : cloudApi;
       try {
-        organization = await cloudApi.organization();
-      } catch (_) {}
+        organization = await organizationApi.organization();
+      } catch (_) {
+      } finally {
+        if (switched) organizationApi.close();
+      }
 
       await Future.wait([
         prefs.setBool('local_account_created', true),
@@ -1291,6 +1341,10 @@ class _LoginPageState extends State<LoginPage> {
           key: 'cloud_session_token',
           value: cloudToken,
         );
+        await LocalDataOwner.adopt(
+          prefs.raw,
+          result['organizationId']?.toString() ?? '',
+        );
       }
     } on CloudApiException {
       if (password.length >= 8) {
@@ -1311,6 +1365,10 @@ class _LoginPageState extends State<LoginPage> {
             await _secureStorage.write(
               key: 'cloud_session_token',
               value: cloudToken,
+            );
+            await LocalDataOwner.adopt(
+              prefs.raw,
+              result['organizationId']?.toString() ?? '',
             );
           }
         } catch (_) {
@@ -1903,8 +1961,13 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
     }
 
     setState(() => _isSaving = true);
-    final prefs = await BranchPreferences.getInstance();
+    var prefs = await BranchPreferences.getInstance();
     var package = 'free';
+    var organizationId = '';
+    // حساب جديد لا يرث جلسة حساب سابق على هذا الجوال مهما كانت نتيجة التسجيل.
+    try {
+      await const FlutterSecureStorage().delete(key: 'cloud_session_token');
+    } catch (_) {}
     try {
       final api = KhdoomCloudApi(
         scope: prefs,
@@ -1925,6 +1988,7 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
         'deviceName': device['name'],
       });
       package = result['package']?.toString() ?? 'free';
+      organizationId = result['organizationId']?.toString() ?? '';
       final cloudToken = result['token']?.toString();
       if (cloudToken != null && cloudToken.isNotEmpty) {
         const storage = FlutterSecureStorage();
@@ -1934,8 +1998,22 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
     } catch (error) {
       // يبقى التسجيل المجاني متاحًا محليًا عند تعذر اتصال الخادم.
     }
+    // بيانات أي مؤسسة سابقة على هذا الجوال تُنحّى جانبًا؛ الحساب الجديد يبدأ نظيفًا.
+    final accountUsername = _usernameController.text.trim().toLowerCase();
+    if (await LocalDataOwner.switchTo(
+      prefs.raw,
+      organizationId.isNotEmpty
+          ? organizationId
+          : LocalDataOwner.localOwner(accountUsername),
+      previousOwner: prefs.raw.getString('session_organization_id'),
+      freshAccount: true,
+    )) {
+      await KhdoomNotifications.cancelAll();
+    }
+    prefs = await BranchPreferences.getInstance();
     const secureStorage = FlutterSecureStorage();
     await Future.wait([
+      prefs.setString('session_organization_id', organizationId),
       prefs.setBool('local_account_created', true),
       prefs.setString('session_user_type', 'admin'),
       prefs.setString(
@@ -2320,6 +2398,53 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  bool _cloudTokenRecoveryStopped = false;
+
+  /// بعد دخول المدير بلا اتصال لا يوجد توكن على الجوال (الخروج يحذفه)؛ نحاول
+  /// الحصول عليه بهدوء عند رجوع الشبكة. رفض الخادم للبيانات يوقف المحاولات.
+  Future<void> _recoverCloudToken(FlutterSecureStorage storage) async {
+    if (_cloudTokenRecoveryStopped) return;
+    final prefs = await _branchPrefs;
+    if (prefs.getString('session_user_type') != 'admin') return;
+    final username = (prefs.getString('admin_login_username') ?? '').trim();
+    final password = await storage.read(key: 'admin_account_password');
+    if (username.isEmpty || password == null || password.isEmpty) return;
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    );
+    try {
+      final device = await khdoomDeviceIdentity();
+      final result = await api.login(
+        username,
+        password,
+        deviceId: device['id']!,
+        deviceName: device['name']!,
+      );
+      final token = result['token']?.toString() ?? '';
+      final organizationId = result['organizationId']?.toString() ?? '';
+      final owner = prefs.raw.getString(LocalDataOwner.ownerKey) ?? '';
+      // لا يُقبل توكن مؤسسة غير صاحبة البيانات المحفوظة على هذا الجوال.
+      final foreign =
+          owner.isNotEmpty &&
+          !owner.startsWith('local:') &&
+          owner != organizationId;
+      if (token.isEmpty || organizationId.isEmpty || foreign) {
+        _cloudTokenRecoveryStopped = true;
+        return;
+      }
+      await storage.write(key: 'cloud_session_token', value: token);
+      await LocalDataOwner.adopt(prefs.raw, organizationId);
+    } on CloudApiException {
+      _cloudTokenRecoveryStopped = true;
+    } catch (_) {
+      // لا اتصال الآن؛ نحاول في الدورة التالية.
+    } finally {
+      api.close();
+    }
+  }
+
   Future<void> _validateCloudSession() async {
     if (_forcingCloudLogout || _sessionValidationInFlight || !mounted) return;
     _sessionValidationInFlight = true;
@@ -2333,7 +2458,10 @@ class _DashboardPageState extends State<DashboardPage> {
   Future<void> _validateCloudSessionOnce() async {
     const storage = FlutterSecureStorage();
     final token = await storage.read(key: 'cloud_session_token');
-    if (token == null || token.isEmpty) return;
+    if (token == null || token.isEmpty) {
+      await _recoverCloudToken(storage);
+      return;
+    }
     final prefs = await _branchPrefs;
     final api = KhdoomCloudApi(
       scope: prefs,
@@ -2347,6 +2475,7 @@ class _DashboardPageState extends State<DashboardPage> {
       _forcingCloudLogout = true;
       await DriverTrackingNative.stop();
       await storage.delete(key: 'cloud_session_token');
+      await KhdoomNotifications.cancelAll();
       await prefs.remove('session_user_type');
       await prefs.remove('session_employee_id');
       await prefs.remove('session_employee_name');
@@ -2498,6 +2627,11 @@ class _DashboardPageState extends State<DashboardPage> {
         final advertisementUpdate = () async {
           try {
             final organization = await organizationFuture;
+            // جهاز حُفظت بياناته قبل ربطها بمؤسسة: نثبّت صاحبها والجلسة قائمة.
+            await LocalDataOwner.adopt(
+              prefs.raw,
+              organization['id']?.toString() ?? '',
+            );
             final logoData = organization['logo_data']?.toString() ?? '';
             final cloudBusinessName =
                 organization['name']?.toString().trim() ?? '';
@@ -5255,7 +5389,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _pickProfileImage() async {
     const channel = MethodChannel('khdoom/profile_image');
-    final destinationPath = await channel.invokeMethod<String>('pickImage');
+    // اسم ملف فريد حتى لا تكتب صورة حساب فوق صورة حساب آخر على نفس الجوال.
+    final destinationPath = await channel.invokeMethod<String>('pickImage', {
+      'fileName': 'khdoom_profile_${DateTime.now().microsecondsSinceEpoch}',
+    });
     if (destinationPath == null || destinationPath.isEmpty) return;
     final prefs = await BranchPreferences.getInstance();
     await prefs.setString('profile_image_path', destinationPath);
@@ -5330,6 +5467,11 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     }
     await DriverTrackingNative.stop();
+    // الخروج ينهي الجلسة على هذا الجوال فعلًا: لا يبقى توكن ولا تنبيهات مجدولة.
+    try {
+      await const FlutterSecureStorage().delete(key: 'cloud_session_token');
+    } catch (_) {}
+    await KhdoomNotifications.cancelAll();
     await prefs.setBool('has_logged_out_once', true);
     await prefs.remove('session_user_type');
     await prefs.remove('session_employee_id');
