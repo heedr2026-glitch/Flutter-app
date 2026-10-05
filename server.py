@@ -2168,13 +2168,17 @@ class Handler(BaseHTTPRequestHandler):
     def _rate_limited(self, path: str) -> bool:
         if not path.startswith("/api/") and not path.startswith("/owner/api/") and path != "/delete-account":
             return False
-        key = f"{owner_admin.client_ip(self)}:{'owner' if path.startswith('/owner/api/') else 'api'}"
+        # محاولات الدخول والتسجيل لها عدّاد خاص بها. كانت تُقاس على عدّاد كل طلبات التطبيق
+        # من نفس العنوان، فيُرفض دخول سليم لأن التطبيق (أو جهاز آخر على نفس الشبكة)
+        # أرسل أكثر من 20 طلبًا عاديًا في الدقيقة.
+        sign_in = path in ("/api/login", "/api/register")
+        key = f"{owner_admin.client_ip(self)}:{'owner' if path.startswith('/owner/api/') else 'auth' if sign_in else 'api'}"
         now_monotonic = time.monotonic()
         with _RATE_LIMIT_LOCK:
             bucket = _RATE_LIMIT_BUCKETS[key]
             while bucket and now_monotonic - bucket[0] > _RATE_LIMIT_WINDOW_SECONDS:
                 bucket.popleft()
-            limit = 20 if path in ("/api/login", "/api/register") else _RATE_LIMIT_MAX_REQUESTS
+            limit = 20 if sign_in else _RATE_LIMIT_MAX_REQUESTS
             if len(bucket) >= limit:
                 return True
             bucket.append(now_monotonic)

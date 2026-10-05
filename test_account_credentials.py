@@ -107,6 +107,18 @@ class AccountCredentialsTest(unittest.TestCase):
         self.assertEqual(self.login('worker1', 'workerpass9'), 200)
         self.assertEqual(self.login('manager1', 'oldpass123'), 200)
 
+    def test_login_limit_counts_sign_in_attempts_only(self):
+        # نشاط التطبيق العادي (أكثر من 20 طلبًا في الدقيقة) لا يمنع تسجيل الدخول.
+        for _ in range(30):
+            self.assertEqual(self.call('/api/organization', token='tok1a')[0], 200)
+        self.assertEqual(self.login('manager1', 'oldpass123'), 200)
+        # ومحاولات الدخول نفسها ما زالت محدودة بعشرين في الدقيقة.
+        results = [self.login('manager1', 'wrong-password') for _ in range(21)]
+        self.assertEqual(results[:19], [401] * 19)
+        self.assertEqual(results[-1], 429)
+        # والحد على الدخول لا يوقف بقية طلبات المستخدم الداخل.
+        self.assertEqual(self.call('/api/organization', token='tok1a')[0], 200)
+
 
 if __name__ == '__main__':
     unittest.main()
