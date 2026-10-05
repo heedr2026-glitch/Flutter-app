@@ -68,6 +68,46 @@ def purge_old(c,force=False):
     c.execute('DELETE FROM vehicle_location_events WHERE recorded_at<? AND id NOT IN (SELECT MAX(id) FROM vehicle_location_events GROUP BY organization_id,vehicle_key)',(cutoff,))
 
 
+BATCH_MAX=300
+BACKLOG_HOURS=26
+
+
+def store_points(c,org,key,row,points,user_id,server):
+    """دفعة نقاط من جوال السائق، منها ما سُجِّل بلا اتصال وأُرسل لاحقًا.
+
+    كل نقطة تُحفظ بوقت التقاطها الحقيقي. تُتجاوز (ولا تُرفض الدفعة) كل نقطة خارج
+    جدول الدوام، أو أقدم من مدة السماح، أو سابقة لموافقة السائق الحالية، أو مكررة.
+    """
+    if not isinstance(points,list) or not points: raise ValueError('لا توجد نقاط للحفظ')
+    if len(points)>BATCH_MAX: raise ValueError('عدد النقاط كبير؛ أرسلها على دفعات')
+    now_utc=datetime.now(timezone.utc);stored=skipped=0
+    consent=None
+    try:
+        if row['consent_at']:
+            consent=datetime.fromisoformat(str(row['consent_at']))
+            if consent.tzinfo is None: consent=consent.replace(tzinfo=timezone.utc)
+    except (ValueError,TypeError,KeyError,IndexError): consent=None
+    for point in points:
+        try:
+            at=datetime.fromisoformat(str(point.get('capturedAt','')).replace('Z','+00:00'))
+            latitude=float(point.get('latitude'));longitude=float(point.get('longitude'));accuracy=float(point.get('accuracyMeters',0) or 0)
+        except (ValueError,TypeError,AttributeError):
+            skipped+=1;continue
+        if at.tzinfo is None or not (-90<=latitude<=90 and -180<=longitude<=180 and 0<=accuracy<=100000):
+            skipped+=1;continue
+        age=(now_utc-at).total_seconds()
+        if not -60<=age<=BACKLOG_HOURS*3600 or not in_schedule(row,at) or (consent is not None and at<consent-timedelta(seconds=60)):
+            skipped+=1;continue
+        stamp=at.astimezone(timezone.utc).isoformat(timespec='milliseconds')
+        # إعادة إرسال نفس الدفعة بعد انقطاع لا تكرر النقاط.
+        if c.execute('SELECT 1 FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? AND recorded_at=? LIMIT 1',(org,key,stamp)).fetchone():
+            skipped+=1;continue
+        c.execute('INSERT INTO vehicle_location_events(organization_id,vehicle_key,latitude,longitude,accuracy_meters,recorded_at,user_id,created_at) VALUES(?,?,?,?,?,?,?,?)',(org,key,latitude,longitude,accuracy,stamp,user_id,server.now()))
+        stored+=1
+    purge_old(c)
+    return {'saved':True,'stored':stored,'skipped':skipped}
+
+
 def _meters(a,b):
     lat1,lon1,lat2,lon2=map(math.radians,(a['latitude'],a['longitude'],b['latitude'],b['longitude']))
     h=math.sin((lat2-lat1)/2)**2+math.cos(lat1)*math.cos(lat2)*math.sin((lon2-lon1)/2)**2
@@ -86,7 +126,7 @@ def route(c,user,key,day,server):
     if chosen>today or (today-chosen).days>RETENTION_DAYS: raise ValueError('المسارات محفوظة لآخر 30 يومًا فقط')
     purge_old(c)
     start=datetime(chosen.year,chosen.month,chosen.day,tzinfo=RIYADH)
-    rows=c.execute('SELECT latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? AND recorded_at>=? AND recorded_at<? ORDER BY id LIMIT 2000',
+    rows=c.execute('SELECT latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at,id LIMIT 6000',
         (org,key,start.astimezone(timezone.utc).isoformat(),(start+timedelta(days=1)).astimezone(timezone.utc).isoformat())).fetchall()
     points=[{'latitude':r['latitude'],'longitude':r['longitude'],'accuracyMeters':r['accuracy_meters'],'recordedAt':r['recorded_at']} for r in rows]
     # المسافة تقريبية: تتجاهل القراءات الضعيفة والاهتزاز الصغير والمركبة واقفة.
@@ -188,6 +228,9 @@ def device_request(c, path, method, data, headers, server):
         c.execute('INSERT INTO vehicle_location_events(organization_id,vehicle_key,latitude,longitude,accuracy_meters,recorded_at,user_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)',(org,key,latitude,longitude,accuracy,stamp,stamp))
         purge_old(c)
         return 201,{'saved':True,'vehicleKey':key,'recordedAt':stamp}
+    if path=='/api/vehicle-tracking/batch' and method=='POST':
+        if str(data.get('vehicleKey','')).strip()[:160]!=key: raise server.ApiError(403,'هذا الجوال مرتبط بمركبة أخرى')
+        return 200,store_points(c,org,key,row,data.get('points'),None,server)
     raise server.ApiError(403,'هذا الطلب غير متاح لجوال السائق')
 
 
@@ -197,6 +240,13 @@ def handle(c, path, method, data, query, user, headers, server):
         key=str(query.get('vehicleKey',[''])[0]).strip()[:160]
         if not key: raise ValueError('حدد المركبة')
         return route(c,user,key,str(query.get('date',[''])[0]).strip(),server)
+    if path=='/api/vehicle-tracking/batch' and method=='POST':
+        key=str(data.get('vehicleKey','')).strip()[:160]
+        row=c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND vehicle_key=?',(org,key)).fetchone()
+        if not row or row['driver_user_id']!=user['id']: raise server.ApiError(403,'تحديث الموقع متاح للسائق المرتبط فقط')
+        if branch and row['branch_id']!=branch: raise server.ApiError(403,'المركبة تتبع فرعًا آخر')
+        if row['consent_revision']!=row['revision'] or row['source_session_hash']!=session_hash(headers): raise server.ApiError(403,'يلزم قبول جدول التتبع وتفعيله من هذا الجوال')
+        return store_points(c,org,key,row,data.get('points'),user['id'],server)
     if path=='/api/vehicle-tracking/drivers' and method=='GET':
         if user['role']!='admin': raise server.ApiError(403,'إدارة السائقين متاحة للمالك فقط')
         # Names and IDs only; credentials and account permissions are never exposed.
@@ -210,7 +260,10 @@ def handle(c, path, method, data, query, user, headers, server):
         if not row: raise server.ApiError(404,'لا توجد مركبة مرتبطة بحسابك')
         if data.get('accepted') is not True: raise ValueError('يلزم موافقة السائق على تتبع موقع جواله خلال الدوام')
         if data.get('revision')!=row['revision']: raise server.ApiError(409,'تغير الجدول؛ راجعه قبل الموافقة')
-        c.execute('UPDATE vehicle_tracking_schedules SET consent_revision=revision,source_session_hash=?,consent_at=?,phone_status=? WHERE organization_id=? AND vehicle_key=?',(session_hash(headers),server.now(),'armed',org,row['vehicle_key']))
+        # إعادة التفعيل من نفس الجوال لنفس الجدول ليست موافقة جديدة: وقت الموافقة يبقى،
+        # حتى لا تُرفض نقاط سُجِّلت بلا اتصال قبل إعادة فتح الصفحة.
+        same=row['consent_revision']==row['revision'] and row['source_session_hash']==session_hash(headers) and row['consent_at']
+        c.execute('UPDATE vehicle_tracking_schedules SET consent_revision=revision,source_session_hash=?,consent_at=?,phone_status=? WHERE organization_id=? AND vehicle_key=?',(session_hash(headers),row['consent_at'] if same else server.now(),'armed',org,row['vehicle_key']))
         server.audit_log(c,org,user['id'],'driver_tracking_consent','وافق السائق على تتبع جواله ضمن الجدول المحدد','vehicle',row['vehicle_key'])
         return {'saved':True}
     if path=='/api/vehicle-tracking/heartbeat' and method=='POST':
@@ -309,7 +362,7 @@ def location_status(c,user,key,server):
     if schedule and user.get('current_branch') and schedule['branch_id']!=user['current_branch']: raise server.ApiError(403,'المركبة تتبع فرعًا آخر')
     if user['role']!='admin':
         if not schedule or schedule['driver_user_id']!=user['id']: raise server.ApiError(403,'عرض الموقع متاح للمالك والسائق المرتبط فقط')
-    location=c.execute('SELECT vehicle_key,latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? ORDER BY id DESC LIMIT 1',(user['organization_id'],key)).fetchone()
+    location=c.execute('SELECT vehicle_key,latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? ORDER BY recorded_at DESC,id DESC LIMIT 1',(user['organization_id'],key)).fetchone()
     out=dict(location) if location else {'vehicle_key':key,'status':'no_location'}
     fresh=False
     if location:

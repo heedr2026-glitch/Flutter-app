@@ -139,6 +139,55 @@ class DirectoryTrackingHTTP(unittest.TestCase):
         raw_fails(403,'/api/vehicle-tracking','POST',{**location,'capturedAt':datetime.now(timezone.utc).isoformat()},token=fourth['token'])
         self.assertEqual(self.req('/api/vehicle-tracking?vehicleKey=plate:777',user=3)['status'],'no_location')
         with urlopen(base+'/driver?c='+code,timeout=5) as page:self.assertIn('أنا سائق',page.read().decode())
+    def test_offline_points_upload_in_batches_with_real_times(self):
+        minute=datetime.now(vehicle_tracking.RIYADH).hour*60+datetime.now(vehicle_tracking.RIYADH).minute
+        def clock(n):n%=1440;return f'{n//60:02d}:{n%60:02d}'
+        base='http://127.0.0.1:'+str(self.http.server_port)
+        def raw(path,method='GET',data=None,token=None):
+            h={'Content-Type':'application/json'}
+            if token:h['Authorization']='Bearer '+token
+            with urlopen(Request(base+path,data=None if data is None else json.dumps(data).encode(),headers=h,method=method),timeout=5) as r:return r.status,json.load(r)
+        def raw_fails(code,*a,**kw):
+            with self.assertRaises(HTTPError) as caught:raw(*a,**kw)
+            self.assertEqual(caught.exception.code,code);caught.exception.close()
+        # دوام يغطي اليوم كله تقريبًا (يبدأ بعد دقيقتين وينتهي بعد دقيقة من الغد).
+        schedule={'vehicleKey':'plate:55','vehicleName':'وانيت','weekdays':list(range(1,8)),'startTime':clock(minute+2),'endTime':clock(minute+1),'enabled':True}
+        self.req('/api/vehicle-tracking/schedule','PUT',schedule)
+        code=self.req('/api/vehicle-tracking/schedule?vehicleKey=plate:55')['linkCode']
+        token=raw('/api/driver-link/claim','POST',{'code':code,'driverName':'سالم','accepted':True})[1]['token']
+        now=datetime.now(timezone.utc)
+        def point(ago,lat=24.7,acc=8):return {'latitude':lat,'longitude':46.7,'accuracyMeters':acc,'capturedAt':(now-ago).isoformat()}
+        path='/api/vehicle-tracking/batch'
+        # نقاط أقدم من موافقة السائق الحالية لا تُحفظ.
+        status,first=raw(path,'POST',{'vehicleKey':'plate:55','points':[point(timedelta(hours=3))]},token=token)
+        self.assertEqual((status,first['stored'],first['skipped']),(200,0,1))
+        with server.db() as c:
+            c.execute("UPDATE vehicle_tracking_schedules SET consent_at=? WHERE vehicle_key='plate:55'",((now-timedelta(hours=10)).isoformat(),));c.commit()
+        # وصلت بلا ترتيب: الأحدث أولًا ثم ما سُجِّل بلا اتصال، ومعها نقطة أقدم من مدة السماح ونقطة تالفة.
+        batch=[point(timedelta(seconds=5),lat=24.73),point(timedelta(hours=3),lat=24.71),point(timedelta(hours=1),lat=24.72),point(timedelta(hours=27)),{'latitude':'x'},point(timedelta(seconds=40),lat=999)]
+        status,saved=raw(path,'POST',{'vehicleKey':'plate:55','points':batch},token=token)
+        self.assertEqual((status,saved['stored'],saved['skipped']),(200,3,3))
+        # إعادة إرسال نفس الدفعة بعد انقطاع لا تكرر شيئًا.
+        self.assertEqual(raw(path,'POST',{'vehicleKey':'plate:55','points':batch},token=token)[1]['stored'],0)
+        with server.db() as c:
+            rows=c.execute("SELECT latitude,recorded_at FROM vehicle_location_events WHERE vehicle_key='plate:55' ORDER BY recorded_at").fetchall()
+        self.assertEqual([r['latitude'] for r in rows],[24.71,24.72,24.73])
+        # الوقت المحفوظ هو وقت الالتقاط لا وقت الوصول.
+        self.assertLess(abs((datetime.fromisoformat(rows[0]['recorded_at'])-(now-timedelta(hours=3))).total_seconds()),2)
+        # آخر موقع هو الأحدث التقاطًا، والمسار مرتب زمنيًا مهما كان ترتيب الوصول.
+        seen=self.req('/api/vehicle-tracking?vehicleKey=plate:55');self.assertEqual((seen['status'],seen['latitude']),('live',24.73))
+        days={(now-timedelta(hours=h)).astimezone(vehicle_tracking.RIYADH).strftime('%Y-%m-%d') for h in (0,1,3)}
+        ordered=[]
+        for day in sorted(days):ordered+=[p['latitude'] for p in self.req('/api/vehicle-tracking/route?vehicleKey=plate:55&date='+day)['points']]
+        self.assertEqual(ordered,[24.71,24.72,24.73])
+        # الحدود: مركبة أخرى، توكن غير صحيح، دفعة فارغة أو أكبر من الحد.
+        raw_fails(403,path,'POST',{'vehicleKey':'plate:1','points':[point(timedelta(seconds=1))]},token=token)
+        raw_fails(401,path,'POST',{'vehicleKey':'plate:55','points':[point(timedelta(seconds=1))]},token='kdrv_not-real')
+        raw_fails(400,path,'POST',{'vehicleKey':'plate:55','points':[]},token=token)
+        raw_fails(400,path,'POST',{'vehicleKey':'plate:55','points':[point(timedelta(seconds=1))]*301},token=token)
+        # مستخدم عادي ليس السائق المرتبط لا يرفع نقاطًا لهذه المركبة، والمؤسسة الأخرى لا ترى شيئًا.
+        self.fails(403,path,'POST',{'vehicleKey':'plate:55','points':[point(timedelta(seconds=1))]},user=2)
+        self.assertEqual(self.req('/api/vehicle-tracking?vehicleKey=plate:55',user=3)['status'],'no_location')
     def test_route_for_owner_day_distance_and_retention(self):
         with server.db() as c:
             def add(lat,lon,at,key='plate:9',org=1,acc=10):
