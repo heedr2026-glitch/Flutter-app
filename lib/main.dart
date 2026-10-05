@@ -1347,7 +1347,11 @@ class _LoginPageState extends State<LoginPage> {
         );
       }
     } on CloudApiException {
-      if (password.length >= 8) {
+      // رفض الخادم للدخول لا يعني إنشاء حساب جديد، إلا لحساب أُنشئ على الجوال قديمًا
+      // ولم يصل للخادم أصلًا؛ غير ذلك كان ينشئ مؤسسة ثانية فارغة بنفس الشخص.
+      final localOnly = (prefs.raw.getString(LocalDataOwner.ownerKey) ?? '')
+          .startsWith('local:');
+      if (localOnly && password.length >= 8) {
         try {
           final result = await api.register({
             'name': prefs.getString('account_name') ?? username,
@@ -1949,7 +1953,6 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
   bool _acceptedTerms = false;
   bool _isSaving = false;
   String _entityType = 'institution';
-  int _registrationStep = 1;
 
   Future<void> _createAccount() async {
     if (!_formKey.currentState!.validate()) return;
@@ -1968,13 +1971,15 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
     try {
       await const FlutterSecureStorage().delete(key: 'cloud_session_token');
     } catch (_) {}
+    // الحساب يُنشأ في الخادم أولًا؛ إن رفضه أو تعذر الاتصال يرى المستخدم السبب
+    // ولا يدخل بحساب محلي غير موجود في الخادم.
+    String? failure;
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    );
     try {
-      final api = KhdoomCloudApi(
-        scope: prefs,
-        baseUrl:
-            prefs.getString('cloud_api_url') ??
-            'https://khdoom-api.onrender.com',
-      );
       final device = await khdoomDeviceIdentity();
       final result = await api.register({
         'name': _nameController.text.trim(),
@@ -1989,14 +1994,27 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
       });
       package = result['package']?.toString() ?? 'free';
       organizationId = result['organizationId']?.toString() ?? '';
-      final cloudToken = result['token']?.toString();
-      if (cloudToken != null && cloudToken.isNotEmpty) {
+      final cloudToken = result['token']?.toString() ?? '';
+      if (cloudToken.isEmpty || organizationId.isEmpty) {
+        failure = 'لم يكتمل إنشاء الحساب في الخادم. حاول مرة ثانية.';
+      } else {
         const storage = FlutterSecureStorage();
         await storage.write(key: 'cloud_session_token', value: cloudToken);
       }
+    } on CloudApiException catch (error) {
+      failure = error.message;
+    } catch (_) {
+      failure = 'تعذر الاتصال بالخادم. تأكد من الإنترنت وحاول مرة ثانية.';
+    } finally {
       api.close();
-    } catch (error) {
-      // يبقى التسجيل المجاني متاحًا محليًا عند تعذر اتصال الخادم.
+    }
+    if (failure != null) {
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(failure)));
+      return;
     }
     // بيانات أي مؤسسة سابقة على هذا الجوال تُنحّى جانبًا؛ الحساب الجديد يبدأ نظيفًا.
     final accountUsername = _usernameController.text.trim().toLowerCase();
@@ -2101,7 +2119,7 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
                   child: Padding(
                     padding: const EdgeInsets.all(8),
                     child: Text(
-                      'الخطوة $_registrationStep من 6',
+                      'بيانات الحساب والمؤسسة',
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.white,
@@ -2276,7 +2294,7 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'هذه المرحلة تحفظ الملف الشخصي على جهازك فقط. سنربط إنشاء الحساب بالخادم لاحقًا، ولا يتم حفظ كلمة المرور محليًا.',
+                  'يُنشأ حسابك في خدوم وتقدر تدخل به من أي جهاز باسم المستخدم وكلمة المرور.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.white38,
@@ -5557,15 +5575,13 @@ class _SettingsPageState extends State<SettingsPage> {
     currentPasswordController.dispose();
     newPasswordController.dispose();
     if (result == null || !mounted) return;
-    final savedPassword = await storage.read(key: 'admin_account_password');
-    if (!mounted) return;
-    if (savedPassword != result['currentPassword']) {
+    void notify(String message) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('كلمة المرور الحالية غير صحيحة')),
-      );
-      return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     }
+
     final newUsername = result['username'] ?? '';
     if (newUsername.length < 3) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -5575,38 +5591,53 @@ class _SettingsPageState extends State<SettingsPage> {
       );
       return;
     }
-    final employeesJson = prefs.getString('business_employees');
-    if (employeesJson != null) {
-      final used = (jsonDecode(employeesJson) as List).any(
-        (item) =>
-            (Map<String, dynamic>.from(item as Map)['username'] ?? '')
-                .toString()
-                .toLowerCase() ==
-            newUsername,
-      );
-      if (used) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('اسم المستخدم مستخدم لأحد الموظفين')),
-        );
-        return;
-      }
-    }
     final newPassword = result['newPassword'] ?? '';
-    if (newPassword.isNotEmpty && newPassword.length < 4) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('كلمة المرور الجديدة 4 خانات على الأقل')),
-      );
+    if (newPassword.isNotEmpty && newPassword.length < 8) {
+      notify('كلمة المرور الجديدة 8 خانات على الأقل');
       return;
     }
-    await prefs.setString('admin_login_username', newUsername);
-    await prefs.setString('remembered_login_username', newUsername);
+    final usernameChanged = newUsername != currentUsername.toLowerCase();
+    if (!usernameChanged && newPassword.isEmpty) {
+      notify('ما غيّرت اسم المستخدم ولا كلمة المرور');
+      return;
+    }
+    // التغيير يتم في الخادم أولًا (هو المرجع عند الدخول من أي جهاز)، ثم يُحدَّث الجوال.
+    final token = await storage.read(key: 'cloud_session_token');
+    if (token == null || token.isEmpty) {
+      notify('تغيير بيانات الدخول يحتاج اتصال بالخادم. تأكد من الإنترنت وسجّل الدخول من جديد.');
+      return;
+    }
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
+    var savedUsername = newUsername;
+    try {
+      final saved = await api.changeCredentials(
+        currentPassword: result['currentPassword'] ?? '',
+        username: usernameChanged ? newUsername : null,
+        newPassword: newPassword,
+      );
+      savedUsername = saved['username']?.toString() ?? newUsername;
+    } on CloudApiException catch (error) {
+      notify(error.message);
+      return;
+    } catch (_) {
+      notify('تعذر الاتصال بالخادم؛ لم يتغير شيء. حاول مرة ثانية.');
+      return;
+    } finally {
+      api.close();
+    }
+    await prefs.setString('admin_login_username', savedUsername);
+    await prefs.setString('remembered_login_username', savedUsername);
     if (newPassword.isNotEmpty) {
       await storage.write(key: 'admin_account_password', value: newPassword);
     }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم تحديث اسم المستخدم وكلمة المرور')),
+    notify(
+      newPassword.isNotEmpty
+          ? 'تم تغيير بيانات الدخول، وانفصلت الأجهزة الأخرى عن الحساب'
+          : 'تم تغيير اسم المستخدم',
     );
   }
 

@@ -87,6 +87,25 @@ class KhdoomCloudApi {
     await _request('DELETE', '/api/security/sessions/$id');
   }
 
+  /// يغيّر اسم المستخدم أو كلمة المرور في الخادم بعد إثبات كلمة المرور الحالية.
+  Future<Map<String, dynamic>> changeCredentials({
+    required String currentPassword,
+    String? username,
+    String? newPassword,
+  }) async {
+    final result = await _request(
+      'PUT',
+      '/api/account/credentials',
+      body: {
+        'currentPassword': currentPassword,
+        if (username != null && username.isNotEmpty) 'username': username,
+        if (newPassword != null && newPassword.isNotEmpty)
+          'newPassword': newPassword,
+      },
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   Future<int> logoutAllSessions({bool keepCurrent = true}) async {
     final result = await _request(
       'POST',

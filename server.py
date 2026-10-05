@@ -4110,6 +4110,48 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
                 self._send(200, {"disconnected": cursor.rowcount})
                 return
+            if path == "/api/account/credentials" and method == "PUT":
+                # تغيير اسم المستخدم أو كلمة المرور لصاحب الجلسة نفسه، بعد إثبات كلمة المرور الحالية.
+                # التغيير في الخادم هو المرجع؛ التطبيق لا يغيّر بيانات الدخول على الجوال وحده.
+                data = self._body()
+                account = connection.execute("SELECT id,username,password_hash,password_salt,role FROM users WHERE id=? AND organization_id=?", (user["id"], organization_id)).fetchone()
+                if account is None or not verify_password(str(data.get("currentPassword", "")), account["password_hash"], account["password_salt"]):
+                    audit_log(connection, organization_id, user["id"], "credentials_change_denied", "محاولة تغيير بيانات الدخول بكلمة مرور حالية غير صحيحة", "security")
+                    connection.commit()
+                    raise ApiError(403, "كلمة المرور الحالية غير صحيحة")
+                new_username = normalize_username(data.get("username")) if str(data.get("username", "")).strip() else account["username"]
+                new_password = str(data.get("newPassword", ""))
+                username_changed = normalize_username(account["username"]) != new_username
+                if username_changed:
+                    if account["role"] != "admin":
+                        raise ApiError(403, "تغيير اسم المستخدم لمدير المؤسسة فقط")
+                    if len(new_username) < 3:
+                        raise ApiError(400, "اسم المستخدم يجب أن يكون 3 أحرف على الأقل")
+                    taken = connection.execute(
+                        "SELECT id FROM users WHERE id<>? AND (username=? COLLATE NOCASE OR (email<>'' AND email=? COLLATE NOCASE))",
+                        (account["id"], new_username, new_username),
+                    ).fetchone()
+                    if taken:
+                        raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
+                if new_password and len(new_password) < 8:
+                    raise ApiError(400, "كلمة المرور يجب أن تكون 8 خانات على الأقل")
+                if not username_changed and not new_password:
+                    raise ApiError(400, "لم تغيّر اسم المستخدم ولا كلمة المرور")
+                try:
+                    if username_changed:
+                        connection.execute("UPDATE users SET username=? WHERE id=?", (new_username, account["id"]))
+                    if new_password:
+                        password_hash, salt = hash_password(new_password)
+                        connection.execute("UPDATE users SET password_hash=?,password_salt=? WHERE id=?", (password_hash, salt, account["id"]))
+                        # كلمة مرور جديدة تفصل بقية الأجهزة؛ الجلسة الحالية تبقى.
+                        current_hash = hashlib.sha256(self.headers.get("Authorization", "")[7:].encode()).hexdigest()
+                        connection.execute("DELETE FROM sessions WHERE user_id=? AND token_hash<>?", (account["id"], current_hash))
+                    audit_log(connection, organization_id, user["id"], "credentials_changed", "تم تغيير " + " و".join(x for x in ("اسم المستخدم" if username_changed else "", "كلمة المرور" if new_password else "") if x), "security")
+                    connection.commit()
+                except DB_INTEGRITY_ERRORS:
+                    raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
+                self._send(200, {"saved": True, "username": new_username, "passwordChanged": bool(new_password)})
+                return
             if path == "/api/ai-training" and method == "GET":
                 rows = connection.execute(
                     "SELECT employee_type,content,updated_at FROM ai_training WHERE organization_id=?",
