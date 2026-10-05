@@ -5453,6 +5453,8 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ),
     );
+    // انتظر اكتمال حركة إغلاق النافذة قبل التخلص من الحقل (وإلا تظهر شاشة الخطأ الحمراء).
+    await Future<void>.delayed(const Duration(milliseconds: 400));
     controller.dispose();
     if (password == null) return false;
     await storage.write(key: 'admin_account_password', value: password);
@@ -5571,6 +5573,8 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ),
     );
+    // انتظر اكتمال حركة إغلاق النافذة قبل التخلص من الحقول (وإلا تظهر شاشة الخطأ الحمراء).
+    await Future<void>.delayed(const Duration(milliseconds: 400));
     usernameController.dispose();
     currentPasswordController.dispose();
     newPasswordController.dispose();
@@ -6980,6 +6984,7 @@ class _PrivacySecurityPageState extends State<PrivacySecurityPage> {
         );
       },
     );
+    await Future<void>.delayed(const Duration(milliseconds: 400));
     pinController.dispose();
     confirmController.dispose();
     return result;
@@ -13638,6 +13643,7 @@ class _CommercialResearchEmployeePageState
         ),
       );
     } finally {
+      await Future<void>.delayed(const Duration(milliseconds: 400));
       clientController.dispose();
       detailsController.dispose();
       priceController.dispose();
