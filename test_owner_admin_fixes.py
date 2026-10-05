@@ -143,6 +143,27 @@ class OwnerAdminFixesTest(unittest.TestCase):
         self.assertEqual((row['reason'], row['actor']), ('تعويض عن عطل', 'المالك'))
         self.assertEqual(body['credits']['ledger'][0]['actor'], 'المالك')
 
+    def test_credit_batch_adjusts_each_service_separately_and_allows_reduction(self):
+        before = self.call('/owner/api/v2/credits/1', 'POST', {'service': 'ai', 'units': 1, 'reason': 'أساس'})[1]['credits']['services']
+        status, body = self.call('/owner/api/v2/credits/1', 'POST', {'adjustments': {'whatsapp': 5, 'ai': 10, 'calls': None}, 'reason': 'تعويض'})
+        self.assertEqual(status, 200)
+        after = body['credits']['services']
+        self.assertEqual(after['whatsapp']['adjustments'] - before['whatsapp']['adjustments'], 5)
+        self.assertEqual(after['ai']['adjustments'] - before['ai']['adjustments'], 10)
+        self.assertEqual(after['calls']['adjustments'], before['calls']['adjustments'])
+        status, body = self.call('/owner/api/v2/credits/1', 'POST', {'adjustments': {'ai': -4}, 'reason': 'تخفيض'})
+        self.assertEqual(status, 200)
+        self.assertEqual(body['credits']['services']['ai']['adjustments'] - after['ai']['adjustments'], -4)
+        self.assertEqual(body['credits']['services']['whatsapp']['adjustments'], after['whatsapp']['adjustments'])
+        # لا شيء يُحفظ إذا كانت الدفعة فارغة أو فيها خدمة غير معروفة.
+        with server.db() as c:
+            count = c.execute('SELECT COUNT(*) n FROM platform_credit_ledger').fetchone()['n']
+        self.assertEqual(self.call('/owner/api/v2/credits/1', 'POST', {'adjustments': {}, 'reason': 'x'})[0], 400)
+        self.assertEqual(self.call('/owner/api/v2/credits/1', 'POST', {'adjustments': {'ai': 3, 'sms': 2}, 'reason': 'x'})[0], 400)
+        self.assertEqual(self.call('/owner/api/v2/credits/1', 'POST', {'adjustments': {'ai': 3}, 'reason': ''})[0], 400)
+        with server.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) n FROM platform_credit_ledger').fetchone()['n'], count)
+
     def test_old_swapped_ledger_rows_are_repaired_once(self):
         with server.db() as c:
             c.execute("INSERT INTO platform_credit_ledger(organization_id,service,units,reason,actor,created_at) VALUES(1,'ai',5,'المالك','سبب قديم',?)", (server.now(),))

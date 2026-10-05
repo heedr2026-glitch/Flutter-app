@@ -28,6 +28,7 @@ COPY service_monitor.py owner_service_health.html /app/
 COPY signup_offer.py owner_signup_offer.html /app/
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/
+COPY service_quota.py /app/service_quota.py
 
 RUN mkdir -p /data && useradd --create-home khdoom && chown -R khdoom:khdoom /app /data
 USER khdoom

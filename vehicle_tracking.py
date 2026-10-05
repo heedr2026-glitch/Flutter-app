@@ -55,6 +55,78 @@ def assignment(c,user):
     return c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND driver_user_id=? AND enabled=1 ORDER BY updated_at DESC LIMIT 1',(user['organization_id'],user['id'])).fetchone()
 
 
+VIEW_PERMISSION='viewVehicleTracking'
+
+
+def can_view(user):
+    """صاحب المؤسسة، أو موظف منحه صاحب المؤسسة صلاحية مشاهدة التتبع (مشاهدة فقط)."""
+    if user['role']=='admin': return True
+    try: permissions=json.loads(user['permissions'] or '{}')
+    except (TypeError,ValueError): return False
+    return isinstance(permissions,dict) and permissions.get(VIEW_PERMISSION) is True
+
+
+def guard_permission_grant(c,user,permissions,employee_id=None):
+    """منح صلاحية مشاهدة التتبع أو سحبها لصاحب المؤسسة وحده.
+
+    لو عدّل مدير (غير صاحب المؤسسة) بيانات موظف، تبقى الصلاحية كما حفظها صاحب المؤسسة.
+    """
+    if not isinstance(permissions,dict): permissions={}
+    if user['role']=='admin': return permissions
+    saved=_saved_permissions(c,user,employee_id)
+    out=dict(permissions)
+    if saved.get(VIEW_PERMISSION) is True:
+        out[VIEW_PERMISSION]=True
+        # فرع صاحب الصلاحية يحدد ما يراه؛ لا يغيّره إلا صاحب المؤسسة.
+        for name in ('branch_id','branch_name'):
+            if name in saved: out[name]=saved[name]
+            else: out.pop(name,None)
+    else: out.pop(VIEW_PERMISSION,None)
+    return out
+
+
+def _saved_permissions(c,user,employee_id):
+    if employee_id is None: return {}
+    row=c.execute('SELECT permissions FROM users WHERE id=? AND organization_id=?',(employee_id,user['organization_id'])).fetchone()
+    try: saved=json.loads(row['permissions'] or '{}') if row else {}
+    except (TypeError,ValueError): saved={}
+    return saved if isinstance(saved,dict) else {}
+
+
+def guard_holder_login(c,user,employee_id,username,password,server):
+    """اسم دخول وكلمة مرور من لديه صلاحية التتبع يغيّرهما صاحب المؤسسة فقط، حتى لا يدخل أحد بحسابه."""
+    if user['role']=='admin' or _saved_permissions(c,user,employee_id).get(VIEW_PERMISSION) is not True: return
+    row=c.execute('SELECT username FROM users WHERE id=? AND organization_id=?',(employee_id,user['organization_id'])).fetchone()
+    if password or (row and (row['username'] or '')!=username):
+        raise server.ApiError(403,'هذا الموظف لديه صلاحية تتبع المركبات؛ تغيير اسم دخوله أو كلمة مروره لصاحب المؤسسة فقط')
+
+
+def invitation_permissions(c,invitation):
+    """دعوة أنشأها غير صاحب المؤسسة لا تحمل صلاحية التتبع مهما كان المحفوظ فيها."""
+    try: permissions=json.loads(invitation['permissions'] or '{}')
+    except (TypeError,ValueError): permissions={}
+    if not isinstance(permissions,dict): permissions={}
+    if permissions.get(VIEW_PERMISSION) is not None:
+        creator=c.execute('SELECT role FROM users WHERE id=? AND organization_id=?',(invitation['created_by'],invitation['organization_id'])).fetchone()
+        if not creator or creator['role']!='admin': permissions.pop(VIEW_PERMISSION,None)
+    return json.dumps(permissions,ensure_ascii=False)
+
+
+def _view_branch(user):
+    """فرع المشاهدة: صاحب المؤسسة حسب الفرع المختار، والموظف فرعه المحفوظ إن لم يحدَّد."""
+    if user['role']=='admin': return user.get('current_branch')
+    try: permissions=json.loads(user['permissions'] or '{}')
+    except (TypeError,ValueError): permissions={}
+    return user.get('current_branch') or (permissions.get('branch_id') if isinstance(permissions,dict) else None) or 'main'
+
+
+def _viewer_scope(user,schedule,server):
+    """غير صاحب المؤسسة يشاهد فقط مركبة مرتبطة بالتتبع وفي فرعه."""
+    scope=_view_branch(user)
+    if user['role']!='admin' and not schedule: raise server.ApiError(403,'المركبة غير مرتبطة بالتتبع')
+    if schedule and scope and schedule['branch_id']!=scope: raise server.ApiError(403,'المركبة تتبع فرعًا آخر')
+
+
 RETENTION_DAYS=30
 _last_purge=0.0
 
@@ -115,16 +187,22 @@ def _meters(a,b):
 
 
 def route(c,user,key,day,server):
-    """مسار المركبة ليوم واحد بتوقيت السعودية؛ للمالك فقط وضمن مدة الاحتفاظ."""
-    if user['role']!='admin': raise server.ApiError(403,'عرض مسار المركبة متاح لمالك المؤسسة فقط')
+    """مسار المركبة ليوم واحد بتوقيت السعودية؛ للمالك ولمن منحه صلاحية المشاهدة، وضمن مدة الاحتفاظ."""
+    if not can_view(user): raise server.ApiError(403,'عرض مسار المركبة يحتاج صلاحية «تتبع المركبات» من صاحب المؤسسة')
     org=user['organization_id']
     schedule=c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND vehicle_key=?',(org,key)).fetchone()
-    if schedule and user.get('current_branch') and schedule['branch_id']!=user['current_branch']: raise server.ApiError(403,'المركبة تتبع فرعًا آخر')
+    _viewer_scope(user,schedule,server)
     today=datetime.now(RIYADH).date()
     try: chosen=datetime.strptime(day,'%Y-%m-%d').date() if day else today
     except ValueError: raise ValueError('صيغة التاريخ غير صحيحة')
     if chosen>today or (today-chosen).days>RETENTION_DAYS: raise ValueError('المسارات محفوظة لآخر 30 يومًا فقط')
     purge_old(c)
+    if user['role']!='admin':
+        # كل مشاهدة مسار من غير صاحب المؤسسة تُسجَّل، مرة واحدة في الساعة لكل مركبة ويوم.
+        summary=('شاهد «'+str(user['name'] or '')[:120]+'» مسار المركبة ليوم '+chosen.isoformat())[:500]
+        since=(datetime.now(timezone.utc)-timedelta(hours=1)).isoformat()
+        if not c.execute("SELECT 1 FROM audit_logs WHERE organization_id=? AND actor_user_id=? AND action='vehicle_route_viewed' AND target_id=? AND summary=? AND created_at>=? LIMIT 1",(org,user['id'],key,summary,since)).fetchone():
+            server.audit_log(c,org,user['id'],'vehicle_route_viewed',summary,'vehicle',key)
     start=datetime(chosen.year,chosen.month,chosen.day,tzinfo=RIYADH)
     rows=c.execute('SELECT latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at,id LIMIT 6000',
         (org,key,start.astimezone(timezone.utc).isoformat(),(start+timedelta(days=1)).astimezone(timezone.utc).isoformat())).fetchall()
@@ -240,6 +318,21 @@ def handle(c, path, method, data, query, user, headers, server):
         key=str(query.get('vehicleKey',[''])[0]).strip()[:160]
         if not key: raise ValueError('حدد المركبة')
         return route(c,user,key,str(query.get('date',[''])[0]).strip(),server)
+    if path=='/api/vehicle-tracking/vehicles' and method=='GET':
+        # قائمة المركبات المرتبطة بالتتبع، لأن بيانات المركبات نفسها محفوظة في جوال صاحب المؤسسة.
+        if not can_view(user): raise server.ApiError(403,'مشاهدة تتبع المركبات تحتاج صلاحية من صاحب المؤسسة')
+        rows=c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND enabled=1 ORDER BY vehicle_name,vehicle_key',(org,)).fetchall()
+        out=[];scope=_view_branch(user)
+        for row in rows:
+            if scope and row['branch_id']!=scope: continue
+            location=c.execute('SELECT recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? ORDER BY recorded_at DESC,id DESC LIMIT 1',(org,row['vehicle_key'])).fetchone()
+            if row['driver_user_id']==0: driver=row['driver_name'] or ''
+            else:
+                person=c.execute('SELECT name FROM users WHERE id=? AND organization_id=?',(row['driver_user_id'],org)).fetchone()
+                driver=person['name'] if person else ''
+            out.append({'vehicleKey':row['vehicle_key'],'vehicleName':row['vehicle_name'],'driverName':driver,
+                'status':_status(row,location),'lastAt':location['recorded_at'] if location else None})
+        return out
     if path=='/api/vehicle-tracking/batch' and method=='POST':
         key=str(data.get('vehicleKey','')).strip()[:160]
         row=c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND vehicle_key=?',(org,key)).fetchone()
@@ -357,19 +450,26 @@ def accept_location(c,user,headers,data,server):
     if not -30<=age<=120 or not in_schedule(row,at): raise ValueError('الموقع قديم أو التُقط خارج الدوام؛ اطلب موقعًا جديدًا')
 
 
-def location_status(c,user,key,server):
-    schedule=c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND vehicle_key=?',(user['organization_id'],key)).fetchone()
-    if schedule and user.get('current_branch') and schedule['branch_id']!=user['current_branch']: raise server.ApiError(403,'المركبة تتبع فرعًا آخر')
-    if user['role']!='admin':
-        if not schedule or schedule['driver_user_id']!=user['id']: raise server.ApiError(403,'عرض الموقع متاح للمالك والسائق المرتبط فقط')
-    location=c.execute('SELECT vehicle_key,latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? ORDER BY recorded_at DESC,id DESC LIMIT 1',(user['organization_id'],key)).fetchone()
-    out=dict(location) if location else {'vehicle_key':key,'status':'no_location'}
+def _status(schedule,location):
     fresh=False
     if location:
-        at=datetime.fromisoformat(location['recorded_at']).replace(tzinfo=timezone.utc) if datetime.fromisoformat(location['recorded_at']).tzinfo is None else datetime.fromisoformat(location['recorded_at'])
+        at=datetime.fromisoformat(location['recorded_at'])
+        if at.tzinfo is None: at=at.replace(tzinfo=timezone.utc)
         fresh=(datetime.now(timezone.utc)-at).total_seconds()<=180
+    status='outside_schedule' if schedule and not in_schedule(schedule) else 'live' if schedule and fresh else 'offline' if schedule else 'last_location' if location else 'no_location'
+    if schedule and schedule['phone_status'] in ('stopped','permission_denied','location_disabled','not_enabled'): status=schedule['phone_status']
+    return status
+
+
+def location_status(c,user,key,server):
+    schedule=c.execute('SELECT * FROM vehicle_tracking_schedules WHERE organization_id=? AND vehicle_key=?',(user['organization_id'],key)).fetchone()
+    if can_view(user): _viewer_scope(user,schedule,server)
+    else:
+        if schedule and user.get('current_branch') and schedule['branch_id']!=user['current_branch']: raise server.ApiError(403,'المركبة تتبع فرعًا آخر')
+        if not schedule or schedule['driver_user_id']!=user['id']: raise server.ApiError(403,'عرض الموقع متاح للمالك والسائق المرتبط ومن لديه صلاحية «تتبع المركبات»')
+    location=c.execute('SELECT vehicle_key,latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? ORDER BY recorded_at DESC,id DESC LIMIT 1',(user['organization_id'],key)).fetchone()
+    out=dict(location) if location else {'vehicle_key':key,'status':'no_location'}
     out['schedule']=public_schedule(schedule)
     if schedule and schedule['driver_user_id']==0: out['driverName']=schedule['driver_name'] or ''
-    out['status']='outside_schedule' if schedule and not in_schedule(schedule) else 'live' if schedule and fresh else 'offline' if schedule else 'last_location' if location else 'no_location'
-    if schedule and schedule['phone_status'] in ('stopped','permission_denied','location_disabled','not_enabled'): out['status']=schedule['phone_status']
+    out['status']=_status(schedule,location)
     return out

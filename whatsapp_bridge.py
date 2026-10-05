@@ -4,6 +4,8 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, parse_qs
 
+import service_quota
+
 _hmac_logging_pending = True
 
 class Error(Exception):
@@ -466,6 +468,9 @@ def send(c, org, data):
       AND peer=? AND direction='inbound' AND timestamp>? LIMIT 1""",
       (org,cfg["phone_number_id"],peer,int(time.time())-86400)).fetchone()
     if not recent: raise Error(409,"يلزم وصول رسالة من العميل خلال آخر 24 ساعة للرد النصي؛ القوالب غير مدعومة هنا بعد")
+    # الرصيد الشهري للباقة: إعادة محاولة رسالة سبق تسجيلها لا تصل إلى هنا ولا تُحسب مرتين.
+    try: service_quota.check(c, org, "whatsapp")
+    except service_quota.Exhausted as exhausted: raise Error(429, exhausted.message)
     mid = uuid.uuid4().hex
     conversation_id = whatsapp_conversation_id(c, org, peer)
     cursor = c.execute("""INSERT INTO whatsapp_messages

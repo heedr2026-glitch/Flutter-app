@@ -260,6 +260,70 @@ class DirectoryTrackingHTTP(unittest.TestCase):
         self.fails(403,'/api/vehicle-tracking/schedule?vehicleKey=driver-car','DELETE',user=2)
         self.req('/api/vehicle-tracking/schedule?vehicleKey=driver-car','DELETE')
         self.assertEqual(self.req('/api/vehicle-tracking/assignment',user=2)['status'],'not_assigned')
+    def test_view_permission_for_manager_is_view_only_and_owner_granted(self):
+        with server.db() as c:
+            hashed,salt=server.hash_password('test-password-123')
+            c.execute("INSERT INTO users(id,organization_id,name,username,password_hash,password_salt,role,permissions,created_at) VALUES(5,1,'Manager','user5',?,?,'employee',?,?)",(hashed,salt,json.dumps({'manageEmployees':True,'viewEmployees':True}),server.now()))
+            self.token(c,5);c.commit()
+        data={'vehicleKey':'plate:777','vehicleName':'Van','driverUserId':0,'weekdays':list(range(1,8)),'startTime':'00:00','endTime':'23:59'}
+        self.req('/api/vehicle-tracking/schedule','PUT',data)
+        with server.db() as c:
+            c.execute("INSERT INTO vehicle_location_events(organization_id,vehicle_key,latitude,longitude,accuracy_meters,recorded_at,user_id,created_at) VALUES(1,'plate:777',24.7,46.7,10,?,NULL,?)",(server.now(),server.now()));c.commit()
+        # بلا صلاحية: لا قائمة ولا موقع ولا مسار.
+        self.fails(403,'/api/vehicle-tracking/vehicles',user=5)
+        self.fails(403,'/api/vehicle-tracking?vehicleKey=plate:777',user=5)
+        self.fails(403,'/api/vehicle-tracking/route?vehicleKey=plate:777',user=5)
+        # المدير لا يمنح الصلاحية لنفسه ولا لغيره، حتى لو معه إدارة الموظفين.
+        body={'name':'Manager','username':'user5','role':'مدير','permissions':{'manageEmployees':True,'viewEmployees':True,'viewVehicleTracking':True}}
+        self.req('/api/employees/5','PUT',body,user=5)
+        self.fails(403,'/api/vehicle-tracking/vehicles',user=5)
+        created=self.req('/api/employees','POST',{'name':'New','username':'newemp','password':'test-password-123','permissions':{'viewVehicleTracking':True}},user=5)
+        with server.db() as c:self.assertNotIn('viewVehicleTracking',json.loads(c.execute('SELECT permissions FROM users WHERE id=?',(created['id'],)).fetchone()['permissions']))
+        # صاحب المؤسسة يمنحها.
+        self.req('/api/employees/5','PUT',body)
+        listing=self.req('/api/vehicle-tracking/vehicles',user=5)
+        self.assertEqual([(x['vehicleKey'],x['vehicleName']) for x in listing],[('plate:777','Van')])
+        self.assertTrue(listing[0]['lastAt']);self.assertNotIn('linkCode',listing[0])
+        self.assertEqual(self.req('/api/vehicle-tracking?vehicleKey=plate:777',user=5)['latitude'],24.7)
+        route=self.req('/api/vehicle-tracking/route?vehicleKey=plate:777',user=5);self.assertEqual(route['count'],1)
+        self.req('/api/vehicle-tracking/route?vehicleKey=plate:777',user=5)
+        with server.db() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) n FROM audit_logs WHERE action='vehicle_route_viewed' AND actor_user_id=5").fetchone()['n'],1)
+        self.req('/api/vehicle-tracking/route?vehicleKey=plate:777')
+        with server.db() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) n FROM audit_logs WHERE action='vehicle_route_viewed'").fetchone()['n'],1)
+        # مشاهدة فقط: الجدول والباركود وإلغاء الربط لصاحب المؤسسة.
+        self.fails(403,'/api/vehicle-tracking/schedule?vehicleKey=plate:777',user=5)
+        self.fails(403,'/api/vehicle-tracking/schedule','PUT',data,user=5)
+        self.fails(403,'/api/vehicle-tracking/link/rotate','POST',{'vehicleKey':'plate:777'},user=5)
+        self.fails(403,'/api/vehicle-tracking/link/unlink','POST',{'vehicleKey':'plate:777'},user=5)
+        self.fails(403,'/api/vehicle-tracking/drivers',user=5)
+        # تعديل المدير لنفسه لا يسحب ما منحه صاحب المؤسسة، ومؤسسة أخرى لا ترى شيئًا.
+        self.req('/api/employees/5','PUT',{**body,'permissions':{'manageEmployees':True,'viewEmployees':True}},user=5)
+        self.assertEqual(len(self.req('/api/vehicle-tracking/vehicles',user=5)),1)
+        self.assertEqual(self.req('/api/vehicle-tracking/vehicles',user=3),[])
+        # المدير لا يغيّر كلمة مرور ولا اسم دخول ولا فرع صاحب الصلاحية.
+        self.fails(403,'/api/employees/5','PUT',{**body,'password':'another-password-1'},user=5)
+        self.fails(403,'/api/employees/5','PUT',{**body,'username':'renamed5'},user=5)
+        self.req('/api/employees/5','PUT',{**body,'permissions':{'manageEmployees':True,'viewEmployees':True,'branch_id':'b2'}},user=5)
+        self.assertEqual(len(self.req('/api/vehicle-tracking/vehicles',user=5)),1)
+        self.req('/api/employees/5','PUT',{**body,'permissions':None},user=5)
+        self.assertEqual(len(self.req('/api/vehicle-tracking/vehicles',user=5)),1)
+        # فرع آخر ومركبة بلا ربط: لا يراها صاحب الصلاحية.
+        with server.db() as c:
+            c.execute("UPDATE vehicle_tracking_schedules SET branch_id='b2' WHERE organization_id=1")
+            c.execute("INSERT INTO vehicle_location_events(organization_id,vehicle_key,latitude,longitude,accuracy_meters,recorded_at,user_id,created_at) VALUES(1,'plate:loose',24.7,46.7,10,?,NULL,?)",(server.now(),server.now()));c.commit()
+        self.assertEqual(self.req('/api/vehicle-tracking/vehicles',user=5),[])
+        self.fails(403,'/api/vehicle-tracking?vehicleKey=plate:777',user=5)
+        self.fails(403,'/api/vehicle-tracking/route?vehicleKey=plate:777',user=5)
+        self.fails(403,'/api/vehicle-tracking?vehicleKey=plate:loose',user=5)
+        self.fails(403,'/api/vehicle-tracking/route?vehicleKey=plate:loose',user=5)
+        self.assertEqual(self.req('/api/vehicle-tracking?vehicleKey=plate:loose')['latitude'],24.7)
+        with server.db() as c:c.execute("UPDATE vehicle_tracking_schedules SET branch_id='main' WHERE organization_id=1");c.commit()
+        # صاحب المؤسسة يسحبها.
+        self.req('/api/employees/5','PUT',{**body,'permissions':{'manageEmployees':True,'viewEmployees':True}})
+        self.fails(403,'/api/vehicle-tracking/vehicles',user=5)
+        self.fails(403,'/api/vehicle-tracking/route?vehicleKey=plate:777',user=5)
     def test_transfer_keeps_other_institution_owned_by_old_owner(self):
         with server.db() as c:
             c.execute("INSERT INTO organizations(id,name,created_at) VALUES(4,'Other owned institution',?)",(server.now(),))

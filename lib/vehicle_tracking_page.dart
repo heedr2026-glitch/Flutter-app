@@ -9,6 +9,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'branch_store.dart';
 import 'cloud_api.dart';
@@ -553,7 +554,219 @@ class _DriverTrackingPageState extends State<DriverTrackingPage> {
   }
 }
 
-/// مسار المركبة ليوم واحد على خريطة داخل التطبيق؛ للمالك فقط.
+/// المركبات المرتبطة بالتتبع؛ مشاهدة فقط لمن منحه صاحب المؤسسة الصلاحية.
+class TrackedVehiclesPage extends StatefulWidget {
+  const TrackedVehiclesPage({super.key});
+  @override
+  State<TrackedVehiclesPage> createState() => _TrackedVehiclesPageState();
+}
+
+class _TrackedVehiclesPageState extends State<TrackedVehiclesPage> {
+  List<Map<String, dynamic>> _items = [];
+  String? _error;
+  bool _busy = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    KhdoomCloudApi? api;
+    try {
+      api = await _trackingApi();
+      final rows = await api.trackedVehicles();
+      _items = [for (final row in rows) Map<String, dynamic>.from(row as Map)];
+    } catch (e) {
+      _error = e.toString();
+      _items = [];
+    } finally {
+      api?.close();
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  void _say(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _showLast(Map<String, dynamic> item) async {
+    KhdoomCloudApi? api;
+    try {
+      api = await _trackingApi();
+      final location = await api.vehicleTracking(
+        (item['vehicleKey'] ?? '').toString(),
+      );
+      final latitude = (location['latitude'] as num?)?.toDouble();
+      final longitude = (location['longitude'] as num?)?.toDouble();
+      final status = (location['status'] ?? 'no_location').toString();
+      if (latitude == null || longitude == null) {
+        _say(trackingStatusLabel(status));
+        return;
+      }
+      if (!mounted) return;
+      final map = Uri.parse(
+        'https://www.google.com/maps/search/?api=1&query=$latitude,$longitude',
+      );
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            title: Text(trackingStatusLabel(status)),
+            content: Text(
+              'آخر موقع مسجل: ${trackingTimeLabel(location['recorded_at'])}\nالموقع يمثل جوال السائق؛ قد يختلف عن المركبة إذا ابتعد عنها.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('إغلاق'),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  var opened = false;
+                  try {
+                    opened = await launchUrl(
+                      map,
+                      mode: LaunchMode.externalApplication,
+                    );
+                  } catch (_) {}
+                  if (!opened) {
+                    try {
+                      opened = await launchUrl(map);
+                    } catch (_) {}
+                  }
+                  if (!opened) {
+                    _say('تعذر فتح الخريطة. الإحداثيات: $latitude, $longitude');
+                  }
+                },
+                child: const Text('فتح الخريطة'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } catch (e) {
+      _say('تعذر عرض الموقع: $e');
+    } finally {
+      api?.close();
+    }
+  }
+
+  Widget _card(Map<String, dynamic> item) {
+    final name = (item['vehicleName'] ?? 'مركبة').toString();
+    final driver = (item['driverName'] ?? '').toString();
+    final lastAt = item['lastAt'];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(name, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 4),
+            if (driver.isNotEmpty) Text('السائق: $driver'),
+            Text(
+              trackingStatusLabel((item['status'] ?? 'offline').toString()),
+            ),
+            Text(
+              lastAt == null
+                  ? 'لا يوجد موقع مسجل بعد'
+                  : 'آخر موقع: ${trackingTimeLabel(lastAt)}',
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _showLast(item),
+                  icon: const Icon(Icons.map_outlined),
+                  label: const Text('عرض آخر موقع'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => VehicleRoutePage(
+                        vehicleKey: (item['vehicleKey'] ?? '').toString(),
+                        vehicleName: name,
+                      ),
+                    ),
+                  ),
+                  icon: const Icon(Icons.route_outlined),
+                  label: const Text('مسار المركبة'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => Directionality(
+    textDirection: TextDirection.rtl,
+    child: Scaffold(
+      appBar: AppBar(
+        title: const Text('تتبع المركبات'),
+        actions: [
+          IconButton(
+            onPressed: _busy ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: _busy
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.red),
+                ),
+              ),
+            )
+          : _items.isEmpty
+          ? const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'لا توجد مركبات مرتبطة بالتتبع بعد. يربط صاحب المؤسسة المركبة بجوال السائق من صفحة المركبات.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'مشاهدة فقط. فتح مسار المركبة يُسجَّل في سجل العمليات.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+                for (final item in _items) _card(item),
+              ],
+            ),
+    ),
+  );
+}
+
+/// مسار المركبة ليوم واحد على خريطة داخل التطبيق؛ للمالك ولمن منحه صلاحية المشاهدة.
 class VehicleRoutePage extends StatefulWidget {
   final String vehicleKey, vehicleName;
   const VehicleRoutePage({

@@ -43,6 +43,7 @@ import 'community_page.dart';
 import 'document_viewer.dart';
 import 'organization_record_editor.dart';
 import 'package_resource_limits.dart';
+import 'usage_balance_page.dart';
 import 'commercial_research/commercial_research_models.dart';
 import 'commercial_research/commercial_whatsapp.dart';
 import 'commercial_research/commercial_research_report.dart';
@@ -2471,6 +2472,83 @@ class _DashboardPageState extends State<DashboardPage> {
     } finally {
       _sessionValidationInFlight = false;
     }
+    unawaited(_checkUsageWarning());
+  }
+
+  bool _usageWarningChecked = false;
+  bool _usageWarningInFlight = false;
+
+  /// تنبيه صاحب المؤسسة مرة في اليوم إذا قارب رصيد خدمة على الانتهاء أو انتهى.
+  Future<void> _checkUsageWarning() async {
+    if (_usageWarningChecked ||
+        _usageWarningInFlight ||
+        !_isAdmin ||
+        !mounted ||
+        _forcingCloudLogout) {
+      return;
+    }
+    _usageWarningInFlight = true;
+    KhdoomCloudApi? api;
+    try {
+      const storage = FlutterSecureStorage();
+      final token = await storage.read(key: 'cloud_session_token');
+      if (token == null || token.isEmpty) return;
+      final prefs = await _branchPrefs;
+      if (prefs.getString('session_user_type') == 'employee') {
+        _usageWarningChecked = true;
+        return;
+      }
+      api = KhdoomCloudApi(
+        scope: prefs,
+        baseUrl:
+            prefs.getString('cloud_api_url') ??
+            'https://khdoom-api.onrender.com',
+      )..token = token;
+      final summary = await api.usageSummary();
+      // فشل الاتصال لا يلغي التنبيه؛ نحاول في الدورة التالية.
+      _usageWarningChecked = true;
+      final services = Map<String, dynamic>.from(
+        summary['services'] as Map? ?? {},
+      );
+      final names = <String>[];
+      var finished = false;
+      for (final value in services.values) {
+        final item = Map<String, dynamic>.from(value as Map);
+        final limit = item['limit'];
+        if (item['unlimited'] == true || limit is! num || limit <= 0) continue;
+        final percent = item['usagePercent'];
+        final remaining = item['remaining'];
+        final done = remaining is num && remaining <= 0;
+        if (done || (percent is num && percent >= 80)) {
+          names.add(item['label']?.toString() ?? 'خدمة');
+          if (done) finished = true;
+        }
+      }
+      if (names.isEmpty) return;
+      final today = DateTime.now().toIso8601String().substring(0, 10);
+      final organization = prefs.getString('session_organization_id') ?? '';
+      final key =
+          '${finished ? 'usage_warning_done_day' : 'usage_warning_low_day'}_$organization';
+      if (prefs.getString(key) == today) return;
+      await prefs.setString(key, today);
+      if (!mounted) return;
+      final list = names.join(' و');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 8),
+          content: Text(
+            finished
+                ? 'انتهى رصيد $list لهذا الشهر. التفاصيل في الإعدادات ← الرصيد والاستهلاك.'
+                : 'رصيد $list قارب على الانتهاء. التفاصيل في الإعدادات ← الرصيد والاستهلاك.',
+          ),
+        ),
+      );
+    } catch (_) {
+      // لا اتصال أو خادم أقدم؛ التنبيه غير ضروري لعمل التطبيق.
+    } finally {
+      api?.close();
+      _usageWarningInFlight = false;
+    }
   }
 
   Future<void> _validateCloudSessionOnce() async {
@@ -4407,6 +4485,8 @@ class _VehiclesPageState extends State<VehiclesPage> {
   bool _canEdit = true;
   bool _canDelete = true;
   bool _canManageTracking = false;
+  // مشاهدة التتبع لموظف منحه صاحب المؤسسة الصلاحية؛ الخادم هو الحكم.
+  bool _canViewTracking = false;
   List<int> get _visibleIndexes => [
     for (var i = 0; i < _vehicles.length; i++)
       if (widget.recordId == null ||
@@ -4428,6 +4508,16 @@ class _VehiclesPageState extends State<VehiclesPage> {
     if (prefs.getString('session_user_type') == 'employee') {
       _canEdit = false;
       _canDelete = false;
+      try {
+        final sessionPermissions = jsonDecode(
+          prefs.getString('session_employee_permissions') ?? '{}',
+        );
+        _canViewTracking =
+            _canViewTracking ||
+            (sessionPermissions is Map &&
+                sessionPermissions['viewVehicleTracking'] == true);
+      } catch (_) {}
+      unawaited(_checkTrackingPermission());
       final employeeId = prefs.getString('session_employee_id');
       final employeesJson = prefs.getString('business_employees');
       if (employeeId != null && employeesJson != null) {
@@ -4460,6 +4550,26 @@ class _VehiclesPageState extends State<VehiclesPage> {
     final prefs = await _branchPrefs;
     await prefs.setString(_storageKey, jsonEncode(_vehicles));
     await KhdoomNotifications.syncStoredAlerts();
+  }
+
+  /// الصلاحية قد تُمنح أو تُسحب بعد دخول الموظف؛ نسأل الخادم بدل انتظار دخول جديد.
+  Future<void> _checkTrackingPermission() async {
+    KhdoomCloudApi? api;
+    try {
+      api = await _trackingApi();
+      if (api == null) return;
+      await api.trackedVehicles();
+      if (mounted && !_canViewTracking) {
+        setState(() => _canViewTracking = true);
+      }
+    } on CloudApiException catch (error) {
+      if (error.statusCode == 403 && mounted && _canViewTracking) {
+        setState(() => _canViewTracking = false);
+      }
+    } catch (_) {
+    } finally {
+      api?.close();
+    }
   }
 
   String _trackingKey(Map<String, dynamic> vehicle) {
@@ -4768,6 +4878,27 @@ class _VehiclesPageState extends State<VehiclesPage> {
         title: const Text('المركبات'),
         backgroundColor: const Color(0xFF111B35),
         foregroundColor: Colors.white,
+        bottom: _canViewTracking
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(56),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const TrackedVehiclesPage(),
+                        ),
+                      ),
+                      icon: const Icon(Icons.route_outlined),
+                      label: const Text('تتبع المركبات'),
+                    ),
+                  ),
+                ),
+              )
+            : null,
       ),
       floatingActionButton: _canEdit
           ? FloatingActionButton.extended(
@@ -4935,7 +5066,7 @@ class _VehiclesPageState extends State<VehiclesPage> {
                             icon: const Icon(Icons.map_outlined),
                             label: const Text('عرض آخر موقع'),
                           ),
-                          if (_canManageTracking)
+                          if (_canManageTracking || _canViewTracking)
                             OutlinedButton.icon(
                               onPressed: () => Navigator.push(
                                 context,
@@ -5919,6 +6050,20 @@ class _SettingsPageState extends State<SettingsPage> {
                           context,
                           MaterialPageRoute(
                             builder: (_) => const SubscriptionPackagesPage(),
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    _settingsInfoTile(
+                      icon: Icons.account_balance_wallet_outlined,
+                      title: 'الرصيد والاستهلاك',
+                      subtitle: 'رصيد الذكاء الاصطناعي وواتساب والمكالمات وموعد التجديد',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const UsageBalancePage(),
                           ),
                         );
                       },
@@ -14880,6 +15025,8 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
   final List<Map<String, dynamic>> _employees = [];
   bool _loading = true;
   bool _canDeleteEmployees = true;
+  // صلاحية تتبع المركبات يمنحها صاحب المؤسسة فقط؛ الخادم يرفضها من غيره.
+  bool _ownerSession = true;
 
   static const Map<String, String> _permissionLabels = {
     'viewCustomers': 'العملاء — مشاهدة',
@@ -14887,6 +15034,7 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
     'viewVehicles': 'المركبات — مشاهدة',
     'editVehicles': 'المركبات — إضافة وتعديل',
     'deleteVehicles': 'المركبات — حذف',
+    'viewVehicleTracking': 'تتبع المركبات — مشاهدة الموقع والمسار',
     'viewAppointments': 'المواعيد — مشاهدة',
     'manageAppointments': 'المواعيد — قبول وتعديل ورفض',
     'viewConversations': 'المحادثات — مشاهدة',
@@ -14917,6 +15065,7 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
       'viewVehicles',
       'editVehicles',
       'deleteVehicles',
+      'viewVehicleTracking',
     ],
     'الحسابات والتقارير': ['viewInvoices', 'editInvoices', 'viewReports'],
     'الموظفون والإدارة': [
@@ -14937,6 +15086,7 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
     'manageAppointments': 'viewAppointments',
     'editVehicles': 'viewVehicles',
     'deleteVehicles': 'viewVehicles',
+    'viewVehicleTracking': 'viewVehicles',
     'editInvoices': 'viewInvoices',
     'manageEmployees': 'viewEmployees',
     'deleteEmployees': 'viewEmployees',
@@ -15030,6 +15180,7 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
   Future<void> _loadEmployees() async {
     final prefs = await _branchPrefs;
     _employees.clear();
+    _ownerSession = prefs.getString('session_user_type') != 'employee';
     if (prefs.getString('session_user_type') == 'employee') {
       _canDeleteEmployees = false;
       final employeeId = prefs.getString('session_employee_id');
@@ -15392,7 +15543,12 @@ class _EmployeesPermissionsPageState extends State<EmployeesPermissionsPage> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        children: group.value.map((key) {
+                        children: group.value
+                            .where(
+                              (key) =>
+                                  _ownerSession || key != 'viewVehicleTracking',
+                            )
+                            .map((key) {
                           return CheckboxListTile(
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 8,

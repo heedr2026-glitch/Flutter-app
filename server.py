@@ -27,6 +27,7 @@ import owner_admin
 import identity_directory
 import vehicle_tracking
 import package_limits
+import service_quota
 import ad_policy
 import branch_appointments
 import branch_sync
@@ -568,6 +569,10 @@ def whatsapp_auto_reply(connection: Any, cfg: dict[str, Any], peer: str, message
     if used >= daily_limit:
         print("WhatsApp auto-reply skipped=daily_limit", flush=True)
         return
+    # لا نصرف طلب ذكاء اصطناعي على رد لن يُرسل: رصيد واتساب منتهٍ.
+    if service_quota.snapshot(connection, organization_id)["services"]["whatsapp"]["blocked"]:
+        print("WhatsApp auto-reply skipped=whatsapp_quota", flush=True)
+        return
     session = reception_conversations.session_for(connection, organization_id, user["id"], branch)
     history = []
     if session is not None:
@@ -627,22 +632,20 @@ def ai_agent_reply(
 def ai_allowance(
     connection: Any, organization_id: int, *, enforce: bool = True
 ) -> tuple[str, int, int]:
-    package_row = connection.execute(
-        "SELECT package FROM subscriptions WHERE organization_id=?",
-        (organization_id,),
-    ).fetchone()
-    package = package_row["package"] if package_row else "free"
-    default_limit = {"free": 5, "basic": 30, "vip": 100}.get(package, 5)
-    custom_limit = connection.execute("SELECT daily_limit FROM ai_limits WHERE organization_id=?", (organization_id,)).fetchone()
-    daily_limit = owner_admin.daily_limit(connection, organization_id, package)
-    day_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
-    used = connection.execute(
-        "SELECT COUNT(*) AS count FROM ai_usage WHERE organization_id=? AND created_at>=?",
-        (organization_id, day_start),
-    ).fetchone()["count"]
-    if enforce and used >= daily_limit:
-        raise ApiError(429, "تم بلوغ الحد اليومي لموظفي AI")
-    return package, daily_limit, used
+    """الباقة، والحد الفعّال، والمستخدم اليوم.
+
+    الحد الفعّال يجمع السقف اليومي ورصيد الشهر: «المستخدم >= الحد» تعني توقف الخدمة،
+    و«الحد - المستخدم» هو ما بقي فعلًا الآن من أي منهما.
+    """
+    state = service_quota.snapshot(connection, organization_id)
+    item = state["services"]["ai"]
+    used = int(item["used_today"])
+    left = int(item["daily_limit"]) - used
+    if item["monthly_enforced"]:
+        left = min(left, int(item["remaining"]))
+    if enforce and item["blocked"]:
+        raise ApiError(429, service_quota.exhausted_message("ai", item["reason"], state["renews_at"]))
+    return state["package"], used + max(0, left), used
 
 def ai_training_text(connection: Any, organization_id: int, employee_type: str) -> str:
     """Return only durable, approved organization-scoped AI instructions.
@@ -2326,7 +2329,13 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                 if not allowed: raise ApiError(409, "خدمة المكالمات غير مفعلة للمؤسسة")
                 cursor = call_connection.execute("INSERT INTO call_logs(organization_id,caller_phone,caller_name,direction,status,started_at,duration_seconds,transcript,summary,request_text,appointment,follow_up,human_handoff,last_error,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (int(organization_id),str(data.get("callerPhone", ""))[:40],str(data.get("callerName", ""))[:160],str(data.get("direction", "inbound"))[:20],str(data.get("status", "ended"))[:30],str(data.get("startedAt") or now()),int(data.get("durationSeconds", 0) or 0),str(data.get("transcript", ""))[:30000],str(data.get("summary", ""))[:4000],str(data.get("request", ""))[:2000],str(data.get("appointment", ""))[:2000],int(bool(data.get("followUp"))),int(bool(data.get("humanHandoff"))),str(data.get("lastError", ""))[:1000],now()))
                 call_connection.commit()
-            self._send(201, {"saved": True, "id": cursor.lastrowid})
+                # المكالمة الواردة انتهت قبل وصول سجلها؛ نبلّغ مزود الاتصال أن الرصيد انتهى ليوقف استقبال الجديد.
+                try:
+                    calls_state = service_quota.snapshot(call_connection, int(organization_id))["services"]["calls"]
+                except Exception:
+                    # السجل حُفظ؛ خطأ في قراءة الرصيد لا يجعل المزود يعيد الإرسال ويكرر السجل.
+                    calls_state = {"blocked": False, "remaining": None}
+            self._send(201, {"saved": True, "id": cursor.lastrowid, "quotaExhausted": bool(calls_state["blocked"]), "remainingMinutes": calls_state["remaining"]})
             return
         if path.startswith("/employee-invite/"):
             token = path.rsplit("/", 1)[-1]
@@ -2352,7 +2361,7 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                     self._send_html(employee_invite_page(token, invitation, "وصلت المؤسسة إلى حد الموظفين في الباقة.")); return
                 try:
                     password_hash, salt = hash_password(password)
-                    user_row = invite_connection.execute("INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,job_title,permissions,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id", (invitation["organization_id"], invitation["name"], username, invitation["phone"], "", password_hash, salt, "employee", invitation["job_title"], invitation["permissions"], 1, now())).fetchone()
+                    user_row = invite_connection.execute("INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,job_title,permissions,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id", (invitation["organization_id"], invitation["name"], username, invitation["phone"], "", password_hash, salt, "employee", invitation["job_title"], vehicle_tracking.invitation_permissions(invite_connection, invitation), 1, now())).fetchone()
                 except DB_INTEGRITY_ERRORS:
                     self._send_html(employee_invite_page(token, invitation, "اسم المستخدم مستخدم بالفعل.")); return
                 invite_connection.execute("UPDATE employee_invitations SET status='accepted',accepted_at=?,accepted_user_id=? WHERE id=? AND status='pending'", (now(), user_row["id"], invitation["id"]))
@@ -3935,6 +3944,10 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 link = connection.execute("SELECT enabled,status FROM call_connections WHERE organization_id=?", (organization_id,)).fetchone()
                 if not link or not link["enabled"]: raise ApiError(409, "اربط مكالمات المؤسسة أولًا")
                 if link["status"] != "ready": raise ApiError(503, "خدمة المكالمات غير جاهزة على الخادم")
+                try:
+                    service_quota.check(connection, organization_id, "calls")
+                except service_quota.Exhausted as exhausted:
+                    raise ApiError(429, exhausted.message)
                 cursor = connection.execute("INSERT INTO call_logs(organization_id,caller_phone,direction,status,started_at,created_at) VALUES(?,?,?,?,?,?)", (organization_id, target, "outbound", "queued", now(), now()))
                 audit_log(connection, organization_id, user["id"], "outbound_call_requested", "طلب مكالمة صادرة", "calls", str(cursor.lastrowid)); connection.commit(); self._send(202, {"queued": True, "id": cursor.lastrowid}); return
             if path == "/api/performance-events" and method == "POST":
@@ -4484,21 +4497,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 report_data = data.get("report")
                 if not isinstance(report_data, dict):
                     raise ApiError(400, "بيانات التقرير غير صحيحة")
-                package_row = connection.execute(
-                    "SELECT package FROM subscriptions WHERE organization_id=?",
-                    (organization_id,),
-                ).fetchone()
-                package = package_row["package"] if package_row else "free"
-                default_limit = {"free": 5, "basic": 30, "vip": 100}.get(package, 5)
-                custom_limit = connection.execute("SELECT daily_limit FROM ai_limits WHERE organization_id=?", (organization_id,)).fetchone()
-                daily_limit = owner_admin.daily_limit(connection, organization_id, package)
-                day_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
-                used = connection.execute(
-                    "SELECT COUNT(*) AS count FROM ai_usage WHERE organization_id=? AND created_at>=?",
-                    (organization_id, day_start),
-                ).fetchone()["count"]
-                if used >= daily_limit:
-                    raise ApiError(429, "تم بلوغ الحد اليومي لموظفي AI")
+                package, daily_limit, used = ai_allowance(connection, organization_id)
                 safe_report = {
                     str(key)[:60]: str(value)[:2000]
                     for key, value in report_data.items()
@@ -4609,7 +4608,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 require_permission(user, "manageEmployees")
                 data = self._body(); name = str(data.get("name", "")).strip()[:160]; phone = normalize_phone(data.get("phone", "")); title = str(data.get("role", "موظف")).strip()[:100] or "موظف"
                 if not name or len(phone) < 8: raise ApiError(400, "أدخل اسم الموظف ورقم جواله مع رمز الدولة")
-                permissions = data.get("permissions", {}); permissions = permissions if isinstance(permissions, dict) else {}
+                permissions = data.get("permissions", {}); permissions = vehicle_tracking.guard_permission_grant(connection, user, permissions if isinstance(permissions, dict) else {})
                 raw_token = secrets.token_urlsafe(32); expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
                 cursor = connection.execute("INSERT INTO employee_invitations(organization_id,name,phone,job_title,permissions,token_hash,status,expires_at,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (organization_id,name,phone,title,json.dumps(permissions,ensure_ascii=False),hashlib.sha256(raw_token.encode()).hexdigest(),"pending",expires,user["id"],now()))
                 audit_log(connection, organization_id, user["id"], "employee_invite_created", "تم إنشاء رابط دعوة موظف", "employee", cursor.lastrowid)
@@ -4642,7 +4641,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     cursor = connection.execute(
                         """INSERT INTO users(organization_id,name,username,phone,email,password_hash,password_salt,role,job_title,permissions,active,created_at)
                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (organization_id, str(data.get("name", "")).strip(), username, str(data.get("phone", "")).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "employee", str(data.get("role", "موظف")).strip(), json.dumps(data.get("permissions", {}), ensure_ascii=False), 1 if data.get("active", True) else 0, now()),
+                        (organization_id, str(data.get("name", "")).strip(), username, str(data.get("phone", "")).strip(), str(data.get("email", "")).strip().lower(), password_hash, salt, "employee", str(data.get("role", "موظف")).strip(), json.dumps(vehicle_tracking.guard_permission_grant(connection, user, data.get("permissions", {})), ensure_ascii=False), 1 if data.get("active", True) else 0, now()),
                     )
                     audit_log(connection, organization_id, user["id"], "employee_created", f"تمت إضافة الموظف {str(data.get('name', '')).strip()}", "employee", cursor.lastrowid)
                     connection.commit()
@@ -4661,11 +4660,12 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 password = str(data.get("password", ""))
                 if password and len(password) < 8:
                     raise ApiError(400, "كلمة مرور الموظف 8 خانات على الأقل")
+                vehicle_tracking.guard_holder_login(connection, user, employee_id, username, password, __import__('sys').modules[__name__])
                 values = (
                     name, username, str(data.get("phone", "")).strip(),
                     str(data.get("email", "")).strip().lower(),
                     str(data.get("role", "موظف")).strip(),
-                    json.dumps(data.get("permissions", {}), ensure_ascii=False),
+                    json.dumps(vehicle_tracking.guard_permission_grant(connection, user, data.get("permissions", {}), employee_id), ensure_ascii=False),
                     1 if data.get("active", True) else 0,
                 )
                 try:

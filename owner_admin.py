@@ -9,6 +9,7 @@ import math
 import re
 import secrets
 import os
+import service_quota
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
 
@@ -162,6 +163,8 @@ def migrate(c,postgres=False):
  # سجل آخر الأخطاء لكل مؤسسة، وما تعلّمه الموظف التقني من الشكاوى التي أغلقتها الإدارة.
  schemas+=[f'''organization_api_errors(id {identity},organization_id BIGINT NOT NULL,user_id BIGINT,method TEXT NOT NULL DEFAULT '',route TEXT NOT NULL DEFAULT '',status INTEGER NOT NULL DEFAULT 0,message TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''',
   f'''technical_playbooks(id {identity},title TEXT NOT NULL DEFAULT '',signals TEXT NOT NULL DEFAULT '[]',solution TEXT NOT NULL DEFAULT '',ticket_id BIGINT,uses INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL)''']
+ # فواتير مزودي الخدمات: مبلغ الشهر ÷ استخدام المنصة في نفس الشهر = تكلفة الوحدة الحقيقية.
+ schemas.append('''platform_service_invoices(month TEXT NOT NULL,service TEXT NOT NULL,amount_sar REAL NOT NULL,units INTEGER NOT NULL,unit_cost REAL NOT NULL,actor TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,PRIMARY KEY(month,service))''')
  for schema in schemas: c.execute('CREATE TABLE IF NOT EXISTS '+schema)
  for key,name,category,permission,notes in [('renewals','التجديدات والخدمات الحكومية','خدمات حكومية','integrations.renewals','جاهز لإضافة API رسمي مستقبلًا؛ التنبيهات فقط حاليًا'),('vehicles','تتبع المركبات','مركبات','integrations.vehicles','يحتاج جهازًا أو مزود تتبع معتمدًا'),('attendance','الحضور والبصمة','الموظفون','integrations.attendance','يرتبط بملف الموظف عند توفر جهاز أو API'),('cameras','كاميرات المؤسسة','أمن المؤسسة','integrations.cameras','الوصول مقيد بصلاحية مستقلة وغير مفعّل حاليًا'),('payments','بوابات الدفع','فوترة','integrations.payments','يحتاج مزود دفع رسمي'),('communications','مزودو الاتصالات','اتصالات','integrations.communications','يحتاج قناة خادم معتمدة')]:
   c.execute('INSERT INTO platform_integrations(key,name,category,status,required_permission,provider_configured,notes,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(key) DO NOTHING',(key,name,category,'planned',permission,0,notes,stamp()))
@@ -177,7 +180,7 @@ def migrate(c,postgres=False):
    legacy=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=? AND bonus_months=0 ORDER BY id LIMIT 1',(package,months)).fetchone()
    value=float(legacy['price_sar']) if legacy else fallback
    c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO NOTHING',(package,months,value,stamp()))
- for table,fields in {'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''"),('owner_reply_by',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT"),('knowledge',"TEXT NOT NULL DEFAULT ''"),('problem_type',"TEXT NOT NULL DEFAULT ''"),('needs_owner',"INTEGER NOT NULL DEFAULT 0"),('facts',"TEXT NOT NULL DEFAULT ''"),('interpretation',"TEXT NOT NULL DEFAULT ''")],'platform_admins':[('totp_secret',"TEXT NOT NULL DEFAULT ''"),('totp_enabled','INTEGER NOT NULL DEFAULT 0'),('totp_last_step','BIGINT NOT NULL DEFAULT 0')],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
+ for table,fields in {'platform_packages':[('ai_monthly','INTEGER')],'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''"),('owner_reply_by',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT"),('knowledge',"TEXT NOT NULL DEFAULT ''"),('problem_type',"TEXT NOT NULL DEFAULT ''"),('needs_owner',"INTEGER NOT NULL DEFAULT 0"),('facts',"TEXT NOT NULL DEFAULT ''"),('interpretation',"TEXT NOT NULL DEFAULT ''")],'platform_admins':[('totp_secret',"TEXT NOT NULL DEFAULT ''"),('totp_enabled','INTEGER NOT NULL DEFAULT 0'),('totp_last_step','BIGINT NOT NULL DEFAULT 0')],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
@@ -236,7 +239,7 @@ def permission(path,method):
   if p.startswith('addon-offers'): return 'offers'
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('directory'): return 'organizations.view' if method=='GET' else 'organizations.edit'
-  if p.startswith('credits'): return 'usage'
+  if p.startswith(('credits','service-costs')): return 'usage'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
   for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('expenses','finance'),('technical-ai','security'),('performance','security'),('readiness','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
    if p.startswith(prefix): return perm
@@ -334,6 +337,34 @@ def _chunks(values,size=400):
  values=list(values)
  for start in range(0,len(values),size): yield values[start:start+size]
 
+USD_TO_SAR=3.75
+def normalize_month(month):
+ """YYYY-MM بأرقام لاتينية وسنة معقولة؛ يُخزَّن بهذه الصيغة ليصح الترتيب."""
+ text=str(month or '').strip().translate(str.maketrans('٠١٢٣٤٥٦٧٨٩','0123456789'))
+ if not re.fullmatch(r'[0-9]{4}-(0[1-9]|1[0-2])',text) or not 2020<=int(text[:4])<=2100: raise ValueError('اختر الشهر بصيغة سنة-شهر')
+ return text
+def month_bounds(month):
+ """بداية الشهر الميلادي وبداية الشهر التالي (UTC) من نص YYYY-MM."""
+ month=normalize_month(month)
+ start=datetime(int(month[:4]),int(month[5:7]),1,tzinfo=timezone.utc)
+ end=(start+timedelta(days=32)).replace(day=1)
+ return start,end
+def platform_month_usage(c,s,month):
+ """استخدام كل المؤسسات في شهر ميلادي، بنفس تعريف الوحدات في أرصدة الخدمات."""
+ start,end=month_bounds(month); a,b=start.isoformat(),end.isoformat()
+ out={'ai':scalar(c,'SELECT COUNT(*) n FROM ai_usage WHERE created_at>=? AND created_at<?',(a,b)),'whatsapp':0,'calls':0}
+ if table_exists(c,'whatsapp_messages',s): out['whatsapp']=scalar(c,'SELECT COUNT(*) n FROM whatsapp_messages WHERE direction=? AND state<>? AND timestamp>=? AND timestamp<?',('outbound','failed',int(start.timestamp()),int(end.timestamp())))
+ if table_exists(c,'call_logs',s):
+  # الدقائق تُقرَّب لكل مؤسسة كما في جدول الأرصدة، ثم تُجمع.
+  out['calls']=sum(math.ceil(int(r['n'] or 0)/60) for r in rows(c,'SELECT organization_id,COALESCE(SUM(CASE WHEN duration_seconds>0 THEN duration_seconds ELSE 0 END),0) n FROM call_logs WHERE created_at>=? AND created_at<? GROUP BY organization_id',(a,b)))
+ return {k:int(v or 0) for k,v in out.items()}
+def service_unit_costs(c,s):
+ """تكلفة الوحدة المعتمدة لكل خدمة: من أحدث فاتورة مدخلة، وإلا رقم تقديري."""
+ out={k:{'service':k,'label':SERVICE_LABELS[k],'unit_cost':SERVICE_COSTS[k],'source':'estimate','month':None,'amount_sar':None,'units':None} for k in SERVICE_LABELS}
+ if not table_exists(c,'platform_service_invoices',s): return out
+ for x in rows(c,'SELECT month,service,amount_sar,units,unit_cost FROM platform_service_invoices ORDER BY month'):
+  if x['service'] in out: out[x['service']].update({'unit_cost':float(x['unit_cost']),'source':'invoice','month':x['month'],'amount_sar':float(x['amount_sar']),'units':int(x['units'])})
+ return out
 def credits_bulk(c,s,org_ids=None,with_ledger=True):
  """أرصدة واستهلاك عدة مؤسسات بعدد ثابت من الاستعلامات بدل استعلامات لكل مؤسسة.
 
@@ -351,7 +382,7 @@ def credits_bulk(c,s,org_ids=None,with_ledger=True):
   for chunk in _chunks(org_ids): out.extend(rows(c,sql.replace('{scope}',column+' IN ('+','.join('?' for _ in chunk)+')'),[*args,*chunk]))
   return out
  ids=org_ids if org_ids is not None else [r['id'] for r in rows(c,'SELECT id FROM organizations')]
- packages={r['organization_id']:r for r in grouped("SELECT s.organization_id,COALESCE(s.package,'free') package,COALESCE(p.monthly,0) monthly,p.ai_daily,p.whatsapp_units,p.calls_units FROM subscriptions s LEFT JOIN platform_packages p ON p.package=s.package WHERE {scope}",(),'s.organization_id')}
+ packages={r['organization_id']:r for r in grouped("SELECT s.organization_id,COALESCE(s.package,'free') package,COALESCE(p.monthly,0) monthly,s.starts_at,p.ai_daily,p.whatsapp_units,p.calls_units FROM subscriptions s LEFT JOIN platform_packages p ON p.package=s.package WHERE {scope}",(),'s.organization_id')}
  adjustments={}; ledgers={}
  for x in grouped('SELECT organization_id,service,units,reason,actor,created_at FROM platform_credit_ledger WHERE created_at>=? AND {scope} ORDER BY id DESC',(month,)):
   org=x['organization_id']; totals=adjustments.setdefault(org,{k:0 for k in SERVICE_LABELS})
@@ -360,22 +391,35 @@ def credits_bulk(c,s,org_ids=None,with_ledger=True):
  ai={r['organization_id']:r for r in grouped('SELECT organization_id,COUNT(*) month_count,COALESCE(SUM(CASE WHEN created_at>=? THEN 1 ELSE 0 END),0) today_count FROM ai_usage WHERE created_at>=? AND {scope} GROUP BY organization_id',(today,month))}
  wa={}
  if table_exists(c,'whatsapp_messages',s):
-  wa={r['organization_id']:r for r in grouped('SELECT organization_id,COUNT(*) month_count,COALESCE(SUM(CASE WHEN timestamp>=? THEN 1 ELSE 0 END),0) today_count FROM whatsapp_messages WHERE timestamp>=? AND {scope} GROUP BY organization_id',(today_ts,month_ts))}
+  wa={r['organization_id']:r for r in grouped('SELECT organization_id,COUNT(*) month_count,COALESCE(SUM(CASE WHEN timestamp>=? THEN 1 ELSE 0 END),0) today_count FROM whatsapp_messages WHERE direction=? AND state<>? AND timestamp>=? AND {scope} GROUP BY organization_id',(today_ts,'outbound','failed',month_ts))}
  calls={}
  if table_exists(c,'call_logs',s):
-  calls={r['organization_id']:r for r in grouped('SELECT organization_id,COALESCE(SUM(duration_seconds),0) month_seconds,COALESCE(SUM(CASE WHEN started_at>=? THEN duration_seconds ELSE 0 END),0) today_seconds FROM call_logs WHERE started_at>=? AND {scope} GROUP BY organization_id',(today,month))}
+  calls={r['organization_id']:r for r in grouped('SELECT organization_id,COALESCE(SUM(CASE WHEN duration_seconds>0 THEN duration_seconds ELSE 0 END),0) month_seconds,COALESCE(SUM(CASE WHEN created_at>=? AND duration_seconds>0 THEN duration_seconds ELSE 0 END),0) today_seconds FROM call_logs WHERE created_at>=? AND {scope} GROUP BY organization_id',(today,month))}
  links={}
  if table_exists(c,'call_connections',s):
   links={r['organization_id']:r for r in grouped('SELECT organization_id,status,phone_number,last_error FROM call_connections WHERE {scope}')}
+ quotas=service_quota.snapshot_bulk(c,org_ids)
+ unit_costs={k:v['unit_cost'] for k,v in service_unit_costs(c,s).items()}
+ # دخل الشهر الفعلي: آخر اشتراك معتمد لنفس الباقة ÷ عدد شهوره (مع الشهور المجانية)، وإلا سعر الباقة الشهري.
+ # طلب أقدم من بداية الاشتراك الحالي (تفعيل بكود أو تجديد لاحق) لا يُعتمد.
+ paid={}
+ for x in grouped("SELECT organization_id,requested_package,paid_months,bonus_months,quoted_price,processed_at FROM subscription_requests WHERE status='approved' AND {scope} ORDER BY id"):
+  paid[x['organization_id']]=x
  result={}
  for org in ids:
   package=packages.get(org) or {'package':'free','monthly':0,'ai_daily':5,'whatsapp_units':0,'calls_units':0}
   adjust=adjustments.get(org,{k:0 for k in SERVICE_LABELS}); a_row=ai.get(org,{}); w_row=wa.get(org,{}); c_row=calls.get(org,{}); link=links.get(org)
   usage={'ai':int(a_row.get('month_count') or 0),'whatsapp':int(w_row.get('month_count') or 0),'calls':math.ceil(int(c_row.get('month_seconds') or 0)/60)}
   daily={'ai':int(a_row.get('today_count') or 0),'whatsapp':int(w_row.get('today_count') or 0),'calls':math.ceil(int(c_row.get('today_seconds') or 0)/60)}
-  base={'ai':int(package.get('ai_daily') or 0)*30,'whatsapp':int(package.get('whatsapp_units') or 0),'calls':int(package.get('calls_units') or 0)}
-  remaining={x:max(0,base[x]+adjust[x]-usage[x]) for x in SERVICE_LABELS}; cost={x:round(usage[x]*SERVICE_COSTS[x],2) for x in SERVICE_LABELS}; total_cost=round(sum(cost.values()),2); monthly=float(package.get('monthly') or 0)
-  result[org]={'package':package.get('package') or 'free','subscription_value':monthly,'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjust[x],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'calls_status':link['status'] if link else 'not_connected','calls_phone':link['phone_number'] if link else None,'calls_error':link['last_error'] if link else '','total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledgers.get(org,[])}
+  quota=quotas.get(org) or {'services':{},'renews_at':None,'cycle_start':None}
+  q={x:quota['services'].get(x) or {'base':None,'adjustments':0,'limit':None,'used':0,'used_today':0,'daily_limit':None,'remaining':None,'unlimited':True,'blocked':False,'reason':''} for x in SERVICE_LABELS}
+  # الحد والمستخدم والمتبقي من دورة اشتراك المؤسسة (نفس ما يُطبَّق فعليًا)؛ التكلفة والاستهلاك الشهري بالشهر الميلادي.
+  base={x:int(q[x]['base'] or 0) for x in SERVICE_LABELS}; adjust={x:int(q[x]['adjustments'] or 0) for x in SERVICE_LABELS}
+  remaining={x:int(q[x]['remaining'] or 0) for x in SERVICE_LABELS}; cost={x:round(usage[x]*unit_costs[x],2) for x in SERVICE_LABELS}; total_cost=round(sum(cost.values()),2); monthly=float(package.get('monthly') or 0); income_source='package'
+  request=paid.get(org); months=(int(request['paid_months'] or 0)+int(request['bonus_months'] or 0)) if request else 0
+  if (package.get('package') or 'free')=='free': monthly=0.0; income_source='free'
+  elif request and request['requested_package']==package.get('package') and float(request['quoted_price'] or 0)>0 and months>0 and str(request['processed_at'] or '')[:10]>=str(package.get('starts_at') or '')[:10]: monthly=round(float(request['quoted_price'])/months,2); income_source='paid'
+  result[org]={'package':package.get('package') or 'free','subscription_value':monthly,'income_source':income_source,'cycle_start':quota['cycle_start'],'renews_at':quota['renews_at'],'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjust[x],'limit':q[x]['limit'],'unlimited':q[x]['unlimited'],'used':q[x]['used'],'daily_limit':q[x]['daily_limit'],'blocked':q[x]['blocked'],'reason':q[x]['reason'],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'calls_status':link['status'] if link else 'not_connected','calls_phone':link['phone_number'] if link else None,'calls_error':link['last_error'] if link else '','total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledgers.get(org,[])}
  return result
 
 def credits_summary(c,org,s):
@@ -386,23 +430,25 @@ def customer_usage_summary(c,org,s):
  summary=credits_summary(c,org,s)
  services={}
  total_limit=0
+ total_used=0
  for key,item in summary['services'].items():
-  limit=max(0,int(item['base'] or 0)+int(item['adjustments'] or 0))
-  used=max(0,int(item['used_month'] or 0))
+  # الأرقام من دورة اشتراك المؤسسة، وهي نفسها التي يُوقَف عندها الاستخدام.
+  limit=max(0,int(item['limit'] or 0))
+  used=max(0,int(item['used'] or 0))
   remaining=max(0,int(item['remaining'] or 0))
   total_limit+=limit
+  total_used+=used if not item['unlimited'] else 0
   services[key]={
    'label':item['label'], 'limit':limit, 'usedMonth':used,
    'usedToday':max(0,int(item['used_today'] or 0)), 'remaining':remaining,
    'usagePercent':min(100,round(used*100/limit)) if limit else 0,
+   'unlimited':bool(item['unlimited']), 'exhausted':bool(item['blocked']), 'reason':item['reason'],
+   'dailyLimit':item['daily_limit'],
   }
- usage_month=max(0,int(summary['usage_month'] or 0))
- # Unit reset is monthly; expose only the next reset date, never ledger actors.
- next_month=datetime.now(timezone.utc).replace(day=1)+timedelta(days=32)
- next_month=next_month.replace(day=1)
+ usage_month=max(0,total_used)
  return {
   'package':summary['package'],
-  'renewalDate':next_month.date().isoformat(),
+  'renewalDate':summary['renews_at'],
   'totalRemaining':int(summary['total_remaining'] or 0),
   'usageMonth':usage_month,
   'usageToday':max(0,int(summary['usage_today'] or 0)),
@@ -1031,6 +1077,7 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    item['prices']=[{'months':months,'price_sar':price} for months,price in price_map.items()]
    item['service_limits']={
     'ai_daily':item['ai_daily'],
+    'ai_monthly':item.get('ai_monthly'),
     'ai_employees':item['ai_employees'],
     'whatsapp_units':item['whatsapp_units'],
     'calls_units':item['calls_units'],
@@ -1058,11 +1105,15 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   for key in ('whatsapp_units','calls_units','ads_units'):
    raw=d[key] if key in d else settings[key]
    limits.append(None if raw is None or raw=='' else number(raw,0,1000000,True))
+  raw_monthly=d['ai_monthly'] if 'ai_monthly' in d else dict(settings).get('ai_monthly')
+  # فارغ = غير محدد: الحد الشهري يساوي اليومي × أيام الشهر.
+  monthly_ai=None if raw_monthly is None or raw_monthly=='' else number(raw_monthly,0,100000000,True)
+  if monthly_ai is not None and monthly_ai<daily: raise ValueError('حد AI الشهري لا يكون أقل من الحد اليومي')
   features=str(d.get('features',settings['features'] or ''))[:4000]
-  c.execute('UPDATE platform_packages SET monthly=?,yearly=?,ai_daily=?,ai_employees=?,whatsapp_units=?,calls_units=?,ads_units=?,features=? WHERE package=?',(prices[1],prices[12],daily,employees,*limits,features,pkg))
+  c.execute('UPDATE platform_packages SET monthly=?,yearly=?,ai_daily=?,ai_monthly=?,ai_employees=?,whatsapp_units=?,calls_units=?,ads_units=?,features=? WHERE package=?',(prices[1],prices[12],daily,monthly_ai,employees,*limits,features,pkg))
   for months,price in prices.items(): c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO UPDATE SET price_sar=excluded.price_sar,updated_at=excluded.updated_at',(pkg,months,price,stamp()))
   audit(c,a['name'],'package_prices_updated',json.dumps({'package':pkg,'prices':prices},ensure_ascii=False))
-  return {'saved':True,'prices':prices,'service_limits':{'ai_daily':daily,'ai_employees':employees,'whatsapp_units':limits[0],'calls_units':limits[1],'ads_units':limits[2]},'price_warnings':warnings}
+  return {'saved':True,'prices':prices,'service_limits':{'ai_daily':daily,'ai_monthly':monthly_ai,'ai_employees':employees,'whatsapp_units':limits[0],'calls_units':limits[1],'ads_units':limits[2]},'price_warnings':warnings}
  if r=='codes' and m=='GET': return paged(c,'SELECT id,code_prefix,recipient_name,discount_percent,discount_amount,starts_at,expires_at,max_uses,used_count,eligible_packages,eligible_durations,active',"FROM activation_codes WHERE code_kind='discount'",[],'id DESC',page)
  if r=='codes' and m=='POST':
   code=str(d.get('code','')).upper().strip()
@@ -1095,7 +1146,34 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   items=rows(c,'SELECT o.id,o.name,COALESCE(s.package,?) package FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id '+condition,args)
   bulk=credits_bulk(c,s,[item['id'] for item in items])
   for item in items: item['credits']=bulk[item['id']]
-  return {'items':items,'total':len(items),'page':1,'pageSize':len(items)}
+  income=round(sum(x['credits']['subscription_value'] for x in items),2); cost=round(sum(x['credits']['actual_cost'] for x in items),2)
+  totals={'month':stamp()[:7],'income':income,'cost':cost,'profit':round(income-cost,2),'losing':sum(1 for x in items if x['credits']['estimated_profit']<0),'organizations':len(items)}
+  return {'items':items,'total':len(items),'page':1,'pageSize':len(items),'totals':totals,'costs':service_unit_costs(c,s)}
+ if r=='service-costs' and m=='GET':
+  current=stamp()[:7]; previous=(datetime.fromisoformat(current+'-01')-timedelta(days=1)).strftime('%Y-%m')
+  return {'costs':service_unit_costs(c,s),'invoices':rows(c,'SELECT month,service,amount_sar,units,unit_cost,actor,created_at FROM platform_service_invoices ORDER BY month DESC,service LIMIT 72'),'usage':{current:platform_month_usage(c,s,current),previous:platform_month_usage(c,s,previous)},'current_month':current,'previous_month':previous,'usd_to_sar':USD_TO_SAR}
+ if r=='service-costs' and m=='POST':
+  service=str(d.get('service','')).strip(); month=normalize_month(d.get('month'))
+  if service not in SERVICE_LABELS: raise ValueError('اختر خدمة صحيحة')
+  start,_=month_bounds(month)
+  if start>datetime.now(timezone.utc): raise ValueError('لا يمكن إدخال فاتورة شهر لم يبدأ')
+  amount=number(d.get('amount'),0,100000000)
+  currency=str(d.get('currency','sar')).strip().lower()
+  if currency not in ('sar','usd'): raise ValueError('العملة غير صحيحة')
+  if amount<=0: raise ValueError('اكتب مبلغ الفاتورة')
+  amount_sar=round(float(amount)*(USD_TO_SAR if currency=='usd' else 1),2)
+  units=platform_month_usage(c,s,month)[service]
+  if units<=0: raise ValueError('لا يوجد استخدام مسجل لهذه الخدمة في هذا الشهر، فلا يمكن حساب تكلفة الوحدة')
+  unit_cost=round(amount_sar/units,6)
+  c.execute('INSERT INTO platform_service_invoices(month,service,amount_sar,units,unit_cost,actor,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(month,service) DO UPDATE SET amount_sar=excluded.amount_sar,units=excluded.units,unit_cost=excluded.unit_cost,actor=excluded.actor,created_at=excluded.created_at',(month,service,amount_sar,units,unit_cost,a['name'],stamp()))
+  audit(c,a['name'],'service_invoice_saved',json.dumps({'month':month,'service':service,'amount_sar':amount_sar,'units':units,'unit_cost':unit_cost},ensure_ascii=False))
+  return {'saved':True,'month':month,'service':service,'amount_sar':amount_sar,'units':units,'unit_cost':unit_cost,'costs':service_unit_costs(c,s)}
+ if re.fullmatch(r'service-costs/[0-9]{4}-[0-9]{2}/[a-z]+',r) and m=='DELETE':
+  _,month,service=r.split('/')
+  done=c.execute('DELETE FROM platform_service_invoices WHERE month=? AND service=?',(month,service))
+  if not done.rowcount: raise s.ApiError(404,'الفاتورة غير موجودة')
+  audit(c,a['name'],'service_invoice_deleted',month+'/'+service)
+  return {'deleted':True,'costs':service_unit_costs(c,s)}
  if r=='expenses' and m=='GET':
   return finance_summary(c)
  if r=='finance/revenue' and m=='GET':
@@ -1170,12 +1248,22 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if not old: raise s.ApiError(404,'الفاتورة غير موجودة')
   c.execute('DELETE FROM platform_expenses WHERE id=?',(ident,)); audit(c,a['name'],'finance_expense_deleted',json.dumps({'before':dict(old),'after':None},ensure_ascii=False)); return {'deleted':True}
  if re.fullmatch(r'credits/\d+',r) and m=='POST':
-  ident=int(r.split('/')[1]); service=str(d.get('service','')).strip(); units=number(d.get('units'),-1000000,1000000,True); reason=str(d.get('reason','')).strip()[:500]
-  if service not in SERVICE_LABELS: raise ValueError('اختر خدمة صحيحة')
-  if units==0 or not reason: raise ValueError('اكتب كمية غير صفرية وسبب التعديل')
+  ident=int(r.split('/')[1]); reason=str(d.get('reason','')).strip()[:500]; batch=d.get('adjustments')
+  if isinstance(batch,dict):
+   # عدة خدمات في حفظ واحد: إما تُحفظ كلها أو لا يُحفظ شيء.
+   if any(k not in SERVICE_LABELS for k in batch): raise ValueError('اختر خدمة صحيحة')
+   changes=[(k,number(batch[k],-1000000,1000000,True)) for k in SERVICE_LABELS if batch.get(k) not in (None,'')]
+   changes=[(k,u) for k,u in changes if u]
+  else:
+   service=str(d.get('service','')).strip()
+   if service not in SERVICE_LABELS: raise ValueError('اختر خدمة صحيحة')
+   changes=[(service,number(d.get('units'),-1000000,1000000,True))]
+   changes=[(k,u) for k,u in changes if u]
+  if not changes or not reason: raise ValueError('اكتب كمية غير صفرية وسبب التعديل')
   if not c.execute('SELECT id FROM organizations WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'المؤسسة غير موجودة')
-  c.execute('INSERT INTO platform_credit_ledger(organization_id,service,units,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(ident,service,units,reason,a['name'],stamp()))
-  audit(c,a['name'],'credit_adjustment',f'{ident}/{service}/{units}/{reason}')
+  for service,units in changes:
+   c.execute('INSERT INTO platform_credit_ledger(organization_id,service,units,reason,actor,created_at) VALUES(?,?,?,?,?,?)',(ident,service,units,reason,a['name'],stamp()))
+   audit(c,a['name'],'credit_adjustment',f'{ident}/{service}/{units}/{reason}')
   return {'saved':True,'credits':credits_summary(c,ident,s)}
  if r=='offers' and m=='POST':
   pkg=d.get('package'); start=date(d.get('starts_at')); end=date(d.get('ends_at')); kind=d.get('offer_type','price')

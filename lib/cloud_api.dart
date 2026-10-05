@@ -115,6 +115,12 @@ class KhdoomCloudApi {
     return (result['disconnected'] as num?)?.toInt() ?? 0;
   }
 
+  /// رصيد خدمات المؤسسة واستهلاكها في دورة الاشتراك الحالية.
+  Future<Map<String, dynamic>> usageSummary() async {
+    final result = await _request('GET', '/api/usage-summary');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   Future<Map<String, dynamic>> organization() async {
     final result = await _request('GET', '/api/organization');
     return Map<String, dynamic>.from(result as Map);
@@ -182,6 +188,11 @@ class KhdoomCloudApi {
 
   Future<List<dynamic>> trackingDrivers() async => List<dynamic>.from(
     await _request('GET', '/api/vehicle-tracking/drivers') as List,
+  );
+
+  /// المركبات المرتبطة بالتتبع؛ لصاحب المؤسسة ولمن منحه صلاحية المشاهدة.
+  Future<List<dynamic>> trackedVehicles() async => List<dynamic>.from(
+    await _request('GET', '/api/vehicle-tracking/vehicles') as List,
   );
   Future<Map<String, dynamic>> trackingSchedule(
     String key,

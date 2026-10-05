@@ -59,7 +59,9 @@ class _UsageBalancePageState extends State<UsageBalancePage> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _error = error.toString();
+          _error = error is CloudApiException
+              ? error.message
+              : 'تعذر تحميل الرصيد. تأكد من الاتصال ثم أعد المحاولة.';
         });
       }
     } finally {
@@ -104,7 +106,13 @@ class _UsageBalancePageState extends State<UsageBalancePage> {
                   padding: const EdgeInsets.all(16),
                   children: [
                     _OverviewCard(
-                      packageName: data['package']?.toString() ?? 'free',
+                      packageName:
+                          const {
+                            'free': 'المجانية',
+                            'basic': 'الأساسية',
+                            'vip': 'VIP',
+                          }[data['package']?.toString()] ??
+                          'المجانية',
                       percent: percent,
                       used: _number(data['usageMonth']),
                       remaining: _number(data['totalRemaining']),
@@ -120,7 +128,7 @@ class _UsageBalancePageState extends State<UsageBalancePage> {
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      'الأرصدة للعرض فقط. إضافة الرصيد أو الخصم تتم من لوحة أمن خدووم.',
+                      'الرصيد يتجدد كل شهر من تاريخ اشتراكك. عند انتهاء رصيد خدمة تتوقف حتى التجديد أو ترقية الباقة.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.white54),
                     ),
@@ -166,7 +174,7 @@ class _OverviewCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Text(
-                'باقة $packageName',
+                'الباقة $packageName',
                 style: const TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.bold,
@@ -177,7 +185,7 @@ class _OverviewCard extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Text(
-            'استهلاك باقتك هذا الشهر: $percent%',
+            'استهلاك باقتك في هذه الدورة: $percent%',
             style: const TextStyle(color: Colors.white, fontSize: 16),
           ),
           const SizedBox(height: 8),
@@ -192,12 +200,12 @@ class _OverviewCard extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            'المتبقي: $remaining وحدة  •  المستهلك هذا الشهر: $used وحدة',
+            'المتبقي: $remaining وحدة  •  المستهلك: $used وحدة',
             style: const TextStyle(color: Colors.white70),
           ),
           const SizedBox(height: 6),
           Text(
-            'تجدد الوحدات: $renewalDate',
+            'يتجدد الرصيد يوم: $renewalDate',
             style: const TextStyle(color: Colors.white54),
           ),
         ],
@@ -213,12 +221,17 @@ class _ServiceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final unlimited = data['unlimited'] == true;
     final remaining = number(data['remaining']);
     final used = number(data['usedMonth']);
     final limit = number(data['limit']);
     final percent = number(data['usagePercent']).clamp(0, 100);
-    final empty = remaining <= 0;
-    final warning = empty || percent >= 80;
+    final dailyStop = data['exhausted'] == true && data['reason'] == 'daily';
+    final notIncluded = !unlimited && limit <= 0;
+    final empty = !unlimited && !notIncluded && !dailyStop && remaining <= 0;
+    final warning =
+        !unlimited && !notIncluded && (empty || dailyStop || percent >= 80);
+    final dailyLimit = data['dailyLimit'];
     return Card(
       color: const Color(0xFF111B35),
       margin: const EdgeInsets.only(bottom: 12),
@@ -249,19 +262,57 @@ class _ServiceCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            Text(
-              'الرصيد المتبقي: $remaining وحدة',
-              style: const TextStyle(color: Colors.white),
-            ),
-            Text(
-              'الاستهلاك هذا الشهر: $used وحدة من $limit',
-              style: const TextStyle(color: Colors.white70),
-            ),
+            if (notIncluded)
+              const Text(
+                'غير مشمولة في باقتك الحالية',
+                style: TextStyle(color: Colors.white70),
+              )
+            else if (unlimited) ...[
+              const Text(
+                'بلا حد في باقتك',
+                style: TextStyle(color: Colors.white),
+              ),
+              Text(
+                'المستخدم في هذه الدورة: $used',
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ] else ...[
+              Text(
+                'المستخدم: $used من $limit',
+                style: const TextStyle(color: Colors.white),
+              ),
+              const SizedBox(height: 8),
+              LinearProgressIndicator(
+                value: percent / 100,
+                minHeight: 7,
+                borderRadius: BorderRadius.circular(8),
+                backgroundColor: Colors.white12,
+                color: warning ? Colors.orangeAccent : const Color(0xFF38BDF8),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'المتبقي: $remaining',
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ],
+            if (dailyLimit is num)
+              Text(
+                'اليوم: ${number(data['usedToday'])} من ${dailyLimit.toInt()}',
+                style: const TextStyle(color: Colors.white70),
+              ),
             if (empty)
               const Padding(
                 padding: EdgeInsets.only(top: 8),
                 child: Text(
-                  'انتهى رصيد هذه الخدمة، بينما تبقى الخدمات الأخرى مستقلة.',
+                  'تم استخدام رصيد هذه الخدمة. تتوقف حتى يتجدد الرصيد أو ترقّي باقتك، والخدمات الأخرى مستقلة.',
+                  style: TextStyle(color: Colors.orangeAccent),
+                ),
+              )
+            else if (dailyStop)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'وصلت السقف اليومي لهذه الخدمة. تعود غدًا، وباقي رصيد الشهر محفوظ.',
                   style: TextStyle(color: Colors.orangeAccent),
                 ),
               )
@@ -269,7 +320,7 @@ class _ServiceCard extends StatelessWidget {
               const Padding(
                 padding: EdgeInsets.only(top: 8),
                 child: Text(
-                  'الرصيد منخفض ⚠️',
+                  'الرصيد قارب على الانتهاء ⚠️',
                   style: TextStyle(color: Colors.orangeAccent),
                 ),
               ),
