@@ -62,7 +62,7 @@ class BranchInboxTest(unittest.TestCase):
                     c.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at) VALUES(2,2,'test',?)",(server.now(),))
                     c.commit()
                 generic=req('/api/public-chat/'+links['main'],'POST',{'message':'اشرح لي كل الخدمات بالتفصيل'})
-                self.assertIn('لحده اليومي',generic['text'])
+                self.assertIn('غير متاح للرد الآن',generic['text'])
                 booking=req('/api/public-chat/'+links['main'],'POST',{'message':'هلا ابي احد ياخذ مقاس','sessionToken':generic['sessionToken']})
                 self.assertIn('اسمك',booking['text'])
                 human=req('/api/public-chat/main2','POST',{'message':'اطلب موظف'})

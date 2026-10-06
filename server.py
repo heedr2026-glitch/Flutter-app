@@ -65,6 +65,35 @@ PORT = int(os.environ.get("PORT", os.environ.get("KHDOOM_PORT", "8080")))
 STARTUP_READY = False
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+# رسائل زائر واحد في الشات الخارجي لمؤسسة واحدة: حتى لا يستنزف شخص واحد رصيد المؤسسة كله.
+_CHAT_VISITOR_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+_CHAT_VISITOR_WINDOW_SECONDS = 3600
+_CHAT_VISITOR_MAX_MESSAGES = 40
+
+
+def chat_visitor_limited(ip: str, organization_id: int) -> bool:
+    key = f"{ip}:{organization_id}"
+    now_monotonic = time.monotonic()
+    with _RATE_LIMIT_LOCK:
+        if len(_CHAT_VISITOR_BUCKETS) > 20000:
+            for stale in [k for k, v in _CHAT_VISITOR_BUCKETS.items() if not v or now_monotonic - v[-1] > _CHAT_VISITOR_WINDOW_SECONDS]:
+                del _CHAT_VISITOR_BUCKETS[stale]
+        bucket = _CHAT_VISITOR_BUCKETS[key]
+        while bucket and now_monotonic - bucket[0] > _CHAT_VISITOR_WINDOW_SECONDS:
+            bucket.popleft()
+        if len(bucket) >= _CHAT_VISITOR_MAX_MESSAGES:
+            return True
+        bucket.append(now_monotonic)
+    return False
+
+
+def chat_unavailable_page(title: str, text: str) -> str:
+    """صفحة مرتبة لعميل المؤسسة بدل رسالة خطأ برمجية عند تعذر فتح الشات."""
+    return ('<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>' + html.escape(title) + '</title><style>body{margin:0;background:linear-gradient(160deg,#071126,#142454);color:#fff;font-family:Tahoma,Arial;'
+            'min-height:100vh;display:grid;place-items:center}.card{max-width:520px;margin:20px;padding:28px;background:#111f42;border:1px solid #24618d;'
+            'border-radius:18px;text-align:center;line-height:1.9}h1{font-size:22px;margin:0 0 10px}p{color:#cfe6ff;margin:0}</style></head><body>'
+            '<main class="card"><h1>' + html.escape(title) + '</h1><p>' + html.escape(text) + '</p></main></body></html>')
 _RATE_LIMIT_WINDOW_SECONDS = 60
 _RATE_LIMIT_MAX_REQUESTS = 120
 OWNER_KEY_PATH = ROOT / "owner.key"
@@ -2485,7 +2514,8 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
 
                 organization = branch_appointments.resolve_chat(connection, chat_token)
             if organization is None:
-                raise ApiError(404, "رابط المحادثة غير صحيح")
+                self._send_html(chat_unavailable_page("رابط المحادثة غير صحيح", "تأكد من الرابط أو اطلب رابطًا جديدًا من المؤسسة."), status=404)
+                return
             with db() as connection:
                 maintenance = maintenance_status(connection, organization["id"])
             if maintenance["chat"]:
@@ -2493,7 +2523,8 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                 self._send_html('''<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>الشات تحت الصيانة</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;color:white;font-family:Tahoma}main{box-sizing:border-box;width:min(92%,720px);padding:32px;border:1px solid #38bdf8;border-radius:24px;background:#111f42;text-align:center}h1{font-size:clamp(28px,6vw,44px);color:#fbbf24}p{font-size:clamp(22px,4vw,30px);line-height:1.8;overflow-wrap:anywhere}button{font:inherit;font-size:22px;padding:16px 30px;border:0;border-radius:12px;background:#38bdf8}</style></head><body><main role="status"><h1>الشات تحت الصيانة مؤقتًا</h1><p>''' + message + '''</p><p>يرجى المحاولة لاحقًا.</p><button onclick="location.reload()">تحديث الحالة</button></main></body></html>''', status=503)
                 return
             if organization["package"] not in ("basic", "vip"):
-                raise ApiError(403, "موظف الاستقبال غير متاح لهذه المؤسسة حاليًا")
+                self._send_html(chat_unavailable_page("المحادثة غير متاحة حاليًا", "خدمة المحادثة لدى " + str(organization["name"]) + " غير متاحة الآن. يمكنك التواصل مع المؤسسة مباشرة."), status=403)
+                return
             page = """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف استقبال __ORG_NAME__</title>
 <style>body{margin:0;background:linear-gradient(160deg,#071126,#142454);color:#fff;font-family:Tahoma,Arial;min-height:100vh}.wrap{max-width:720px;margin:auto;padding:22px}.head,.chat{background:#111f42;border:1px solid #24618d;border-radius:22px;padding:20px;margin-bottom:14px}h1{color:#38d4ff;margin:0 0 8px}.messages{min-height:260px;max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:14px}.msg{padding:12px 15px;border-radius:16px;white-space:pre-wrap;line-height:1.65}.bot{background:#15345f;align-self:flex-start}.customer{background:#087cab;align-self:flex-end}textarea,input,select,button{box-sizing:border-box;width:100%;padding:14px;border-radius:13px;border:1px solid #2f6b99;color:#fff;font:inherit}textarea,input,select{background:#09152e}textarea{min-height:88px;resize:vertical}.appointment{display:none}.appointment.open{display:block}.appointment label{display:block;margin-top:10px;color:#9bdcf5}button{background:#7c3aed;font-weight:bold;margin-top:10px;cursor:pointer}.note{color:#9bdcf5;font-size:13px}.error{color:#fbbf24}</style></head><body><main class="wrap"><section class="head"><h1>__ORG_NAME__</h1><p>مرحبًا بك، أنا موظف الاستقبال الذكي. كيف أقدر أخدمك؟</p><p class="note">لا ترسل بيانات بنكية أو رموز تحقق. قد يتابع معك موظف بشري عند الحاجة.</p></section><section class="chat"><div id="messages" class="messages"><div class="msg bot">مرحبًا بك في __ORG_NAME__. اكتب استفسارك أو تفاصيل طلبك.</div></div><textarea id="message" maxlength="1500" placeholder="اكتب رسالتك هنا"></textarea><button id="send" onclick="sendMessage()">إرسال</button><div id="status" class="note"></div></section></main>
 <script>const history=[];const sessionStorageKey='khdoom_chat___CHAT_TOKEN__';let sessionToken=localStorage.getItem(sessionStorageKey)||'';let lastMessageId=0;function addMessage(text,type){const item=document.createElement('div');item.className='msg '+type;item.textContent=text;const box=document.getElementById('messages');box.appendChild(item);box.scrollTop=box.scrollHeight}async function sendMessage(){const input=document.getElementById('message'),button=document.getElementById('send'),status=document.getElementById('status'),message=input.value.trim();if(!message)return;addMessage(message,'customer');history.push({role:'customer',text:message});input.value='';button.disabled=true;status.textContent='جاري تجهيز الرد...';try{const response=await fetch('/api/public-chat/__CHAT_TOKEN__',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history:history.slice(-8),sessionToken})});const data=await response.json();if(!response.ok)throw new Error(data.error||'تعذر الرد الآن');if(data.sessionToken){sessionToken=data.sessionToken;localStorage.setItem(sessionStorageKey,sessionToken)}if(data.lastMessageId)lastMessageId=Math.max(lastMessageId,data.lastMessageId);addMessage(data.text,'bot');history.push({role:'assistant',text:data.text});status.textContent=''}catch(error){status.textContent=error.message;status.className='note error'}finally{button.disabled=false;input.focus()}}async function pollMessages(){if(!sessionToken)return;try{const response=await fetch(`/api/public-chat/__CHAT_TOKEN__/sessions/${sessionToken}/messages?after=${lastMessageId}`);const data=await response.json();if(!response.ok||!Array.isArray(data))return;for(const message of data){lastMessageId=Math.max(lastMessageId,message.id);addMessage(message.message,message.sender==='customer'?'customer':'bot')}}catch(_){}}setInterval(pollMessages,5000);pollMessages();</script></body></html>"""
@@ -2627,7 +2658,9 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                     raise ApiError(503, maintenance["message"])
                 package, daily_limit, used = ai_allowance(connection, organization["id"], enforce=False)
                 if package not in ("basic", "vip"):
-                    raise ApiError(403, "موظف الاستقبال متاح من الباقة الأساسية")
+                    raise ApiError(403, "المحادثة غير متاحة حاليًا لدى هذه المؤسسة. تواصل معها مباشرة.")
+                if chat_visitor_limited(owner_admin.client_ip(self), int(organization["id"])):
+                    raise ApiError(429, "أرسلت رسائل كثيرة خلال وقت قصير. حاول بعد قليل أو تواصل مع المؤسسة مباشرة.")
                 session = None
                 if supplied_session_token:
                     session = connection.execute(
@@ -2663,7 +2696,7 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                     ).fetchall()
                     reply = reception_actions.exact_answer(message, training)
                     if reply is None and used >= daily_limit:
-                        reply = 'وصل موظف الاستقبال لحده اليومي. أقدر أساعدك بالحجز أو أسجّل طلب تواصل مع موظف بشري.'
+                        reply = 'موظف الاستقبال غير متاح للرد الآن. أقدر أساعدك بالحجز أو أسجّل طلب تواصل مع موظف بشري.'
                     elif reply is None:
                         reply = ai_agent_reply(
                             connection,
@@ -2684,7 +2717,8 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                     connection, organization["id"], session["id"], "bot", reply, now()
                 )
                 connection.commit()
-            self._send(200, {"text": reply, "remaining": daily_limit - used - 1, "sessionToken": supplied_session_token, "lastMessageId": bot_cursor.lastrowid})
+            # رصيد المؤسسة لا يُرسل لعميلها.
+            self._send(200, {"text": reply, "sessionToken": supplied_session_token, "lastMessageId": bot_cursor.lastrowid})
             return
         if method == "GET" and path in ("/owner/legacy", "/owner/legacy-disabled-backup"):
             self.send_response(302)
@@ -3892,6 +3926,10 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     organization_addons.check_scope(connection,user,branch)
                 except ValueError as error:
                     raise ApiError(403,str(error))
+                chat_package = connection.execute("SELECT package FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()
+                if (chat_package["package"] if chat_package else "free") not in ("basic", "vip"):
+                    # رابط لن يفتح عند العميل؛ نبلّغ صاحب المؤسسة قبل أن يرسله.
+                    raise ApiError(403, "رابط الشات وموظف الاستقبال متاحان من الباقة الأساسية. رقِّ باقتك لتفعيلهما.")
                 token = branch_appointments.chat_link(connection, organization_id, branch, name)
                 connection.commit()
                 self._send(200, {"path": "/chat/" + token, "branchId": branch})

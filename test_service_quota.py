@@ -293,6 +293,42 @@ class QuotaHTTP(test_identity_tracking.DirectoryTrackingHTTP):
         # المشترك لا يصل إلى مسار الإدارة.
         self.fails(404, '/api/support/new')
 
+    def raw(self, path, method='GET', data=None):
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        request = Request('http://127.0.0.1:%d%s' % (self.http.server_port, path), data=None if data is None else json.dumps(data).encode(), headers={'Content-Type': 'application/json'}, method=method)
+        try:
+            with urlopen(request, timeout=5) as response: return response.status, response.headers.get('Content-Type', ''), response.read().decode()
+        except HTTPError as error:
+            body = error.read().decode(); error.close(); return error.code, error.headers.get('Content-Type', ''), body
+
+    def test_public_chat_link_is_safe_for_customers_and_the_organization(self):
+        server._CHAT_VISITOR_BUCKETS.clear()
+        link = self.req('/api/branch-chat', 'POST', {'branchId': 'main', 'branchName': 'الرئيسي'})['path']
+        token = link.rsplit('/', 1)[1]
+        status, kind, body = self.raw(link)
+        self.assertEqual((status, 'text/html' in kind), (200, True))
+        # رصيد منتهٍ: رد عام بلا كشف رصيد المؤسسة للعميل.
+        self.package(ai_daily=1)
+        with server.db() as c:
+            self.ai(c); c.commit()
+        status, kind, body = self.raw('/api/public-chat/' + token, 'POST', {'message': 'كم السعر؟'})
+        reply = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertIn('غير متاح للرد الآن', reply['text'])
+        self.assertNotIn('remaining', reply)
+        # زائر واحد لا يتجاوز حد الرسائل في الساعة.
+        codes = [self.raw('/api/public-chat/' + token, 'POST', {'message': 'رسالة %d' % i})[0] for i in range(server._CHAT_VISITOR_MAX_MESSAGES + 1)]
+        self.assertEqual((codes.count(200), codes.count(429)), (server._CHAT_VISITOR_MAX_MESSAGES - 1, 2))
+        # رابط خاطئ أو مؤسسة مجانية: صفحة مرتبة للعميل لا رسالة برمجية، وصاحب المجانية لا ينسخ رابطًا لا يعمل.
+        status, kind, body = self.raw('/chat/not-a-real-token')
+        self.assertEqual((status, 'text/html' in kind, '{"error"' in body), (404, True, False))
+        with server.db() as c:
+            c.execute("UPDATE subscriptions SET package='free' WHERE organization_id=1"); c.commit()
+        status, kind, body = self.raw(link)
+        self.assertEqual((status, 'text/html' in kind, 'Institution 1' in body), (403, True, True))
+        self.fails(403, '/api/branch-chat', 'POST', {'branchId': 'main', 'branchName': 'الرئيسي'})
+
 
 if __name__ == '__main__':
     unittest.main()
