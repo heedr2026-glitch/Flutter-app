@@ -1283,6 +1283,18 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if offer['active'] and active_offer(offer): raise ValueError('أوقف العرض أولًا أو انتظر انتهاء مدته قبل الحذف')
   c.execute('DELETE FROM package_offers WHERE id=?',(ident,)); audit(c,a['name'],'offer_deleted',ident)
   return {'saved':True,'message':'تم حذف العرض المنتهي أو المتوقف'}
+ if r=='support/new' and m=='GET':
+  # تنبيه إدارة خدووم بالشكاوى الجديدة: ما بعد آخر شكوى رآها المدير، أو آخر 48 ساعة عند أول فتح.
+  ensure_owner_tables(c,s,('support_tickets',))
+  latest=c.execute('SELECT COALESCE(MAX(id),0) n FROM support_tickets').fetchone()['n']
+  select="SELECT t.id,t.reference_code,t.title,t.category,t.status,t.created_at,o.name organization_name FROM support_tickets t JOIN organizations o ON o.id=t.organization_id WHERE "
+  if str(q.get('after','')).isdigit(): found=rows(c,select+'t.id>? ORDER BY t.id DESC LIMIT 20',(int(q['after']),)); count=scalar(c,'SELECT COUNT(*) n FROM support_tickets WHERE id>?',(int(q['after']),))
+  else:
+   since=(datetime.now(timezone.utc)-timedelta(hours=48)).isoformat()
+   found=rows(c,select+'t.created_at>=? ORDER BY t.id DESC LIMIT 20',(since,)); count=scalar(c,'SELECT COUNT(*) n FROM support_tickets WHERE created_at>=?',(since,))
+  for x in found:
+   if not x['reference_code']: x['reference_code']=support_reference(x['id'],x.get('created_at'))
+  return {'latest_id':int(latest or 0),'count':int(count or 0),'items':found}
  if r=='support' and m=='GET':
   # Every support request must have a visible, organization-scoped AI follow-up.
   # Older requests are repaired here as well, without altering their complaint.

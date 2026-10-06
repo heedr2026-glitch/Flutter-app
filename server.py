@@ -4034,7 +4034,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     ),
                 )
                 add_support_event(connection, ticket_id=ticket_id, organization_id=organization_id, user_id=user["id"], actor_type="technical_ai", actor_name="موظف التقنية AI", event_type="technical_assigned", body=technical_reply, from_status="in_progress", to_status="in_progress")
-                audit_log(connection, organization_id, user["id"], "support_request", "تم إرسال طلب دعم فني: " + category, "security", str(row["id"]))
+                # يُحفظ في سجل عمليات المؤسسة فقط؛ ليس تنبيهًا أمنيًا على جوال المشترك، وتنبيه الشكوى الجديدة يذهب لإدارة خدووم.
+                audit_log(connection, organization_id, user["id"], "support_ticket_sent", "تم إرسال طلب دعم فني " + reference_code + ": " + category, "support", str(row["id"]))
                 connection.commit()
                 self._send(201, {"saved": True, "id": ticket_id, "referenceCode": reference_code, "status": "in_progress"})
                 return
@@ -4052,7 +4053,12 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                        ORDER BY audit_logs.id DESC LIMIT 300""",
                     (organization_id,),
                 ).fetchall()
-                self._send(200, [dict(row) for row in rows])
+                result = [dict(row) for row in rows]
+                for item in result:
+                    # سجلات قديمة: إرسال الشكوى كان يُسجَّل تنبيهًا أمنيًا فيظهر في جرس المشترك.
+                    if item["action"] == "support_request":
+                        item["action"] = "support_ticket_sent"; item["target_type"] = "support"
+                self._send(200, result)
                 return
             if path == "/api/security/sessions" and method == "GET":
                 if user["role"] != "admin":

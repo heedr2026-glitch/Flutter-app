@@ -266,6 +266,33 @@ class QuotaHTTP(test_identity_tracking.DirectoryTrackingHTTP):
         one = next(x for x in self.req('/owner/api/v2/credits', owner=True)['items'] if x['id'] == 1)['credits']
         self.assertEqual(one['income_source'], 'package')
 
+    def test_complaint_alerts_the_platform_not_the_subscriber(self):
+        created = self.req('/api/support-tickets', 'POST', {'category': 'مشكلة في الحساب', 'message': 'صفحة إنشاء إعلان فيها شريطان'})
+        self.assertTrue(created['referenceCode'].startswith('KHD-'))
+        logs = self.req('/api/audit-logs')
+        self.assertFalse(any(x['action'] == 'support_request' for x in logs))
+        sent = [x for x in logs if x['action'] == 'support_ticket_sent']
+        self.assertEqual(len(sent), 1)
+        self.assertIn(created['referenceCode'], sent[0]['summary'])
+        self.assertNotEqual(sent[0]['target_type'], 'security')
+        # سجل قديم بالاسم السابق لا يرجع تنبيهًا أمنيًا.
+        with server.db() as c:
+            server.audit_log(c, 1, 1, 'support_request', 'تم إرسال طلب دعم فني: قديم', 'security', '99'); c.commit()
+        self.assertFalse(any(x['action'] == 'support_request' for x in self.req('/api/audit-logs')))
+        # إدارة خدووم: أول فتح يعرض شكاوى آخر 48 ساعة برقمها وتاريخها واسم المؤسسة.
+        first = self.req('/owner/api/v2/support/new', owner=True)
+        self.assertEqual((first['count'], first['latest_id']), (1, created['id']))
+        item = first['items'][0]
+        self.assertEqual((item['reference_code'], item['organization_name']), (created['referenceCode'], 'Institution 1'))
+        self.assertTrue(item['created_at'])
+        self.assertEqual(self.req('/owner/api/v2/support/new?after=%d' % created['id'], owner=True)['count'], 0)
+        second = self.req('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'شكوى ثانية'}, user=3)
+        after = self.req('/owner/api/v2/support/new?after=%d' % created['id'], owner=True)
+        self.assertEqual((after['count'], after['items'][0]['reference_code'], after['items'][0]['organization_name']), (1, second['referenceCode'], 'Institution 2'))
+        self.fails(401, '/owner/api/v2/support/new')
+        # المشترك لا يصل إلى مسار الإدارة.
+        self.fails(404, '/api/support/new')
+
 
 if __name__ == '__main__':
     unittest.main()
