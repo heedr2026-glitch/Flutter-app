@@ -320,7 +320,7 @@ class KhdoomNotifications {
           (item['title']?.toString() ?? 'لديك موعد قريب') +
           ((item['customer']?.toString() ?? '').isEmpty
               ? ''
-              : ' â€” ' + item['customer'].toString()),
+              : ' — ' + item['customer'].toString()),
       scheduledDate: tz.TZDateTime.from(reminder, tz.local),
       notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
@@ -444,7 +444,7 @@ class KhdoomNotifications {
       required dynamic rawDate,
     }) => _scheduleExpirySeries(
       key: prefs.keyFor('alert_$key'),
-      title: '${prefs.branchName} â€” $title',
+      title: '${prefs.branchName} — $title',
       rawDate: rawDate,
     );
 
@@ -758,7 +758,7 @@ class _AppLockPageState extends State<AppLockPage> {
                       ),
                       textAlign: TextAlign.center,
                       decoration: InputDecoration(
-                        hintText: 'â€¢â€¢â€¢â€¢',
+                        hintText: '••••',
                         errorText: _errorText,
                         counterText: '',
                         hintStyle: const TextStyle(
@@ -5368,7 +5368,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         style: const TextStyle(color: Colors.white),
                       ),
                       subtitle: Text(
-                        '$status${(x['owner_reply'] ?? '').toString().isNotEmpty ? ' â€” ${x['owner_reply']}' : ''}',
+                        '$status${(x['owner_reply'] ?? '').toString().isNotEmpty ? ' — ${x['owner_reply']}' : ''}',
                         style: const TextStyle(color: Colors.white70),
                       ),
                       trailing: x['status'] == 'resolved'
@@ -7623,7 +7623,7 @@ class _AuditLogPageState extends State<AuditLogPage> {
     final date = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
     if (date == null) return '';
     String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(date.day)}/${two(date.month)}/${date.year} â€” ${two(date.hour)}:${two(date.minute)}';
+    return '${two(date.day)}/${two(date.month)}/${date.year} — ${two(date.hour)}:${two(date.minute)}';
   }
 
   String _actor(Map<String, dynamic> log) =>
@@ -7938,7 +7938,7 @@ class _TrustedDevicesPageState extends State<TrustedDevicesPage> {
     if (date == null) return 'غير معروف';
     final hour = date.hour % 12 == 0 ? 12 : date.hour % 12;
     final period = date.hour < 12 ? 'ص' : 'م';
-    return '${date.day}/${date.month}/${date.year} â€” $hour:${date.minute.toString().padLeft(2, '0')} $period';
+    return '${date.day}/${date.month}/${date.year} — $hour:${date.minute.toString().padLeft(2, '0')} $period';
   }
 
   Future<void> _setTrusted(Map<String, dynamic> session, bool value) async {
@@ -8910,7 +8910,7 @@ class _AppointmentsRequestsPageState extends State<AppointmentsRequestsPage> {
     final hour12 = date.hour % 12 == 0 ? 12 : date.hour % 12;
     final minute = date.minute.toString().padLeft(2, '0');
     final period = date.hour < 12 ? 'ص' : 'م';
-    return '$day/$month/${date.year} â€” $hour12:$minute $period';
+    return '$day/$month/${date.year} — $hour12:$minute $period';
   }
 
   Future<bool> _appointmentsAvailable() async {
@@ -9636,11 +9636,13 @@ class _AppointmentsRequestsPageState extends State<AppointmentsRequestsPage> {
                         ),
                         if (pendingFromChat &&
                             item['source'] != 'human_handoff')
-                          const Padding(
-                            padding: EdgeInsets.only(top: 6),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
                             child: Text(
-                              'طلب جديد من شات العملاء — بانتظار الموافقة',
-                              style: TextStyle(
+                              item['source'] == 'ai_call'
+                                  ? 'طلب جديد من مكالمة — بانتظار الموافقة'
+                                  : 'طلب جديد من شات العملاء — بانتظار الموافقة',
+                              style: const TextStyle(
                                 color: Color(0xFFFBBF24),
                                 fontWeight: FontWeight.bold,
                               ),
@@ -13908,7 +13910,7 @@ class _CommercialResearchEmployeePageState
 $details
 
 الإجراء التالي:
-â€¢ $followUp.
+• $followUp.
 • توثيق أي ملاحظات أو تعديلات يطلبها العميل.
 • تحديث حالة الفرصة بعد المتابعة.''';
     }

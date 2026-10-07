@@ -46,7 +46,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(session['audio']['output']['voice'], 'marin')
         self.assertIn('transcription', session['audio']['input'])
         self.assertEqual(session['audio']['output']['speed'], calls_trial.SPEECH_SPEED)
-        self.assertIn('على مهلك', session['instructions'])
+        self.assertIn('بسرعة طبيعية', session['instructions'])
         self.assertIn('لا تبدأ الكلام أنت', session['instructions'])
         self.assertIn('أعده عليه للتأكد', session['instructions'])
         self.assertEqual(session['audio']['input']['transcription']['model'], calls_trial.TRANSCRIBE_MODELS[0])
