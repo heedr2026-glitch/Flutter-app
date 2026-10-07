@@ -20,9 +20,12 @@ VOICES = {"male": "cedar", "female": "marin"}
 MAX_TURNS = 200
 MAX_TURN_CHARS = 2000
 MAX_CALL_SECONDS = 600
+# أبطأ قليلًا من السرعة العادية (1.0)؛ يمكن تغييرها من إعدادات الخادم دون نشر جديد.
+SPEECH_SPEED = 0.85
 
 INSTRUCTIONS = """أنت موظف استقبال هاتفي في «خدوم»، ترد على مكالمة واردة من متصل.
 تكلم بالعربية بلهجة سعودية طبيعية وواضحة، بنبرة ودودة وهادئة، وبجمل قصيرة مثل كلام الناس في الهاتف.
+تكلم على مهلك وبسرعة هادئة، ولا تستعجل في الكلام، وخذ وقفة قصيرة بين الجملة والثانية.
 ابدأ المكالمة أنت بالترحيب: عرّف بنفسك أنك موظف الاستقبال في خدوم، وبلّغ المتصل أن المكالمة تُسجَّل كتابيًا، ثم اسأله كيف تخدمه.
 المطلوب منك في المكالمة:
 - اعرف اسم المتصل.
@@ -69,9 +72,18 @@ def _http(payload: dict[str, Any]) -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
-def session_payload(voice: str, transcription: bool = True) -> dict[str, Any]:
+def speech_speed() -> float:
+    try:
+        return max(0.6, min(float(os.environ.get("KHDOOM_REALTIME_SPEED", "") or SPEECH_SPEED), 1.2))
+    except ValueError:
+        return SPEECH_SPEED
+
+
+def session_payload(voice: str, transcription: bool = True, speed: bool = True) -> dict[str, Any]:
     model = os.environ.get("KHDOOM_REALTIME_MODEL", "").strip() or REALTIME_MODEL
     audio: dict[str, Any] = {"output": {"voice": VOICES[voice]}}
+    if speed:
+        audio["output"]["speed"] = speech_speed()
     if transcription:
         audio["input"] = {"transcription": {"model": "gpt-4o-mini-transcribe", "language": "ar"}}
     return {"session": {"type": "realtime", "model": model, "instructions": INSTRUCTIONS, "audio": audio}}
@@ -83,14 +95,15 @@ def create_session(voice: Any, transport: Callable[[dict[str, Any]], dict[str, A
     send = transport or _http
     result: dict[str, Any] | None = None
     transcription = True
-    # إعداد تفريغ كلام المتصل اختياري: إن رفضه المزود نكمل بدونه ولا نعطل التجربة.
-    for transcription in (True, False):
+    # تفريغ كلام المتصل وضبط السرعة اختياريان: إن رفض المزود أحدهما نكمل بدونه ولا نعطل التجربة.
+    attempts = ((True, True), (True, False), (False, False))
+    for index, (transcription, speed) in enumerate(attempts):
         try:
-            result = send(session_payload(choice, transcription))
+            result = send(session_payload(choice, transcription, speed))
             break
         except HTTPError as error:
             print(f"OPENAI REALTIME SESSION ERROR: {error.code}")
-            if error.code == 400 and transcription:
+            if error.code == 400 and index < len(attempts) - 1:
                 continue
             if error.code in (401, 403):
                 raise ai_core.AIServiceError(502, "مفتاح OpenAI لا يملك صلاحية المحادثة الصوتية الحية")

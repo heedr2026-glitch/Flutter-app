@@ -44,6 +44,8 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(session['type'], 'realtime')
         self.assertEqual(session['audio']['output']['voice'], 'marin')
         self.assertIn('transcription', session['audio']['input'])
+        self.assertEqual(session['audio']['output']['speed'], calls_trial.SPEECH_SPEED)
+        self.assertIn('على مهلك', session['instructions'])
         self.assertIn('سعودية', session['instructions'])
 
     def test_unknown_voice_is_male_and_nested_secret(self):
@@ -57,9 +59,24 @@ class SessionTest(unittest.TestCase):
             if 'input' in payload['session']['audio']: raise refuse(400)
             return {'value': 'ek_plain'}
         result = calls_trial.create_session('male', transport)
-        self.assertEqual(len(sent), 2)
+        self.assertEqual(len(sent), 3)
         self.assertFalse(result['callerTranscription'])
         self.assertEqual(result['clientSecret'], 'ek_plain')
+
+    def test_speed_rejected_keeps_caller_transcription(self):
+        sent = []
+        def transport(payload):
+            sent.append(payload)
+            if 'speed' in payload['session']['audio']['output']: raise refuse(400)
+            return {'value': 'ek_slow'}
+        result = calls_trial.create_session('male', transport)
+        self.assertEqual(len(sent), 2)
+        self.assertTrue(result['callerTranscription'])
+
+    def test_speed_setting_is_clamped(self):
+        for value, expected in (('0.7', 0.7), ('5', 1.2), ('0.1', 0.6), ('fast', calls_trial.SPEECH_SPEED), ('', calls_trial.SPEECH_SPEED)):
+            with patch.dict(os.environ, {'KHDOOM_REALTIME_SPEED': value}):
+                self.assertEqual(calls_trial.speech_speed(), expected)
 
     def test_refusals_and_empty_secret_become_service_errors(self):
         for transport in (lambda payload: (_ for _ in ()).throw(refuse(401)), lambda payload: (_ for _ in ()).throw(refuse(500)), lambda payload: {}):
