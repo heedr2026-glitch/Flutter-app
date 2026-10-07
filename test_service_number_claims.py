@@ -124,6 +124,43 @@ class ServiceNumberClaimsTest(unittest.TestCase):
             whatsapp_bridge.configs(c)  # لا يرمي: الإعدادات بقيت سليمة للجميع
 
     # ---------- المكالمات ----------
+    def test_calls_number_is_separate_from_subscriber_phone_and_requested_from_app(self):
+        # قبل أي اعتماد: لا يُعرض رقم تواصل المؤسسة كرقم مكالمات.
+        status, config = self.call('/api/calls/config', user=1)
+        self.assertEqual((status, config['phone'], config['approvedPhone'], config['requestStatus']), (200, None, '', 'none'))
+        self.assertEqual(self.call('/api/calls/number-request', 'POST', {'phone': '123'}, user=1)[0], 400)
+        status, body = self.call('/api/calls/number-request', 'POST', {'phone': '٠٥٤ ٢٠٢ ٧٨٥٥'}, user=1)
+        self.assertEqual((status, body['requestedPhone'], body['requestStatus'], body['approvedPhone']), (200, '966542027855', 'pending', ''))
+        # طلب أحدث يستبدل المعلّق، والربط مرفوض حتى الاعتماد.
+        self.assertEqual(self.call('/api/calls/number-request', 'POST', {'phone': '966542027856'}, user=1)[1]['requestedPhone'], '966542027856')
+        self.assertEqual(self.call('/api/calls/connect', 'POST', {}, user=1)[0], 403)
+        self.assertEqual(self.call('/owner/api/organizations-number-requests', user=1)[0], 401)
+        status, listing = self.call('/owner/api/organizations-number-requests')
+        self.assertEqual((status, [(r['organizationId'], r['phone']) for r in listing['requests']]), (200, [(1, '966542027856')]))
+        request_id = listing['requests'][0]['id']
+        # مؤسسة 2 لا تقدر تطلب رقمًا معلّقًا؟ تقدر، لكن لا يُعتمد لمؤسستين.
+        other = self.call('/api/calls/number-request', 'POST', {'phone': '966542027856'}, user=2)
+        self.assertEqual(other[0], 200)
+        self.assertEqual(self.call(f'/owner/api/organizations-number-requests/{request_id}/approve', 'POST', {})[0], 200)
+        self.assertEqual(self.call(f'/owner/api/organizations-number-requests/{request_id}/approve', 'POST', {})[0], 409)
+        self.assertEqual(self.call('/owner/api/organizations-number-requests/999/reject', 'POST', {})[0], 404)
+        status, config = self.call('/api/calls/config', user=1)
+        self.assertEqual((config['phone'], config['approvedPhone'], config['requestStatus']), ('966542027856', '966542027856', 'approved'))
+        # طلب مؤسسة 2 لنفس الرقم يُرفض عند الاعتماد، ويمكن رفضه بملاحظة.
+        second = self.call('/owner/api/organizations-number-requests')[1]['requests']
+        self.assertEqual([(r['organizationId'], r['phone']) for r in second], [(2, '966542027856')])
+        self.assertEqual(self.call(f"/owner/api/organizations-number-requests/{second[0]['id']}/approve", 'POST', {})[0], 409)
+        self.assertEqual(self.call(f"/owner/api/organizations-number-requests/{second[0]['id']}/reject", 'POST', {'note': 'الرقم معتمد لغيركم'})[0], 200)
+        rejected = self.call('/api/calls/config', user=2)[1]
+        self.assertEqual((rejected['phone'], rejected['requestStatus'], rejected['requestNote']), (None, 'rejected', 'الرقم معتمد لغيركم'))
+        self.assertEqual(self.call('/api/calls/number-request', 'POST', {'phone': '966542027856'}, user=2)[0], 409)
+        # بعد الاعتماد يربط المشترك بالرقم المعتمد مباشرة مهما كان رقم تواصل مؤسسته.
+        self.assertEqual(self.call('/api/calls/connect', 'POST', {}, user=1)[0], 200)
+        with server.db() as c:
+            rows = c.execute('SELECT organization_id,phone_number FROM call_connections').fetchall()
+        self.assertEqual([(r['organization_id'], r['phone_number']) for r in rows], [(1, '966542027856')])
+        self.assertEqual(self.call('/owner/api/organizations-number-requests')[1]['requests'], [])
+
     def test_calls_connect_requires_owner_grant(self):
         # مؤسسة 1 تغيّر رقمها إلى رقم مؤسسة 2 ثم تحاول الربط.
         self.assertEqual(self.call('/api/organization', 'PUT', {'name': 'مؤسسة 1', 'activity': 'x', 'phone': '966500000002'}, user=1)[0], 200)
@@ -132,7 +169,8 @@ class ServiceNumberClaimsTest(unittest.TestCase):
         self.assertEqual(self.call('/api/calls/connect', 'POST', {}, user=2)[0], 403)
         self.assertEqual(self.grant(2, calls='966500000002')[0], 200)
         self.assertEqual(self.call('/api/calls/connect', 'POST', {}, user=2)[0], 200)
-        self.assertEqual(self.call('/api/calls/connect', 'POST', {}, user=1)[0], 409)
+        # رقم تواصل المؤسسة لم يعد له علاقة برقم المكالمات: مؤسسة 1 بلا رقم معتمد فتُرفض لعدم الاعتماد.
+        self.assertEqual(self.call('/api/calls/connect', 'POST', {}, user=1)[0], 403)
         with server.db() as c:
             rows = c.execute('SELECT organization_id,phone_number FROM call_connections').fetchall()
         self.assertEqual([(r['organization_id'], r['phone_number']) for r in rows], [(2, '966500000002')])

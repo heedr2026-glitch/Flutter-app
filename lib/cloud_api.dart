@@ -863,6 +863,15 @@ class KhdoomCloudApi {
     return Map<String, dynamic>.from(result as Map);
   }
 
+  Future<Map<String, dynamic>> requestCallsNumber(String phone) async {
+    final result = await _request(
+      'POST',
+      '/api/calls/number-request',
+      body: {'phone': phone},
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   Future<List<dynamic>> callLogs() async {
     final result = await _request('GET', '/api/calls');
     return List<dynamic>.from(result as List);

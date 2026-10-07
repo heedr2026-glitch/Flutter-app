@@ -14545,12 +14545,15 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
             'https://khdoom-api.onrender.com',
         scope: prefs,
       )..token = token;
+      Map<String, dynamic> connected = const {};
       try {
-        _cloudCalls = await api.connectCalls();
+        connected = await api.connectCalls();
       } finally {
         api.close();
       }
-      final gatewayReady = _cloudCalls?['status'] == 'ready';
+      // رد الربط لا يحمل رقم المكالمات؛ نعيد تحميل الإعداد ليبقى الرقم ظاهرًا.
+      await _loadCloudCalls();
+      final gatewayReady = connected['status'] == 'ready';
       await _saveBool('calls_employee_enabled', gatewayReady);
       if (mounted) {
         setState(() => _isEnabled = gatewayReady);
@@ -14573,6 +14576,117 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
             ),
           ),
         );
+    } finally {
+      if (mounted) setState(() => _callsBusy = false);
+    }
+  }
+
+  bool get _callsNumberApproved =>
+      (_cloudCalls?['approvedPhone']?.toString() ?? '').isNotEmpty ||
+      (_cloudCalls?['phone']?.toString() ?? '').isNotEmpty;
+
+  String _callsNumberLine() {
+    final linked = _cloudCalls?['phone']?.toString() ?? '';
+    final approved = _cloudCalls?['approvedPhone']?.toString() ?? '';
+    final number = linked.isNotEmpty ? linked : approved;
+    return number.isEmpty
+        ? 'رقم المكالمات: لم يُعتمد رقم بعد'
+        : 'رقم المكالمات المعتمد: $number';
+  }
+
+  String _callsRequestLine() {
+    final status = _cloudCalls?['requestStatus']?.toString() ?? 'none';
+    final requested = _cloudCalls?['requestedPhone']?.toString() ?? '';
+    final note = _cloudCalls?['requestNote']?.toString() ?? '';
+    if (status == 'pending') {
+      return 'طلبك لاعتماد الرقم $requested بانتظار إدارة خدوم';
+    }
+    if (status == 'rejected') {
+      return 'رُفض طلب اعتماد الرقم $requested${note.isEmpty ? '' : ': $note'}';
+    }
+    return '';
+  }
+
+  Future<void> _requestCallsNumber() async {
+    final controller = TextEditingController(
+      text: _cloudCalls?['requestStatus'] == 'pending'
+          ? (_cloudCalls?['requestedPhone']?.toString() ?? '')
+          : '',
+    );
+    final phone = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('رقم هاتف المؤسسة للمكالمات'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'اكتب رقم هاتف المؤسسة الذي يتصل عليه العملاء. يختلف عن رقم جوالك الشخصي، وتعتمده إدارة خدوم قبل الربط.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'مثال: 9665xxxxxxxx',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('إرسال الطلب'),
+          ),
+        ],
+      ),
+    );
+    if (phone == null || phone.isEmpty || !mounted) return;
+    setState(() => _callsBusy = true);
+    try {
+      final prefs = await BranchPreferences.getInstance();
+      final token = await const FlutterSecureStorage().read(
+        key: 'cloud_session_token',
+      );
+      if (token == null || token.isEmpty) {
+        throw const CloudApiException(401, 'سجّل الدخول أولًا');
+      }
+      final api = KhdoomCloudApi(
+        baseUrl:
+            prefs.getString('cloud_api_url') ??
+            'https://khdoom-api.onrender.com',
+        scope: prefs,
+      )..token = token;
+      try {
+        await api.requestCallsNumber(phone);
+      } finally {
+        api.close();
+      }
+      await _loadCloudCalls();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تم إرسال طلب اعتماد الرقم لإدارة خدوم'),
+          ),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is CloudApiException
+                  ? error.message
+                  : 'تعذر إرسال طلب اعتماد الرقم',
+            ),
+          ),
+        );
+      }
     } finally {
       if (mounted) setState(() => _callsBusy = false);
     }
@@ -14706,9 +14820,14 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'رقم المؤسسة: ${_cloudCalls?['phone'] ?? 'غير متاح'}',
+                          _callsNumberLine(),
                           style: const TextStyle(color: Colors.white70),
                         ),
+                        if (_callsRequestLine().isNotEmpty)
+                          Text(
+                            _callsRequestLine(),
+                            style: const TextStyle(color: Color(0xFFFBBF24)),
+                          ),
                         Text(
                           'النشاط: ${_cloudCalls?['activity'] ?? 'غير محدد'}',
                           style: const TextStyle(color: Colors.white70),
@@ -14726,8 +14845,20 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
                           ),
                         ),
                         const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: _callsBusy ? null : _requestCallsNumber,
+                          icon: const Icon(Icons.dialpad),
+                          label: Text(
+                            _callsNumberApproved
+                                ? 'طلب تغيير رقم المكالمات'
+                                : 'اطلب اعتماد رقم المكالمات',
+                          ),
+                        ),
+                        const SizedBox(height: 8),
                         FilledButton.icon(
-                          onPressed: _callsBusy ? null : _connectCalls,
+                          onPressed: _callsBusy || !_callsNumberApproved
+                              ? null
+                              : _connectCalls,
                           icon: const Icon(Icons.link),
                           label: Text(
                             _callsBusy ? 'جارٍ الربط…' : 'ربط المكالمات',

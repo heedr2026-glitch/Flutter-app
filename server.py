@@ -39,6 +39,7 @@ import reception_conversations
 import reception_actions
 import signup_offer
 import calls_trial
+import number_requests
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1389,6 +1390,7 @@ def init_db() -> None:
             branch_appointments.migrate(connection, postgres=True)
             signup_offer.migrate(connection)
             calls_trial.migrate(connection, postgres=True)
+            number_requests.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1793,6 +1795,7 @@ def init_db() -> None:
         branch_appointments.migrate(connection)
         signup_offer.migrate(connection)
         calls_trial.migrate(connection)
+        number_requests.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -3135,6 +3138,24 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
             self._send(200, result)
             return
+        # طلبات اعتماد رقم المكالمات: المشترك يطلب من التطبيق والإدارة تعتمد أو ترفض.
+        if path == '/owner/api/organizations-number-requests' and method == 'GET':
+            self._owner()
+            with db() as connection:
+                result = number_requests.open_requests(connection)
+            self._send(200, {'requests': result})
+            return
+        number_decision = re.fullmatch(r'/owner/api/organizations-number-requests/(\d+)/(approve|reject)', path)
+        if number_decision and method == 'POST':
+            self._owner()
+            with db() as connection:
+                result = number_requests.decide(connection, number_decision.group(1), number_decision.group(2) == 'approve',
+                                                self.platform_actor['name'], self._body().get('note'), ApiError, now())
+                owner_admin.audit(connection, self.platform_actor['name'], 'calls_number_' + result['status'],
+                                  'organization=' + str(result['organizationId']) + ';calls=' + result['phone'])
+                connection.commit()
+            self._send(200, result)
+            return
         if path == '/owner/api/calls-trial/organizations' and method == 'GET':
             self._owner()
             with db() as connection:
@@ -3999,28 +4020,34 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if path == "/api/calls/config" and method == "GET":
                 row = connection.execute("SELECT phone_number,activity,enabled,status,last_error,updated_at FROM call_connections WHERE organization_id=?", (organization_id,)).fetchone()
                 organization = connection.execute("SELECT phone,activity FROM organizations WHERE id=?", (organization_id,)).fetchone()
-                self._send(200, {"phone": row["phone_number"] if row else organization["phone"], "activity": row["activity"] if row else organization["activity"], "enabled": bool(row and row["enabled"]), "status": row["status"] if row else "not_connected", "lastError": row["last_error"] if row else "", "updatedAt": row["updated_at"] if row else None})
+                numbers = number_requests.state(connection, organization_id)
+                # رقم المكالمات مستقل عن رقم المشترك: يظهر الرقم المربوط أو المعتمد فقط، ولا يُعرض رقم تواصل المؤسسة مكانه.
+                self._send(200, {"phone": row["phone_number"] if row else (numbers["approvedPhone"] or None), "activity": row["activity"] if row else organization["activity"], "enabled": bool(row and row["enabled"]), "status": row["status"] if row else "not_connected", "lastError": row["last_error"] if row else "", "updatedAt": row["updated_at"] if row else None, **numbers})
+                return
+            if path == "/api/calls/number-request" and method == "POST":
+                if user["role"] != "admin":
+                    raise ApiError(403, "طلب اعتماد رقم المكالمات متاح لمالك المؤسسة فقط")
+                result = number_requests.submit(connection, organization_id, user.get("name") or user.get("username") or "", self._body().get("phone"), ApiError, now())
+                audit_log(connection, organization_id, user["id"], "calls_number_requested", "طلب اعتماد رقم مكالمات", "calls", str(organization_id))
+                connection.commit()
+                self._send(200, result)
                 return
             if path == "/api/calls/connect" and method == "POST":
                 if user["role"] != "admin":
                     raise ApiError(403, "ربط المكالمات متاح لمالك المؤسسة فقط")
                 organization = connection.execute("SELECT phone,activity FROM organizations WHERE id=?", (organization_id,)).fetchone()
-                if not organization or not str(organization["phone"] or "").strip():
-                    raise ApiError(400, "أضف رقم المؤسسة أولًا")
-                phone = normalize_phone(organization["phone"])
-                if not re.fullmatch(r"[1-9][0-9]{7,14}", phone):
-                    raise ApiError(400, "رقم المؤسسة غير صالح؛ أضفه مع رمز الدولة")
+                # الربط بالرقم الذي اعتمدته إدارة المنصة لهذه المؤسسة، أو بالرقم المرتبط بها أصلًا من قبل.
+                # رقم تواصل المؤسسة ورقم المشترك لا علاقة لهما برقم المكالمات.
+                linked = connection.execute("SELECT phone_number FROM call_connections WHERE organization_id=?", (organization_id,)).fetchone()
+                phone = normalize_phone(owner_admin.granted_number(connection, organization_id, "calls")) or normalize_phone(linked["phone_number"] if linked else "")
+                if not phone:
+                    raise ApiError(403, "رقم المكالمات غير معتمد لمؤسستك. اطلب اعتماد الرقم من صفحة موظف الاتصالات ثم أعد المحاولة.")
                 conflict = connection.execute(
                     "SELECT organization_id FROM call_connections WHERE phone_number=? AND organization_id<>?",
                     (phone, organization_id),
                 ).fetchone()
                 if conflict:
                     raise ApiError(409, "رقم المؤسسة مرتبط بمؤسسة أخرى في خدوم")
-                # رقم المؤسسة نص يكتبه المشترك ولا يثبت ملكيته: لا تُربط المكالمات إلا برقم
-                # اعتمدته إدارة المنصة لهذه المؤسسة، أو بالرقم المرتبط بها أصلًا من قبل.
-                linked = connection.execute("SELECT phone_number FROM call_connections WHERE organization_id=?", (organization_id,)).fetchone()
-                if phone != normalize_phone(owner_admin.granted_number(connection, organization_id, "calls")) and phone != normalize_phone(linked["phone_number"] if linked else ""):
-                    raise ApiError(403, "رقم المكالمات غير معتمد لمؤسستك. تواصل مع إدارة خدوم لاعتماده ثم أعد المحاولة.")
                 gateway_ready = any(os.environ.get(name, "").strip() for name in ("KHDOOM_CALLS_GATEWAY_URL", "KHDOOM_CALLS_API_KEY"))
                 status = "ready" if gateway_ready else "pending_setup"
                 message = "" if gateway_ready else "قناة المكالمات تحتاج إعداد الخادم"

@@ -803,3 +803,15 @@ async function khdoomSupportCheck(){if($('app').hidden||!can('support')||(!token
 const khdoomSupportEnter=enter;enter=async function(){await khdoomSupportEnter();khdoomSupportCheck();if(!khdoomSupportTimer)khdoomSupportTimer=setInterval(()=>{if(!document.hidden)khdoomSupportCheck()},60000)};
 // بعد تحميل كل الملفات: استرجاع جلسة الموظف المحفوظة لهذا التبويب حتى لا يخرجه تحديث الصفحة.
 window.addEventListener('load',()=>{try{const saved=sessionStorage.getItem('khdoomAdminSession');if(saved&&!token&&!ownerKey){token=saved;enter().catch(()=>{token='';try{sessionStorage.removeItem('khdoomAdminSession')}catch(_){}})}}catch(_){}});
+
+// طلبات اعتماد رقم المكالمات: المشترك يطلبها من التطبيق، وتظهر هنا في الرئيسية للاعتماد أو الرفض.
+const khdoomNumberRequestsRender=render;render=async function(){await khdoomNumberRequestsRender();if(current==='home'&&!$('numberRequests')){try{
+ const headers={'Content-Type':'application/json','X-Owner-Key':ownerKey,'X-Admin-Session':token};
+ const load=async()=>{let r=await fetch('/owner/api/organizations-number-requests',{headers,cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||'تعذر تحميل طلبات الأرقام');return d.requests||[]};
+ let list=await load();if(current!=='home'||$('numberRequests'))return;
+ let box=document.createElement('div');box.id='numberRequests';box.className='panel';
+ const when=v=>{let d=new Date(v);return isNaN(d)?'':d.toLocaleString('ar-SA',{dateStyle:'medium',timeStyle:'short',hour12:true})};
+ const draw=()=>{box.innerHTML='<h3>طلبات اعتماد رقم المكالمات'+(list.length?' ('+list.length+')':'')+'</h3>'+(list.length?list.map(x=>'<div style="border-top:1px solid #33415588;padding:10px 0"><b>'+esc(x.organizationName)+'</b> <span class="muted">(مؤسسة رقم '+esc(x.organizationId)+')</span><br>الرقم المطلوب: <span dir="ltr">'+esc(x.phone)+'</span>'+(x.currentApprovedPhone?'<br><span class="muted">الرقم المعتمد حاليًا: <span dir="ltr">'+esc(x.currentApprovedPhone)+'</span> وسيُستبدل عند الاعتماد</span>':'')+'<br><span class="muted">'+esc(x.requestedBy||'')+' · '+esc(when(x.createdAt))+'</span><br><button data-number-request="'+esc(x.id)+'" data-decision="approve">اعتماد</button> <button data-number-request="'+esc(x.id)+'" data-decision="reject">رفض</button></div>').join(''):'<p class="muted">لا توجد طلبات بانتظار الاعتماد. يطلب المشترك اعتماد رقم مؤسسته من صفحة «موظف الاتصالات» في التطبيق.</p>');
+  box.querySelectorAll('button[data-number-request]').forEach(button=>button.onclick=async()=>{const approve=button.dataset.decision==='approve';if(!confirm(approve?'اعتماد هذا الرقم لمكالمات المؤسسة؟':'رفض هذا الطلب؟'))return;button.disabled=true;try{let r=await fetch('/owner/api/organizations-number-requests/'+button.dataset.numberRequest+'/'+button.dataset.decision,{method:'POST',headers,body:'{}'}),d=await r.json();if(!r.ok)throw Error(d.error||'تعذر تنفيذ الإجراء');flash(approve?'تم اعتماد الرقم ✓':'تم رفض الطلب');list=await load();draw()}catch(err){flash(err.message);button.disabled=false}})};
+ draw();$('content').append(box);
+}catch(_){}}};
