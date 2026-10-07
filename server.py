@@ -40,6 +40,7 @@ import reception_actions
 import signup_offer
 import calls_trial
 import number_requests
+import call_gateway
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1391,6 +1392,7 @@ def init_db() -> None:
             signup_offer.migrate(connection)
             calls_trial.migrate(connection, postgres=True)
             number_requests.migrate(connection, postgres=True)
+            call_gateway.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1796,6 +1798,7 @@ def init_db() -> None:
         signup_offer.migrate(connection)
         calls_trial.migrate(connection)
         number_requests.migrate(connection)
+        call_gateway.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -2259,7 +2262,7 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
         self.end_headers()
         self.wfile.write(body)
 
-    def _body(self) -> dict:
+    def _raw_body(self) -> bytes:
         try:
             transfer_encoding = self.headers.get("Transfer-Encoding", "").lower()
             if "chunked" in transfer_encoding:
@@ -2276,17 +2279,30 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                         raise ApiError(413, "حجم الطلب أكبر من المسموح")
                     chunks.extend(self.rfile.read(size))
                     self.rfile.read(2)
-                raw = bytes(chunks)
-            else:
-                length = int(self.headers.get("Content-Length", "0"))
-                if length > 1_048_576:
-                    raise ApiError(413, "حجم الطلب أكبر من المسموح")
-                raw = self.rfile.read(length) if length else b"{}"
-            return json.loads(raw or b"{}")
-        except ApiError:
-            raise
+                return bytes(chunks)
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 1_048_576:
+                raise ApiError(413, "حجم الطلب أكبر من المسموح")
+            return self.rfile.read(length) if length else b""
+        except ValueError:
+            raise ApiError(400, "بيانات الطلب غير صحيحة")
+
+    def _body(self) -> dict:
+        try:
+            return json.loads(self._raw_body() or b"{}")
         except (ValueError, json.JSONDecodeError):
             raise ApiError(400, "بيانات الطلب غير صحيحة")
+
+    def _send_xml(self, body: str) -> None:
+        raw = body.encode("utf-8")
+        self._last_status = 200
+        self.send_response(200)
+        self.send_header("Content-Type", "text/xml; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _user(self, connection: Any) -> Any:
         authorization = self.headers.get("Authorization", "")
         if not authorization.startswith("Bearer "):
@@ -2371,6 +2387,42 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                     # السجل حُفظ؛ خطأ في قراءة الرصيد لا يجعل المزود يعيد الإرسال ويكرر السجل.
                     calls_state = {"blocked": False, "remaining": None}
             self._send(201, {"saved": True, "id": cursor.lastrowid, "quotaExhausted": bool(calls_state["blocked"]), "remainingMinutes": calls_state["remaining"]})
+            return
+        # جسر المكالمات الهاتفية: Twilio يسأل خدوم أين يحوّل المكالمة الواردة.
+        if path == "/webhooks/twilio/voice" and method == "POST":
+            gateway = call_gateway.settings()
+            if not gateway["twilioToken"]:
+                raise ApiError(503, "جسر المكالمات غير مُعد بعد")
+            form = {key: values[0] for key, values in parse_qs(self._raw_body().decode("utf-8", "replace"), keep_blank_values=True).items()}
+            called_url = "https://" + (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "") + self.path
+            if not call_gateway.valid_twilio(gateway["twilioToken"], called_url, form, self.headers.get("X-Twilio-Signature")):
+                raise ApiError(401, "تعذر التحقق من مزود الاتصال")
+            with db() as gateway_connection:
+                def calls_blocked(organization_id: int) -> bool:
+                    try:
+                        return bool(service_quota.snapshot(gateway_connection, organization_id)["services"]["calls"]["blocked"])
+                    except Exception:
+                        return False
+                twiml = call_gateway.incoming_twilio(gateway_connection, form, now(), calls_blocked)
+                gateway_connection.commit()
+            self._send_xml(twiml)
+            return
+        # OpenAI يبلّغ خدوم بوصول المكالمة؛ نرد فورًا ونكمل قبولها ومتابعتها في خيط مستقل.
+        if path == "/webhooks/openai/realtime" and method == "POST":
+            gateway = call_gateway.settings()
+            if not gateway["openaiSecret"]:
+                raise ApiError(503, "جسر المكالمات غير مُعد بعد")
+            raw_event = self._raw_body()
+            if not call_gateway.verify_openai(gateway["openaiSecret"], self.headers, raw_event):
+                raise ApiError(401, "تعذر التحقق من مزود الذكاء")
+            try:
+                event = json.loads(raw_event or b"{}")
+            except ValueError:
+                raise ApiError(400, "بيانات الطلب غير صحيحة")
+            event_data = event.get("data") if isinstance(event, dict) and isinstance(event.get("data"), dict) else {}
+            if isinstance(event, dict) and event.get("type") == "realtime.call.incoming" and event_data.get("call_id"):
+                threading.Thread(target=call_gateway.handle_incoming, args=(db, now, str(event_data["call_id"]), event_data.get("sip_headers")), daemon=True).start()
+            self._send(200, {"received": True})
             return
         if path.startswith("/employee-invite/"):
             token = path.rsplit("/", 1)[-1]
@@ -3181,6 +3233,27 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 result['appointmentRequest'] = booking
                 connection.commit()
             self._send(201, result)
+            return
+        # ربط الهاتف الحقيقي: حالة الإعداد وأرقام المزود المعيّنة للمؤسسات.
+        if path == '/owner/api/calls-gateway' and method == 'GET':
+            self._owner()
+            base_url = 'https://' + (self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or 'khdoom-api.onrender.com')
+            with db() as connection:
+                result = call_gateway.status(connection, base_url)
+            self._send(200, result)
+            return
+        if path == '/owner/api/calls-gateway/numbers' and method == 'POST':
+            self._owner()
+            data = self._body()
+            with db() as connection:
+                if data.get('remove'):
+                    result = call_gateway.remove_number(connection, data.get('phone'))
+                else:
+                    result = call_gateway.assign_number(connection, data.get('phone'), data.get('organizationId'), ApiError, now())
+                owner_admin.audit(connection, self.platform_actor['name'], 'calls_gateway_number_' + ('removed' if data.get('remove') else 'assigned'),
+                                  'phone=' + result['phone'] + (';organization=' + str(result.get('organizationId')) if result.get('organizationId') else ''))
+                connection.commit()
+            self._send(200, result)
             return
         if path == '/owner/api/calls-trial/reports' and method == 'GET':
             self._owner()

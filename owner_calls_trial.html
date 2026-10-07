@@ -51,6 +51,17 @@ pre{white-space:pre-wrap;font:inherit;margin:8px 0 0}
 <section class="card" id="reportCard" hidden><h2>تقرير المكالمة</h2><div id="report"></div></section>
 
 <section class="card"><h2>التقارير السابقة</h2><button id="loadReports" type="button">تحديث التقارير</button><div id="reports"><p class="muted">أدخل مفتاح المالك ثم اضغط «تحديث التقارير».</p></div></section>
+<section class="card"><h2>ربط الهاتف الحقيقي</h2>
+<p class="muted">هنا تتابع إعداد الربط بين رقم مزود الاتصال (Twilio) وموظف خدوم، وتحدد أي رقم يرد باسم أي مؤسسة. لا تظهر هنا أي قيمة سرية، فقط هل هي موجودة في الخادم أو لا.</p>
+<button id="loadGateway" type="button">تحديث حالة الربط</button>
+<div id="gateway"><p class="muted">أدخل مفتاح المالك فوق ثم اضغط «تحديث حالة الربط».</p></div>
+<div class="row">
+<div><label for="gatewayPhone">رقم المزود مع مفتاح الدولة</label><input id="gatewayPhone" inputmode="numeric" dir="ltr" placeholder="14155550123"></div>
+<div><label for="gatewayOrganization">المؤسسة التي يرد باسمها</label><select id="gatewayOrganization"><option value="">اضغط «تحميل المؤسسات» فوق</option></select></div>
+<div><label>&nbsp;</label><button id="gatewayAssign" type="button">اربط الرقم بالمؤسسة</button></div>
+</div>
+<p id="gatewayNote" class="muted" role="status"></p>
+</section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -188,9 +199,40 @@ async function loadOrganizations(){
     const select=$('organization'),kept=select.value;
     select.innerHTML='<option value="">خدوم (بدون مؤسسة)</option>'+data.organizations.map(o=>'<option value="'+esc(o.id)+'">'+esc(o.name)+(o.activity?' · '+esc(o.activity):'')+'</option>').join('');
     select.value=kept;
+    $('gatewayOrganization').innerHTML='<option value="">اختر المؤسسة</option>'+data.organizations.map(o=>'<option value="'+esc(o.id)+'">'+esc(o.name)+'</option>').join('');
     $('organizationNote').textContent=data.organizations.length?'تم تحميل '+data.organizations.length+' مؤسسة. اختر المؤسسة ثم ابدأ المكالمة.':'لا توجد مؤسسات مسجلة.';
   }catch(error){$('organizationNote').textContent=error.message}
 }
 $('loadOrganizations').onclick=loadOrganizations;
 $('start').onclick=startCall;$('stop').onclick=endCall;$('loadReports').onclick=loadReports;
+
+function mark(ok){return ok?'✅':'⬜'}
+function copyRow(label,value){return '<p>'+esc(label)+'<br><code dir="ltr" style="user-select:all;word-break:break-all">'+esc(value)+'</code></p>'}
+async function loadGateway(){
+  if(!$('key').value.trim()){$('gateway').innerHTML='<p class="muted">أدخل مفتاح المالك أولًا.</p>';return}
+  try{
+    const r=await fetch('/owner/api/calls-gateway',{headers:hdr(),cache:'no-store'});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||'تعذر تحميل حالة الربط');
+    const steps=[[d.aiKey,'مفتاح الذكاء الاصطناعي موجود في الخادم'],[d.projectId,'معرّف مشروع OpenAI موجود في الخادم (KHDOOM_OPENAI_PROJECT_ID)'],[d.openaiSecret,'سر بلاغات OpenAI موجود في الخادم (OPENAI_WEBHOOK_SECRET)'],[d.twilioToken,'رمز Twilio موجود في الخادم (TWILIO_AUTH_TOKEN)'],[d.numbers.length>0,'رقم مزود واحد على الأقل مربوط بمؤسسة']];
+    let html='<ul style="list-style:none;padding:0">'+steps.map(x=>'<li>'+mark(x[0])+' '+esc(x[1])+'</li>').join('')+'</ul>';
+    html+=copyRow('الرابط الذي يوضع في Twilio عند «A call comes in»:',d.twilioWebhookUrl)+copyRow('الرابط الذي يوضع في بلاغات OpenAI (Webhooks):',d.openaiWebhookUrl);
+    html+='<h3>الأرقام المربوطة</h3>'+(d.numbers.length?d.numbers.map(n=>'<p><span dir="ltr">+'+esc(n.phone)+'</span> ← '+esc(n.organizationName||('مؤسسة '+n.organizationId))+' <button type="button" class="stop" data-remove="'+esc(n.phone)+'">فك الربط</button></p>').join(''):'<p class="muted">لا يوجد رقم مربوط بعد.</p>');
+    html+='<h3>آخر المكالمات الهاتفية</h3>'+(d.recentCalls.length?d.recentCalls.map(c=>'<p>'+esc(when(c.createdAt))+' · من <span dir="ltr">+'+esc(c.caller)+'</span> · '+esc(c.organizationName)+' · '+esc(({pending:'بانتظار الوصول للموظف',accepted:'جارية',ended:'انتهت',rejected:'مرفوضة',failed:'فشلت'})[c.status]||c.status)+(c.note?' · '+esc(c.note):'')+'</p>').join(''):'<p class="muted">لم تصل مكالمات بعد.</p>');
+    $('gateway').innerHTML=html;
+    $('gateway').querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>saveGateway({phone:b.dataset.remove,remove:true}));
+  }catch(error){$('gateway').innerHTML='<p class="muted">'+esc(error.message)+'</p>'}
+}
+async function saveGateway(body){
+  try{
+    const r=await fetch('/owner/api/calls-gateway/numbers',{method:'POST',headers:hdr(),body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||'تعذر الحفظ');
+    $('gatewayNote').textContent=body.remove?'تم فك ربط الرقم.':'تم ربط الرقم +'+d.phone+' بمؤسسة '+d.organizationName+'.';
+    if(!body.remove)$('gatewayPhone').value='';
+    loadGateway();
+  }catch(error){$('gatewayNote').textContent=error.message}
+}
+$('loadGateway').onclick=loadGateway;
+$('gatewayAssign').onclick=()=>saveGateway({phone:$('gatewayPhone').value,organizationId:$('gatewayOrganization').value});
 </script></body></html>
