@@ -26,6 +26,7 @@ COPY ai_core.py /app/ai_core.py
 COPY chat_store.py technical_agent.py /app/
 COPY service_monitor.py owner_service_health.html /app/
 COPY signup_offer.py owner_signup_offer.html /app/
+COPY calls_trial.py owner_calls_trial.html /app/
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/
 COPY service_quota.py /app/service_quota.py

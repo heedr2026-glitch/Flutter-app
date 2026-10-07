@@ -38,6 +38,7 @@ import customer_push
 import reception_conversations
 import reception_actions
 import signup_offer
+import calls_trial
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1387,6 +1388,7 @@ def init_db() -> None:
             )""")
             branch_appointments.migrate(connection, postgres=True)
             signup_offer.migrate(connection)
+            calls_trial.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1790,6 +1792,7 @@ def init_db() -> None:
         )""")
         branch_appointments.migrate(connection)
         signup_offer.migrate(connection)
+        calls_trial.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -2737,7 +2740,7 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة مالك خدووم</title>
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:900px;margin:auto}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:22px;margin-bottom:14px}h1{color:#28c7ff}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.vip{background:#d97706}.result{color:#7dd3fc;white-space:pre-wrap}.top-nav{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 18px}.top-nav a{flex:1;min-width:130px;text-align:center;padding:12px;background:#172554;border:1px solid #285682;border-radius:12px;text-decoration:none;font-weight:bold;color:#7dd3fc}.category-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:16px}.category-button{min-height:76px;margin:0;background:#132b61;border:1px solid #2563eb;font-size:15px}.category-button span{display:block;font-size:12px;color:#bae6fd;margin-top:5px}.support-badge{display:none;position:absolute;top:6px;left:8px;background:#ef4444;color:white;border-radius:999px;min-width:24px;height:24px;line-height:24px;font-size:12px}.category-button{position:relative}.support-badge.show{display:block}.owner-dashboard{display:none}.owner-panel{display:none}.owner-panel.active{display:block}.service-row{direction:rtl;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:48px;padding:11px 13px;margin:8px 0;background:#12295f;border:1px solid #285682;border-radius:12px}.service-row b{font-size:15px}.service-row small{display:block;color:#bfdbfe;margin-top:4px;font-size:12px}.switch{position:relative;display:inline-block;width:52px;height:28px;flex:0 0 52px}.switch input{opacity:0;width:0;height:0;margin:0;padding:0}.slider{position:absolute;inset:0;cursor:pointer;background:#475569;border-radius:28px;transition:.2s}.slider:before{content:"";position:absolute;width:22px;height:22px;right:3px;top:3px;background:#e2e8f0;border-radius:50%;transition:.2s;box-shadow:0 1px 4px #02061788}.switch input:checked+.slider{background:#0ea5e9;box-shadow:0 0 9px #0ea5e977}.switch input:checked+.slider:before{transform:translateX(-24px);background:white}</style></head><body><div class="wrap"><h1>لوحة مالك خدووم</h1>
 <div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="ownerLogin()">دخول لوحة المالك</button><div id="loginStatus" class="result">أدخل المفتاح ثم اضغط دخول</div></div>
-<nav class="top-nav"><a href="/owner">لوحة الإدارة</a><a href="/owner/package-limits">حدود الباقات</a><a href="/owner/services">حالة الخدمات</a><a href="/owner/security">لوحة الأمن</a><a href="/owner/codes">أكواد الخصم</a></nav>
+<nav class="top-nav"><a href="/owner">لوحة الإدارة</a><a href="/owner/package-limits">حدود الباقات</a><a href="/owner/services">حالة الخدمات</a><a href="/owner/security">لوحة الأمن</a><a href="/owner/codes">أكواد الخصم</a><a href="/owner/calls-trial">تجربة المكالمات</a></nav>
 <div id="ownerDashboard" class="owner-dashboard">
 <div class="category-grid"><button class="category-button" onclick="showOwnerPanel('organizationsPanel')">المؤسسات<span>الباقة والخدمات والإعدادات</span></button><button class="category-button" onclick="showOwnerPanel('usageAlertsPanel')">تنبيهات الاستهلاك<b id="usageAlertBadge" class="support-badge">0</b><span>استهلاك جميع المؤسسات</span></button><button class="category-button" onclick="showOwnerPanel('subscriptionsPanel')">طلبات الترقية<span>قبول أو رفض الطلبات</span></button><button class="category-button" onclick="location.href='/owner/offers'">عروض الباقات<span>السعر والمدة والأشهر المجانية</span></button><button class="category-button" onclick="showOwnerPanel('adsPanel')">الإعلانات<span>إعلانات المنصة ومراجعة المؤسسات</span></button><button class="category-button" onclick="location.href='/owner/codes'">أكواد الخصم<span>إنشاء وإدارة الأكواد</span></button><button class="category-button" onclick="location.href='/owner/security'">لوحة الأمن<span>الحسابات والأجهزة والتنبيهات</span></button></div>
 <section id="organizationsPanel" class="owner-panel active"><div class="card"><h2>المؤسسات</h2><p>اختر المؤسسة ثم افتح إدارتها لتعديل الباقة أو الخدمات.</p><button onclick="loadOrganizations()">تحديث المؤسسات</button><div id="organizations" class="result"></div></div></section>
@@ -2759,7 +2762,7 @@ h1{color:#38d4ff;margin-top:0}h2{color:#7dd3fc}a{color:#38bdf8}
             self._send_html(
                 """<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة أمن خدووم</title>
 <style>body{margin:0;background:#071126;color:#fff;font-family:Tahoma;padding:24px}.wrap{max-width:1100px;margin:auto}h1{color:#28c7ff}.card{background:#111f42;border:1px solid #1d4f7a;border-radius:20px;padding:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.metric{text-align:center}.metric strong{display:block;font-size:34px;color:#38bdf8;margin:8px}.ok{color:#4ade80}.warn{color:#facc15}.danger{color:#fb7185}input,select,button{box-sizing:border-box;width:100%;padding:13px;margin:7px 0;border-radius:10px;border:1px solid #285682;background:#09152e;color:#fff}button{background:#0284c7;font-weight:bold;cursor:pointer}.event{border-right:4px solid #f59e0b;padding:12px 14px;margin:9px 0;background:#0b1733;border-radius:10px}.muted{color:#94a3b8}a{color:#7dd3fc}.top-nav{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 18px}.top-nav a{flex:1;min-width:130px;text-align:center;padding:12px;background:#172554;border:1px solid #285682;border-radius:12px;text-decoration:none;font-weight:bold}.category-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}.category-button{min-height:74px;margin:0;background:#132b61;border:1px solid #2563eb;font-size:15px}.category-button span{display:block;font-size:12px;color:#bae6fd;margin-top:5px}.support-badge{display:none;position:absolute;top:6px;left:8px;background:#ef4444;color:white;border-radius:999px;min-width:24px;height:24px;line-height:24px;font-size:12px}.category-button{position:relative}.support-badge.show{display:block}.emergency-button{background:#7c2d12;border-color:#f97316}.org-devices{border:1px solid #285682;border-radius:14px;margin:10px 0;overflow:hidden}.org-devices summary{cursor:pointer;padding:15px;background:#132b61;font-weight:bold}.device-user{background:#0b1733;border-right:4px solid #38bdf8;border-radius:10px;padding:13px;margin:10px}.status-chip{display:inline-block;padding:4px 9px;margin:3px;border-radius:20px;background:#334155;font-size:12px}.status-chip.ok{background:#14532d}.status-chip.danger{background:#7f1d1d}.status-chip.warn{background:#713f12}.device-actions{display:flex;gap:7px;flex-wrap:wrap}.device-actions button{width:auto;flex:1;min-width:105px}.security-panel{display:none}.security-panel.active{display:block}.metric{cursor:pointer}.service-row{direction:rtl;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:48px;padding:11px 13px;margin:8px 0;background:#12295f;border:1px solid #285682;border-radius:12px}.service-row b{font-size:15px}.service-row small{display:block;color:#bfdbfe;margin-top:4px;font-size:12px}.switch{position:relative;display:inline-block;width:52px;height:28px;flex:0 0 52px}.switch input{opacity:0;width:0;height:0;margin:0;padding:0}.slider{position:absolute;inset:0;cursor:pointer;background:#475569;border-radius:28px;transition:.2s}.slider:before{content:"";position:absolute;width:22px;height:22px;right:3px;top:3px;background:#e2e8f0;border-radius:50%;transition:.2s;box-shadow:0 1px 4px #02061788}.switch input:checked+.slider{background:#0ea5e9;box-shadow:0 0 9px #0ea5e977}.switch input:checked+.slider:before{transform:translateX(-24px);background:white}</style></head><body><div class="wrap"><h1>لوحة أمن خدووم 🔐</h1><div class="card"><h2>الدخول الآمن</h2><input id="key" type="password" placeholder="مفتاح المالك"><button onclick="loadSecurity()">دخول وتحديث لوحة الأمن</button><div id="status" class="muted">أدخل مفتاح المالك لعرض البيانات الأمنية.</div></div>
-<nav class="top-nav"><a href="/owner">لوحة الإدارة</a><a href="/owner/security">لوحة الأمن</a><a href="/owner/codes">أكواد الخصم</a></nav>
+<nav class="top-nav"><a href="/owner">لوحة الإدارة</a><a href="/owner/security">لوحة الأمن</a><a href="/owner/codes">أكواد الخصم</a><a href="/owner/calls-trial">تجربة المكالمات</a></nav>
 <div id="dashboard" style="display:none">
 <div class="category-grid">
 <button class="category-button" onclick="showSecurityPanel('overviewPanel')">نظرة عامة<span>حالة النظام والخدمات</span></button>
@@ -3107,6 +3110,39 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             return
         if method == 'GET' and path == '/owner/signup-offer':
             self._send_html((ROOT / 'owner_signup_offer.html').read_text(encoding='utf-8'))
+            return
+        # تجربة المكالمة الصوتية: للإدارة فقط، وتُحفظ تقاريرها في جدول مستقل عن مكالمات المشتركين.
+        if method == 'GET' and path == '/owner/calls-trial':
+            self._send_html((ROOT / 'owner_calls_trial.html').read_text(encoding='utf-8'))
+            return
+        if path == '/owner/api/calls-trial/session' and method == 'POST':
+            self._owner()
+            try:
+                result = calls_trial.create_session(self._body().get('voice'))
+            except ai_core.AIServiceError as error:
+                raise ApiError(error.status, error.message)
+            with db() as connection:
+                owner_admin.audit(connection, self.platform_actor['name'], 'calls_trial_started', 'بدء مكالمة تجريبية')
+                connection.commit()
+            self._send(200, result)
+            return
+        if path == '/owner/api/calls-trial/report' and method == 'POST':
+            self._owner()
+            data = self._body()
+            turns = calls_trial.clean_turns(data.get('turns'))
+            if not turns:
+                raise ApiError(400, 'لا يوجد نص مكالمة لحفظه')
+            report = calls_trial.build_report(turns)
+            with db() as connection:
+                result = calls_trial.save_report(connection, report, turns, data.get('durationSeconds'), now())
+                connection.commit()
+            self._send(201, result)
+            return
+        if path == '/owner/api/calls-trial/reports' and method == 'GET':
+            self._owner()
+            with db() as connection:
+                result = calls_trial.list_reports(connection)
+            self._send(200, {'reports': result})
             return
         if method == "GET" and path == "/owner/offers":
             self._send_html(

@@ -1,0 +1,146 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تجربة المكالمات</title>
+<style>
+body{background:#0b1020;color:#fff;font-family:Tahoma,sans-serif;margin:0;padding:24px;line-height:1.8}
+main{max-width:760px;margin:auto}
+a{color:#7dd3fc}
+h1{color:#28c7ff;margin:12px 0 4px}
+.card{background:#111f42;padding:22px;border:1px solid #285682;border-radius:18px;margin:16px 0}
+label{display:block;margin-top:12px}
+input,select,button{box-sizing:border-box;width:100%;font:inherit;padding:14px;margin:8px 0;border-radius:10px;background:#09152e;color:#fff;border:1px solid #38bdf8}
+button{background:#0284c7;cursor:pointer;font-weight:bold}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.stop{background:#b91c1c;border-color:#fca5a5}
+#status{white-space:pre-wrap;color:#fbbf24;min-height:1.8em}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1 1 180px}
+.turn{padding:10px 14px;border-radius:12px;margin:8px 0;max-width:88%}
+.turn.agent{background:#174887}
+.turn.caller{background:#1f2937;margin-inline-start:auto}
+.turn b{display:block;font-size:.85em;color:#bae6fd}
+.muted{color:#cbd5e1;font-size:.92em}
+dl{margin:0}dt{color:#7dd3fc;margin-top:10px}dd{margin:0}
+details{border-top:1px solid #285682;padding:10px 0}summary{cursor:pointer}
+pre{white-space:pre-wrap;font:inherit;margin:8px 0 0}
+#timer{font-variant-numeric:tabular-nums}
+</style></head><body><main>
+<a href="/owner">لوحة المالك</a>
+<h1>تجربة المكالمات</h1>
+<p class="muted">تكلّم موظف الاستقبال الذكي بالمايك كأنك عميل متصل. بعد إنهاء المكالمة يُكتب تقريرها ويُحفظ هنا. الصفحة للتجربة فقط ولا تمس مكالمات المشتركين ولا أرصدتهم.</p>
+
+<section class="card">
+<label for="key">مفتاح المالك</label><input id="key" type="password" autocomplete="off">
+<div class="row">
+<div><label for="voice">صوت الموظف</label><select id="voice"><option value="male">رجل</option><option value="female">امرأة</option></select></div>
+<div><label>&nbsp;</label><button id="start" type="button">ابدأ المكالمة</button></div>
+<div><label>&nbsp;</label><button id="stop" type="button" class="stop" disabled>أنهِ المكالمة</button></div>
+</div>
+<p id="status" role="status"></p>
+<p class="muted">مدة المكالمة: <span id="timer">0:00</span> · تنتهي تلقائيًا بعد عشر دقائق.</p>
+<audio id="voiceOut" autoplay></audio>
+</section>
+
+<section class="card"><h2>المحادثة</h2><div id="turns"><p class="muted">تظهر هنا كلمات المتصل والموظف أثناء المكالمة.</p></div></section>
+
+<section class="card" id="reportCard" hidden><h2>تقرير المكالمة</h2><div id="report"></div></section>
+
+<section class="card"><h2>التقارير السابقة</h2><button id="loadReports" type="button">تحديث التقارير</button><div id="reports"><p class="muted">أدخل مفتاح المالك ثم اضغط «تحديث التقارير».</p></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':$('key').value.trim()});
+let pc=null,dc=null,mic=null,startedAt=0,ticker=null,maxSeconds=600,order=[],turns={},ending=false;
+
+function say(text){$('status').textContent=text}
+function esc(text){const d=document.createElement('div');d.textContent=String(text??'');return d.innerHTML}
+function clock(seconds){const m=Math.floor(seconds/60),s=String(Math.floor(seconds%60)).padStart(2,'0');return m+':'+s}
+function busy(inCall){$('start').disabled=inCall;$('stop').disabled=!inCall;$('voice').disabled=inCall}
+
+function remember(id,role,text){
+  if(!id)id='x'+order.length;
+  if(!order.includes(id))order.push(id);
+  if(text!==undefined)turns[id]={role,text:String(text).trim()};
+  drawTurns();
+}
+function spoken(){return order.map(id=>turns[id]).filter(t=>t&&t.text)}
+function drawTurns(){
+  const list=spoken();
+  $('turns').innerHTML=list.length?list.map(t=>'<div class="turn '+t.role+'"><b>'+(t.role==='agent'?'الموظف':'المتصل')+'</b>'+esc(t.text)+'</div>').join(''):'<p class="muted">بانتظار أول كلمة…</p>';
+}
+function onEvent(message){
+  let ev;try{ev=JSON.parse(message.data)}catch(e){return}
+  const type=ev.type||'';
+  if(type==='conversation.item.added'||type==='conversation.item.created'){if(ev.item&&ev.item.id)remember(ev.item.id)}
+  else if(type==='conversation.item.input_audio_transcription.completed')remember(ev.item_id,'caller',ev.transcript||'');
+  else if(type==='response.output_audio_transcript.done'||type==='response.audio_transcript.done')remember(ev.item_id,'agent',ev.transcript||'');
+  else if(type==='error')say('تنبيه من خدمة الصوت: '+((ev.error&&ev.error.message)||'خطأ غير معروف'));
+}
+
+async function startCall(){
+  if(!$('key').value.trim()){say('أدخل مفتاح المالك أولًا.');return}
+  if(!navigator.mediaDevices||!window.RTCPeerConnection){say('هذا المتصفح لا يدعم المكالمة الصوتية. جرّب Chrome أو Edge.');return}
+  busy(true);order=[];turns={};drawTurns();$('reportCard').hidden=true;ending=false;
+  try{
+    say('نطلب إذن المايك…');
+    mic=await navigator.mediaDevices.getUserMedia({audio:true});
+    say('نجهّز الموظف…');
+    const r=await fetch('/owner/api/calls-trial/session',{method:'POST',headers:hdr(),body:JSON.stringify({voice:$('voice').value})});
+    const session=await r.json();
+    if(!r.ok)throw new Error(session.error||'تعذر بدء المكالمة');
+    maxSeconds=session.maxSeconds||600;
+    pc=new RTCPeerConnection();
+    pc.ontrack=e=>{$('voiceOut').srcObject=e.streams[0]};
+    pc.onconnectionstatechange=()=>{if(pc&&['failed','disconnected'].includes(pc.connectionState)&&!ending){say('انقطع الاتصال بالموظف.');endCall()}};
+    pc.addTrack(mic.getTracks()[0],mic);
+    dc=pc.createDataChannel('oai-events');
+    dc.onmessage=onEvent;
+    dc.onopen=()=>{dc.send(JSON.stringify({type:'response.create'}));say(session.callerTranscription?'المكالمة شغالة، تكلم.':'المكالمة شغالة، تكلم. (كلامك لن يظهر مكتوبًا في هذه التجربة)')};
+    const offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const answer=await fetch('https://api.openai.com/v1/realtime/calls',{method:'POST',body:offer.sdp,headers:{'Authorization':'Bearer '+session.clientSecret,'Content-Type':'application/sdp'}});
+    if(!answer.ok)throw new Error('خدمة الصوت رفضت الاتصال ('+answer.status+')');
+    await pc.setRemoteDescription({type:'answer',sdp:await answer.text()});
+    startedAt=Date.now();
+    ticker=setInterval(()=>{const s=(Date.now()-startedAt)/1000;$('timer').textContent=clock(s);if(s>=maxSeconds)endCall()},500);
+  }catch(error){
+    say(error&&error.name==='NotAllowedError'?'المتصفح منع المايك. اسمح له من إعدادات الموقع ثم أعد المحاولة.':(error.message||'تعذر بدء المكالمة'));
+    hangUp();busy(false);
+  }
+}
+function hangUp(){
+  clearInterval(ticker);ticker=null;
+  if(mic){mic.getTracks().forEach(t=>t.stop());mic=null}
+  if(dc){try{dc.close()}catch(e){}dc=null}
+  if(pc){try{pc.close()}catch(e){}pc=null}
+}
+async function endCall(){
+  if(ending)return;ending=true;
+  const seconds=startedAt?Math.round((Date.now()-startedAt)/1000):0;startedAt=0;
+  // مهلة قصيرة ليصل آخر نص منطوق قبل قطع الاتصال.
+  await new Promise(done=>setTimeout(done,700));
+  hangUp();
+  const list=spoken();
+  if(!list.length){say('انتهت المكالمة بدون كلام مسجّل، فلم يُكتب تقرير.');busy(false);return}
+  say('انتهت المكالمة. نكتب التقرير…');
+  try{
+    const r=await fetch('/owner/api/calls-trial/report',{method:'POST',headers:hdr(),body:JSON.stringify({turns:list,durationSeconds:seconds})});
+    const report=await r.json();
+    if(!r.ok)throw new Error(report.error||'تعذر حفظ التقرير');
+    $('report').innerHTML=reportHtml(report);$('reportCard').hidden=false;
+    say('تم حفظ التقرير.');loadReports();
+  }catch(error){say(error.message||'تعذر حفظ التقرير')}
+  busy(false);
+}
+function reportHtml(r){
+  return '<dl><dt>المتصل</dt><dd>'+esc(r.callerName||'لم يذكر اسمه')+'</dd><dt>الطلب</dt><dd>'+esc(r.request||'—')+'</dd><dt>الموعد المطلوب</dt><dd>'+esc(r.appointment||'لا يوجد')+'</dd><dt>يحتاج متابعة</dt><dd>'+(r.followUp?'نعم':'لا')+'</dd><dt>الملخص</dt><dd>'+esc(r.summary||'—')+'</dd><dt>المدة</dt><dd>'+clock(r.durationSeconds||0)+'</dd></dl><details><summary>نص المكالمة كاملًا</summary><pre>'+esc(r.transcript)+'</pre></details>';
+}
+function when(iso){const d=new Date(iso);return isNaN(d)?'':d.toLocaleString('ar-SA',{dateStyle:'medium',timeStyle:'short',hour12:true})}
+async function loadReports(){
+  if(!$('key').value.trim()){$('reports').innerHTML='<p class="muted">أدخل مفتاح المالك أولًا.</p>';return}
+  try{
+    const r=await fetch('/owner/api/calls-trial/reports',{headers:hdr(),cache:'no-store'});
+    const data=await r.json();
+    if(!r.ok)throw new Error(data.error||'تعذر تحميل التقارير');
+    $('reports').innerHTML=data.reports.length?data.reports.map(x=>'<details><summary>'+esc(when(x.createdAt))+' · '+esc(x.callerName||'متصل بدون اسم')+'</summary>'+reportHtml(x)+'</details>').join(''):'<p class="muted">لا توجد تقارير بعد. ابدأ أول مكالمة تجريبية.</p>';
+  }catch(error){$('reports').innerHTML='<p class="muted">'+esc(error.message)+'</p>'}
+}
+$('start').onclick=startCall;$('stop').onclick=endCall;$('loadReports').onclick=loadReports;
+</script></body></html>
