@@ -219,6 +219,7 @@ async function loadGateway(){
     html+=copyRow('الرابط الذي يوضع في Twilio عند «A call comes in»:',d.twilioWebhookUrl)+copyRow('الرابط الذي يوضع في بلاغات OpenAI (Webhooks):',d.openaiWebhookUrl);
     html+='<h3>الأرقام المربوطة</h3>'+(d.numbers.length?d.numbers.map(n=>'<p><span dir="ltr">+'+esc(n.phone)+'</span> ← '+esc(n.organizationName||('مؤسسة '+n.organizationId))+' <button type="button" class="stop" data-remove="'+esc(n.phone)+'">فك الربط</button></p>').join(''):'<p class="muted">لا يوجد رقم مربوط بعد.</p>');
     html+='<h3>آخر المكالمات الهاتفية</h3>'+(d.recentCalls.length?d.recentCalls.map(c=>'<p>'+esc(when(c.createdAt))+' · من <span dir="ltr">+'+esc(c.caller)+'</span> · '+esc(c.organizationName)+' · '+esc(({pending:'بانتظار الوصول للموظف',accepted:'جارية',ended:'انتهت',rejected:'مرفوضة',failed:'فشلت'})[c.status]||c.status)+(c.note?' · '+esc(c.note):'')+'</p>').join(''):'<p class="muted">لم تصل مكالمات بعد.</p>');
+    html+='<h3>آخر ما تعثّر</h3>'+((d.problems||[]).length?d.problems.map(x=>'<p>'+esc(when(x.at))+' · '+esc(x.step)+' · <span dir="auto">'+esc(x.detail)+'</span></p>').join(''):'<p class="muted">لا شيء.</p>');
     $('gateway').innerHTML=html;
     $('gateway').querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>saveGateway({phone:b.dataset.remove,remove:true}));
   }catch(error){$('gateway').innerHTML='<p class="muted">'+esc(error.message)+'</p>'}

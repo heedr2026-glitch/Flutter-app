@@ -40,6 +40,22 @@ REJECT_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Respo
 
 _active_lock = threading.Lock()
 _active_calls: set[str] = set()
+# آخر ما تعثّر في الجسر، في الذاكرة فقط وبلا أي قيمة سرية، لتراه الإدارة في صفحة الحالة.
+_problems: list[dict[str, str]] = []
+
+
+def note_problem(step: str, detail: str) -> None:
+    with _active_lock:
+        _problems.insert(0, {"step": step, "detail": str(detail)[:300], "at": datetime.now(timezone.utc).isoformat()})
+        del _problems[10:]
+
+
+def twilio_urls(headers: Any, path: str) -> list[str]:
+    """العناوين التي قد يكون Twilio وقّع بها الطلب؛ الخادم خلف وسيط فلا نعتمد على ترويسة واحدة."""
+    hosts = [str(headers.get(name) or "").split(",")[0].strip() for name in ("X-Forwarded-Host", "Host")]
+    hosts += [os.environ.get("KHDOOM_PUBLIC_HOST", "").strip(), "khdoom-api.onrender.com"]
+    unique = list(dict.fromkeys(host for host in hosts if host))
+    return [scheme + host + path for host in unique for scheme in ("https://", "http://")]
 
 
 def migrate(c, postgres: bool = False) -> None:
@@ -78,6 +94,7 @@ def status(c, base_url: str) -> dict[str, Any]:
             "projectId": bool(project) and bool(re.fullmatch(r"proj_[A-Za-z0-9_-]+", project)), "aiKey": bool(found["aiKey"]),
             "twilioWebhookUrl": base_url + "/webhooks/twilio/voice", "openaiWebhookUrl": base_url + "/webhooks/openai/realtime",
             "numbers": list_numbers(c),
+            "problems": list(_problems),
             "recentCalls": [{"id": row["id"], "caller": row["caller"], "called": row["called"], "status": row["status"],
                              "note": row["note"], "createdAt": row["created_at"], "organizationName": row["organization_name"] or ""} for row in calls]}
 
@@ -146,6 +163,7 @@ def incoming_twilio(c, params: dict[str, str], now: str, blocked: Callable[[int]
     project = settings()["projectId"]
     organization_id = organization_for(c, params.get("To") or params.get("Called"))
     if not project or organization_id is None:
+        note_problem("twilio", "مكالمة على رقم غير مربوط بمؤسسة: +" + digits(params.get("To") or params.get("Called")) if project else "معرّف مشروع OpenAI غير موجود")
         return REJECT_TWIML
     caller = digits(params.get("From") or params.get("Caller"))
     called = digits(params.get("To") or params.get("Called"))
@@ -489,9 +507,12 @@ def handle_incoming(db: Callable[[], Any], now: Callable[[], str], call_id: str,
             brief = calls_trial.organization_brief(c, call["organizationId"]) if call else None
             c.commit()
         if call is None or brief is None:
+            names = ",".join(sorted(str(h.get("name")) for h in sip_headers if isinstance(h, dict))) if isinstance(sip_headers, list) else ""
+            note_problem("openai", "مكالمة وصلت من OpenAI بلا طلب سابق من Twilio؛ الترويسات: " + names[:200])
             end(call_id, "reject")
             return "rejected"
         if not accept(call_id, brief["instructions"]):
+            note_problem("openai", "تعذر قبول المكالمة لدى OpenAI")
             with db() as c:
                 c.execute("UPDATE call_gateway_calls SET status='failed',note=? WHERE id=?", ("تعذر قبول المكالمة لدى مزود الذكاء", call["id"]))
                 c.commit()
@@ -504,6 +525,7 @@ def handle_incoming(db: Callable[[], Any], now: Callable[[], str], call_id: str,
         return "ended"
     except Exception as problem:  # خيط خلفي: لا نترك الخطأ يختفي بصمت.
         print(f"CALL GATEWAY ERROR: {type(problem).__name__} {str(problem)[:200]}")
+        note_problem("bridge", f"{type(problem).__name__} {str(problem)[:200]}")
         return "error"
     finally:
         with _active_lock:

@@ -2394,8 +2394,10 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
             if not gateway["twilioToken"]:
                 raise ApiError(503, "جسر المكالمات غير مُعد بعد")
             form = {key: values[0] for key, values in parse_qs(self._raw_body().decode("utf-8", "replace"), keep_blank_values=True).items()}
-            called_url = "https://" + (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "") + self.path
-            if not call_gateway.valid_twilio(gateway["twilioToken"], called_url, form, self.headers.get("X-Twilio-Signature")):
+            supplied_signature = self.headers.get("X-Twilio-Signature")
+            if not any(call_gateway.valid_twilio(gateway["twilioToken"], called_url, form, supplied_signature) for called_url in call_gateway.twilio_urls(self.headers, self.path)):
+                call_gateway.note_problem("twilio", f"توقيع Twilio لم يطابق؛ host={self.headers.get('Host')} forwarded={self.headers.get('X-Forwarded-Host')} path={self.path[:80]} "
+                                                    f"signature={'yes' if supplied_signature else 'no'} fields={len(form)} type={self.headers.get('Content-Type')}")
                 raise ApiError(401, "تعذر التحقق من مزود الاتصال")
             with db() as gateway_connection:
                 def calls_blocked(organization_id: int) -> bool:
@@ -2414,6 +2416,7 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                 raise ApiError(503, "جسر المكالمات غير مُعد بعد")
             raw_event = self._raw_body()
             if not call_gateway.verify_openai(gateway["openaiSecret"], self.headers, raw_event):
+                call_gateway.note_problem("openai", f"توقيع بلاغ OpenAI لم يطابق؛ id={'yes' if self.headers.get('webhook-id') else 'no'} signature={'yes' if self.headers.get('webhook-signature') else 'no'} bytes={len(raw_event)}")
                 raise ApiError(401, "تعذر التحقق من مزود الذكاء")
             try:
                 event = json.loads(raw_event or b"{}")

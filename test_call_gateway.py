@@ -326,6 +326,14 @@ class HttpTest(unittest.TestCase):
                 params = {'To': '+14155550123', 'From': '+966542027855', 'CallSid': 'CA1', 'CallStatus': 'ringing'}
                 with self.assertRaises(HTTPError) as forged: twilio(params, token='wrong')
                 self.assertEqual(forged.exception.code, 401)
+                problems = owner('/owner/api/calls-gateway')['problems']
+                self.assertIn('توقيع Twilio لم يطابق', problems[0]['detail']); self.assertNotIn('twilio-test', json.dumps(problems))
+                # الخادم خلف وسيط: التوقيع بعنوان الخدمة العام يُقبل ولو اختلفت ترويسة Host.
+                public = call_gateway.twilio_signature('twilio-test', 'https://khdoom-api.onrender.com/webhooks/twilio/voice', dict(params, To='+19990000000'))
+                with urlopen(Request(base + '/webhooks/twilio/voice', method='POST', data=urlencode(dict(params, To='+19990000000')).encode(),
+                                     headers={'Content-Type': 'application/x-www-form-urlencoded', 'X-Twilio-Signature': public}), timeout=10) as r:
+                    self.assertEqual(r.read().decode(), call_gateway.REJECT_TWIML)
+                self.assertIn('رقم غير مربوط', owner('/owner/api/calls-gateway')['problems'][0]['detail'])
                 content_type, twiml = twilio(params)
                 self.assertTrue(content_type.startswith('text/xml'))
                 ref = twiml.split('x-khdoom-ref=')[1].split('<')[0]
