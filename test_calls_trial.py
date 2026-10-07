@@ -48,6 +48,10 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(session['audio']['output']['speed'], calls_trial.SPEECH_SPEED)
         self.assertIn('على مهلك', session['instructions'])
         self.assertIn('لا تبدأ الكلام أنت', session['instructions'])
+        self.assertIn('أعده عليه للتأكد', session['instructions'])
+        self.assertEqual(session['audio']['input']['transcription']['model'], calls_trial.TRANSCRIBE_MODELS[0])
+        self.assertEqual(session['audio']['input']['transcription']['language'], 'ar')
+        self.assertEqual(session['audio']['input']['noise_reduction'], {'type': 'far_field'})
         self.assertIn('سعودية', session['instructions'])
         self.assertEqual(session['audio']['input']['turn_detection']['type'], 'server_vad')
         self.assertTrue(session['audio']['input']['turn_detection']['create_response'])
@@ -59,9 +63,37 @@ class SessionTest(unittest.TestCase):
             if 'turn_detection' in payload['session']['audio'].get('input', {}): raise refuse(400)
             return {'value': 'ek_turns'}
         result = calls_trial.create_session('male', transport)
-        self.assertEqual(len(sent), 3)
+        self.assertEqual(len(sent), 5)
         self.assertTrue(result['callerTranscription'])
         self.assertIn('transcription', sent[-1]['session']['audio']['input'])
+        self.assertNotIn('noise_reduction', sent[-1]['session']['audio']['input'])
+
+    def test_extras_rejected_keeps_best_model_speed_and_turns(self):
+        sent = []
+        def transport(payload):
+            sent.append(payload)
+            if 'noise_reduction' in payload['session']['audio'].get('input', {}): raise refuse(400)
+            return {'value': 'ek_plain'}
+        calls_trial.create_session('male', transport)
+        self.assertEqual(len(sent), 2)
+        kept = sent[-1]['session']['audio']
+        self.assertEqual(kept['input']['transcription'], {'model': calls_trial.TRANSCRIBE_MODELS[0], 'language': 'ar'})
+        self.assertIn('turn_detection', kept['input'])
+        self.assertIn('speed', kept['output'])
+
+    def test_best_transcription_model_rejected_falls_back_to_small_one(self):
+        sent = []
+        def transport(payload):
+            sent.append(payload)
+            if payload['session']['audio'].get('input', {}).get('transcription', {}).get('model') == calls_trial.TRANSCRIBE_MODELS[0]: raise refuse(400)
+            return {'value': 'ek_small'}
+        result = calls_trial.create_session('male', transport)
+        self.assertEqual(len(sent), 3)
+        self.assertTrue(result['callerTranscription'])
+        kept = sent[-1]['session']['audio']
+        self.assertEqual(kept['input']['transcription']['model'], calls_trial.TRANSCRIBE_MODELS[1])
+        self.assertIn('turn_detection', kept['input'])
+        self.assertIn('speed', kept['output'])
 
     def test_unknown_voice_is_male_and_nested_secret(self):
         result = calls_trial.create_session('robot', lambda payload: {'client_secret': {'value': 'ek_nested'}})
@@ -74,7 +106,7 @@ class SessionTest(unittest.TestCase):
             if 'input' in payload['session']['audio']: raise refuse(400)
             return {'value': 'ek_plain'}
         result = calls_trial.create_session('male', transport)
-        self.assertEqual(len(sent), 4)
+        self.assertEqual(len(sent), 6)
         self.assertFalse(result['callerTranscription'])
         self.assertEqual(result['clientSecret'], 'ek_plain')
 
@@ -85,7 +117,7 @@ class SessionTest(unittest.TestCase):
             if 'speed' in payload['session']['audio']['output']: raise refuse(400)
             return {'value': 'ek_slow'}
         result = calls_trial.create_session('male', transport)
-        self.assertEqual(len(sent), 2)
+        self.assertEqual(len(sent), 4)
         self.assertTrue(result['callerTranscription'])
 
     def test_speed_setting_is_clamped(self):

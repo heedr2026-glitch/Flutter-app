@@ -30,7 +30,8 @@ CALL_RULES = """تكلم بالعربية بلهجة سعودية طبيعية �
 لا تبدأ الكلام أنت. انتظر حتى يسلّم المتصل أو يتكلم، ثم رد عليه السلام ورحّب به، وعرّف بنفسك أنك موظف الاستقبال في «{name}»، وبلّغه أن المكالمة تُسجَّل كتابيًا، ثم اسأله كيف تخدمه.
 بعد كل كلام من المتصل رد عليه، ولا تبقَ ساكتًا.
 المطلوب منك في المكالمة:
-- اعرف اسم المتصل.
+- اعرف اسم المتصل. بعد أن يقول اسمه أعده عليه للتأكد («الأخ فلان، صح؟»)، وإذا صحّحه فاعتمد التصحيح وأعده مرة ثانية. الأسماء تُسمع خطأ في الهاتف كثيرًا، فلا تكمل قبل أن يوافق على الاسم.
+- إذا لم تسمع كلمة مهمة بوضوح (اسم، رقم، يوم، وقت، مقاس) فاطلب منه يعيدها، ولا تخمّن.
 - افهم طلبه أو مشكلته بالتفصيل الكافي، واسأل سؤالًا واحدًا في كل مرة.
 - إذا طلب موعدًا، اسأله عن اليوم والوقت المناسبين وسجّلهما كطلب موعد، وقل له إن الموعد يتأكد برسالة أو اتصال من الموظف المختص. لا تؤكد الحجز من عندك.
 - قبل الختام أعد عليه باختصار ما فهمته، واسأله إن كان عنده شيء ثانٍ.
@@ -63,6 +64,7 @@ REPORT_INSTRUCTIONS = """تقرأ نص مكالمة بين متصل وموظف �
 أعد كائن JSON فقط بهذه المفاتيح، بلا أي نص قبله أو بعده:
 {"callerName": "اسم المتصل أو نص فارغ", "request": "طلب المتصل أو مشكلته في جملة أو جملتين", "appointment": "اليوم والتاريخ والوقت المتفق عليه إن طلب موعدًا، متبوعًا بعبارة (بانتظار تأكيد المؤسسة)، وإلا نص فارغ", "followUp": true أو false حسب حاجة المكالمة إلى رجوع موظف للمتصل, "summary": "ملخص المكالمة في ثلاث جمل على الأكثر"}
 اكتب بالعربية. لا تضف معلومة لم ترد في المكالمة، وما لم يُذكر اتركه فارغًا.
+كلام المتصل مفرَّغ آليًا وقد يخطئ في الأسماء والأرقام. إذا أعاد الموظف الاسم أو الوقت على المتصل ووافق عليه أو صحّحه، فاعتمد الصيغة التي انتهيا إليها لا أول ما كُتب.
 """
 
 
@@ -161,17 +163,31 @@ def organization_brief(c, organization_id: Any, moment: datetime | None = None) 
 # متى يُعتبر المتصل أنهى كلامه فيرد الموظف: حساسية أعلى قليلًا من الافتراضي لمايك اللابتوب، وصمت 0.6 ثانية.
 TURN_DETECTION = {"type": "server_vad", "threshold": 0.4, "prefix_padding_ms": 300, "silence_duration_ms": 600,
                   "create_response": True, "interrupt_response": True}
+# تفريغ كلام المتصل: النموذج الأدق أولًا، والأصغر احتياطًا إن لم يكن متاحًا للحساب.
+TRANSCRIBE_MODELS = ("gpt-4o-transcribe", "gpt-4o-mini-transcribe")
+TRANSCRIBE_PROMPT = "مكالمة هاتفية باللهجة السعودية بين متصل وموظف استقبال، فيها أسماء أشخاص عربية وأرقام ومواعيد ومقاسات."
+# كل محاولة: (نموذج التفريغ أو None، ضبط السرعة، ضبط توقيت الرد، تلميح التفريغ وتنقية الضجيج).
+# ما يرفضه المزود نكمل بدونه، والمحاولة الثالثة هي الإعداد المجرَّب سابقًا.
+ATTEMPTS = ((TRANSCRIBE_MODELS[0], True, True, True), (TRANSCRIBE_MODELS[0], True, True, False),
+            (TRANSCRIBE_MODELS[1], True, True, False), (TRANSCRIBE_MODELS[1], False, True, False),
+            (TRANSCRIBE_MODELS[1], False, False, False), (None, False, False, False))
 
 
-def session_payload(voice: str, transcription: bool = True, speed: bool = True, instructions: str | None = None, turns: bool = True) -> dict[str, Any]:
+def session_payload(voice: str, transcription: Any = TRANSCRIBE_MODELS[0], speed: bool = True, instructions: str | None = None,
+                    turns: bool = True, extras: bool = True) -> dict[str, Any]:
     model = os.environ.get("KHDOOM_REALTIME_MODEL", "").strip() or REALTIME_MODEL
     audio: dict[str, Any] = {"output": {"voice": VOICES[voice]}}
     if speed:
         audio["output"]["speed"] = speech_speed()
     if transcription:
-        audio["input"] = {"transcription": {"model": "gpt-4o-mini-transcribe", "language": "ar"}}
+        name = transcription if isinstance(transcription, str) else TRANSCRIBE_MODELS[0]
+        audio["input"] = {"transcription": {"model": name, "language": "ar"}}
         if turns:
             audio["input"]["turn_detection"] = dict(TURN_DETECTION)
+        if extras:
+            audio["input"]["transcription"]["prompt"] = TRANSCRIBE_PROMPT
+            # مايك لابتوب أو سماعة خارجية بعيدة عن الفم.
+            audio["input"]["noise_reduction"] = {"type": "far_field"}
     return {"session": {"type": "realtime", "model": model, "instructions": instructions or INSTRUCTIONS, "audio": audio}}
 
 
@@ -181,15 +197,13 @@ def create_session(voice: Any, transport: Callable[[dict[str, Any]], dict[str, A
     send = transport or _http
     result: dict[str, Any] | None = None
     transcription = True
-    # ضبط السرعة وتوقيت الرد وتفريغ كلام المتصل اختيارية: إن رفض المزود أحدها نكمل بدونه ولا نعطل التجربة.
-    attempts = ((True, True, True), (True, False, True), (True, False, False), (False, False, False))
-    for index, (transcription, speed, turns) in enumerate(attempts):
+    for index, (transcription, speed, turns, extras) in enumerate(ATTEMPTS):
         try:
-            result = send(session_payload(choice, transcription, speed, instructions, turns))
+            result = send(session_payload(choice, transcription, speed, instructions, turns, extras))
             break
         except HTTPError as error:
             print(f"OPENAI REALTIME SESSION ERROR: {error.code}")
-            if error.code == 400 and index < len(attempts) - 1:
+            if error.code == 400 and index < len(ATTEMPTS) - 1:
                 continue
             if error.code in (401, 403):
                 raise ai_core.AIServiceError(502, "مفتاح OpenAI لا يملك صلاحية المحادثة الصوتية الحية")
@@ -204,7 +218,7 @@ def create_session(voice: Any, transport: Callable[[dict[str, Any]], dict[str, A
     if not secret:
         raise ai_core.AIServiceError(502, "تعذر بدء المحادثة الصوتية الآن")
     return {"clientSecret": secret, "model": session_payload(choice)["session"]["model"], "voice": choice,
-            "callerTranscription": transcription, "maxSeconds": MAX_CALL_SECONDS}
+            "callerTranscription": bool(transcription), "maxSeconds": MAX_CALL_SECONDS}
 
 
 def clean_turns(turns: Any) -> list[dict[str, str]]:
