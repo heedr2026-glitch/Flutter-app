@@ -55,8 +55,12 @@ PROBLEM_TYPES = {
     'login': ('دخول', 'يدخل', 'ادخل', 'معلق', 'موقوف', 'محظور', 'المرور', 'باسورد'),
     'save': ('نحفظ', 'يحفظ', 'الحفظ', 'يضيف', 'اضفت', 'اضيف', 'اضافه'),
     'tracking': ('تتبع', 'موقع', 'خريطه'),
+    # بلاغ عن شكل الشاشة أو أزرارها، لا عن الحساب: لا يُحل من الإدارة ويحتاج تعديلًا في التطبيق.
+    'app_bug': ('شريط', 'شريطين', 'شاشه حمرا', 'يغطي', 'تغطي', 'مغطي', 'تداخل', 'متداخل', 'فوق بعض', 'مكرر', 'يتكرر',
+                'ازرار', 'الزر ما', 'ما ينضغط', 'ماينضغط', 'يعلق', 'تهنيق', 'يهنق', 'مقطوع', 'مقصوص', 'خارج الشاشه', 'يعيق'),
+    'quota': ('رصيد', 'الحد اليومي', 'الحد الشهري', 'بلوغ الحد', 'وصل الحد', 'وصلت الحد'),
 }
-TYPE_NAMES = {'subscription': 'تفعيل الباقة', 'ads': 'إنشاء الإعلانات', 'login': 'الدخول للحساب', 'save': 'حفظ موظف أو مركبة', 'tracking': 'تتبع المركبة', 'whatsapp': 'واتساب', 'performance': 'بطء التطبيق'}
+TYPE_NAMES = {'app_bug': 'خلل في شاشة التطبيق', 'quota': 'رصيد الخدمات', 'subscription': 'تفعيل الباقة', 'ads': 'إنشاء الإعلانات', 'login': 'الدخول للحساب', 'save': 'حفظ موظف أو مركبة', 'tracking': 'تتبع المركبة', 'whatsapp': 'واتساب', 'performance': 'بطء التطبيق'}
 _EMPLOYEE = ('موظف',)
 _VEHICLE = ('مركب', 'سيار')
 
@@ -76,6 +80,11 @@ def recognize(text):
         scores['tracking'] = 0
     # عند التعادل يفوز النوع الأخص (التتبع قبل الباقة مثلًا).
     best = max(('tracking', 'ads', 'save', 'login', 'subscription'), key=lambda kind: scores[kind])
+    # وصف خلل في الشاشة يغلب اسم الصفحة التي ظهر فيها: «شريطان في صفحة الإعلان» ليست مشكلة إنشاء إعلانات.
+    if scores['app_bug'] and scores['app_bug'] >= scores[best]:
+        return 'app_bug'
+    if scores['quota'] and scores['quota'] >= scores[best]:
+        return 'quota'
     return best if scores[best] else ''
 
 
@@ -116,6 +125,15 @@ def collect_facts(c, ticket, owner, server):
         if has('vehicle_location_events'):
             tracking['lastLocationAt'] = one('SELECT MAX(recorded_at) AS last_at FROM vehicle_location_events WHERE organization_id=?', (org,))['last_at']
         facts['tracking'] = tracking
+    facts['quota'] = None
+    try:
+        if not (has('ai_usage') and has('platform_packages')):
+            raise LookupError('no usage tables')
+        import service_quota
+        state = service_quota.snapshot(c, org)
+        facts['quota'] = {'renewsAt': state['renews_at'], 'services': {key: {name: item[name] for name in ('label', 'used', 'limit', 'remaining', 'unlimited', 'blocked', 'reason', 'daily_limit', 'used_today')} for key, item in state['services'].items()}}
+    except LookupError:
+        pass
     if has('organization_api_errors'):
         facts['recentErrors'] = [dict(r) for r in c.execute('SELECT method,route,status,message,created_at FROM organization_api_errors WHERE organization_id=? AND created_at>=? ORDER BY id DESC LIMIT 8', (org, (utcnow() - timedelta(days=3)).isoformat())).fetchall()]
     return facts
@@ -146,6 +164,27 @@ PHONE_STATUS = {'not_enabled': 'التتبع غير مفعّل في جوال ا�
 def diagnose_known(kind, facts, text):
     """يرجع (السبب، مؤكد؟، ما يقال للمشترك، ما يحتاجه من الإدارة أو '')."""
     package = PACKAGE_NAMES.get(facts['package'], facts['package'])
+    if kind == 'app_bug':
+        return ('بلاغ عن خلل في شاشة التطبيق نفسها (شكل الصفحة أو أزرارها)، لا في حساب المؤسسة ولا باقتها؛ لا يُحل من لوحة الإدارة.', True,
+                'الخلل تقني من جهتنا وليس من حسابك. رفعناه لإدارة خدووم وسيُعالج في تحديث قادم للتطبيق، وسنبلغك هنا عند صدوره.',
+                'خلل في شاشة التطبيق يحتاج تطويرًا وبناء نسخة جديدة؛ لا يوجد إجراء من لوحة الإدارة يحله.')
+    if kind == 'quota':
+        quota = facts.get('quota') or {}
+        services = quota.get('services') or {}
+        blocked = [item for item in services.values() if item['blocked']]
+        if blocked:
+            parts = []
+            for item in blocked:
+                if item['reason'] == 'daily':
+                    parts.append(item['label'] + ' (بلغ السقف اليومي ' + str(item['used_today']) + ' من ' + str(item['daily_limit']) + ')')
+                else:
+                    parts.append(item['label'] + ' (' + str(item['used']) + ' من ' + str(item['limit']) + ')')
+            monthly = any(item['reason'] != 'daily' for item in blocked)
+            when = ('يتجدد الرصيد يوم ' + str(quota.get('renewsAt'))) if monthly else 'يعود غدًا'
+            return ('انتهى رصيد: ' + '، '.join(parts) + ' في باقة ' + package + '؛ ' + when + '.', True,
+                    'رصيدك في باقة ' + package + ' انتهى: ' + '، '.join(parts) + '. ' + when + '، وتقدر تترقى من صفحة الباقات لرصيد أكبر.', '')
+        limited = [item['label'] + ' ' + str(item['used']) + ' من ' + str(item['limit']) for item in services.values() if not item['unlimited']]
+        return ('لا توجد خدمة منتهية الرصيد الآن' + ('؛ الاستهلاك: ' + '، '.join(limited) if limited else '') + '. السبب لم يتأكد.', False, '', '')
     if kind == 'subscription':
         request = facts.get('subscriptionRequest')
         if not request:
@@ -229,6 +268,41 @@ def diagnose_known(kind, facts, text):
     return ('', False, '', '')
 
 
+def suggest_action(kind, facts):
+    """إجراء آمن واحد ينفذه المدير بضغطة زر بعد قراءة التشخيص، أو None. لا يُنفَّذ شيء تلقائيًا."""
+    if kind == 'login':
+        if facts.get('suspended'):
+            return {'type': 'unsuspend', 'label': 'فك إيقاف المؤسسة'}
+        for row in facts.get('loginFailures') or []:
+            if row['reason'] == 'account_inactive' and row.get('username'):
+                return {'type': 'activate_user', 'username': str(row['username'])[:120], 'label': 'إعادة تفعيل المستخدم «' + str(row['username'])[:60] + '»'}
+    if kind == 'quota':
+        services = ((facts.get('quota') or {}).get('services') or {})
+        blocked = [key for key, item in services.items() if item['blocked'] and not item['unlimited']]
+        if blocked:
+            return {'type': 'add_credit', 'services': blocked, 'label': 'زيادة رصيد ' + ' و'.join(services[key]['label'] for key in blocked) + ' لهذه الدورة'}
+    if kind == 'subscription' and (facts.get('subscriptionRequest') or {}).get('status') == 'pending':
+        return {'type': 'open', 'route': 'subscriptions', 'label': 'فتح طلبات الاشتراك'}
+    if kind == 'ads' and (facts.get('ads') or {}).get('pending'):
+        return {'type': 'open', 'route': 'ads-pending', 'label': 'فتح طلبات الإعلانات'}
+    return None
+
+
+_ACTION_COLUMN = set()
+
+
+def _has_action_column(c):
+    """عمود الإجراء المقترح يُضاف عند بدء التشغيل؛ لا نكتب فيه قبل وجوده."""
+    if not hasattr(c, '_connection'):
+        return any(row['name'] == 'suggested_action' for row in c.execute('PRAGMA table_info(technical_tasks)').fetchall())
+    if _ACTION_COLUMN:
+        return True
+    found = c.execute("SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='technical_tasks' AND column_name='suggested_action'").fetchone() is not None
+    if found:
+        _ACTION_COLUMN.add(1)
+    return found
+
+
 def match_playbook(c, text, owner, server):
     """حل تعلّمه الموظف التقني من شكوى سابقة أغلقتها الإدارة بيدها."""
     if not owner.table_exists(c, 'technical_playbooks', server):
@@ -273,10 +347,10 @@ def understand(c, ticket, owner, server, legacy_service=''):
     text = ' '.join(str(ticket.get(key) or '') for key in ('category', 'title', 'message'))
     kind = recognize(text)
     facts = collect_facts(c, ticket, owner, server)
-    result = {'problemType': kind, 'facts': facts, 'knowledge': 'novel', 'confirmed': False, 'cause': '', 'customerReply': '', 'ownerAction': '', 'playbookId': None}
+    result = {'problemType': kind, 'facts': facts, 'knowledge': 'novel', 'confirmed': False, 'cause': '', 'customerReply': '', 'ownerAction': '', 'playbookId': None, 'suggestedAction': None}
     if kind:
         cause, confirmed, customer, owner_action = diagnose_known(kind, facts, text)
-        result.update(knowledge='known', cause=cause, confirmed=confirmed, customerReply=customer, ownerAction=owner_action)
+        result.update(knowledge='known', cause=cause, confirmed=confirmed, customerReply=customer, ownerAction=owner_action, suggestedAction=suggest_action(kind, facts))
         return result
     if legacy_service in ('whatsapp', 'performance'):
         # أنواع يفحصها الفاحص القديم بمؤشراته (ربط واتساب، سرعة الصفحات)؛ معروفة لكن سببها لا يتأكد من القراءة وحدها.
@@ -361,17 +435,36 @@ def process_ticket(c, ticket, owner, server):
         report['diagnosis'] = 'شكوى من نوع جديد لم يمر عليّ من قبل؛ ما عرفت أحلها.'
         report['proposal'] = 'تحتاج مراجعتك. إذا كانت ميزة ناقصة أو خللًا في البرنامج فهي تحتاج تطويرًا. عند إغلاقك الطلب مع كتابة الحل أتعلمه للمرات القادمة.'
     resolved_by_explanation = know['knowledge'] == 'known' and know['confirmed'] and not know['ownerAction']
+    is_dev = know['problemType'] == 'app_bug'
+    # نفس المؤسسة اشتكت من النوع نفسه خلال 30 يومًا: لا يُكرر الرد السابق، وتُرفع للإدارة.
+    repeat = 0
+    if know['problemType']:
+        repeat = c.execute('SELECT COUNT(*) AS n FROM technical_tasks k JOIN support_tickets x ON x.id=k.support_ticket_id WHERE x.organization_id=? AND k.problem_type=? AND x.id<>? AND x.created_at>=?',
+                           (t['organization_id'], know['problemType'], t['id'], (utcnow() - timedelta(days=30)).isoformat())).fetchone()['n']
+    repeated_after_answer = bool(repeat) and resolved_by_explanation
+    if repeated_after_answer:
+        resolved_by_explanation = False
+        report['proposal'] = 'شكوى متكررة بعد أن أُرسل الحل للمشترك سابقًا؛ تحتاج مراجعتك اليدوية.'
+        report['requiresApproval'] = True
+    if repeat:
+        report['diagnosis'] = 'شكوى متكررة (' + str(repeat + 1) + ' مرات من هذه المؤسسة خلال 30 يومًا). ' + report['diagnosis']
+        if report['severity'] == 'medium':
+            report['severity'] = 'high'
+    report['repeatedSameType'] = repeat
     needs_owner = 0 if resolved_by_explanation else 1
     task = c.execute('SELECT id FROM technical_tasks WHERE support_ticket_id=? ORDER BY id DESC LIMIT 1', (t['id'],)).fetchone()
     if not task:
         task = c.execute('INSERT INTO technical_tasks(organization_id,user_id,support_ticket_id,service,problem,severity,status,started_at,created_by) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id',
              (t['organization_id'], t.get('user_id'), t['id'], 'support', 'طلب دعم #' + str(t['id']) + ': ' + t.get('category', ''), report['severity'], 'queued', ts, 'support-monitor')).fetchone()
-    result = ('الحالة: تحدد السبب وأُبلغ المشترك بطريقة الحل؛ بانتظار تأكيده.' if resolved_by_explanation else 'الحالة: بانتظار استكمال الفحص؛ لم يتم الحل.') + '\nالسبب: ' + report['diagnosis'] + '\nالفحص: ' + '\n'.join(x['label'] + ': ' + x['details'] for x in report['checks']) + '\nالعوائق: ' + '\n'.join(report['limitations']) + '\nالخطوة التالية: ' + report['proposal']
+    result = ('الحالة: تحدد السبب وأُرسل الحل للمشترك وأُغلق الطلب.' if resolved_by_explanation else 'الحالة: خلل في التطبيق محوّل للتطوير؛ أُبلغ المشترك وانتهى النقاش معه.' if is_dev else 'الحالة: بانتظار استكمال الفحص؛ لم يتم الحل.') + '\nالسبب: ' + report['diagnosis'] + '\nالفحص: ' + '\n'.join(x['label'] + ': ' + x['details'] for x in report['checks']) + '\nالعوائق: ' + '\n'.join(report['limitations']) + '\nالخطوة التالية: ' + report['proposal']
     c.execute("UPDATE technical_tasks SET status=?,severity=?,diagnosis=?,proposal=?,action_taken=?,result=?,finished_at=NULL WHERE id=?",
          ('diagnosed' if resolved_by_explanation else 'proposed', report['severity'], report['diagnosis'], report['proposal'], 'فحص سجلات فقط؛ لم تتغير بيانات التشغيل', result, task['id']))
     # تفسير الذكاء يُطلب مرة واحدة لكل شكوى جديدة؛ نحافظ عليه عند إعادة الفحص.
     c.execute("UPDATE technical_tasks SET knowledge=CASE WHEN knowledge='taught' THEN knowledge ELSE ? END,problem_type=?,needs_owner=?,facts=? WHERE id=?",
          (know['knowledge'], know['problemType'], needs_owner, json.dumps(facts, ensure_ascii=False, default=str)[:6000], task['id']))
+    if _has_action_column(c):
+        c.execute('UPDATE technical_tasks SET suggested_action=? WHERE id=?', (json.dumps(know['suggestedAction'], ensure_ascii=False) if know.get('suggestedAction') else '', task['id']))
+    report['suggestedAction'] = know.get('suggestedAction')
     stored = c.execute('SELECT interpretation FROM technical_tasks WHERE id=?', (task['id'],)).fetchone()
     lines = interpretation_lines(stored['interpretation'] if stored else '')
     if lines and know['knowledge'] == 'novel':
@@ -380,13 +473,21 @@ def process_ticket(c, ticket, owner, server):
              'إذا لم ترفق التفاصيل، أرسل وقت آخر حدوث وصورة الخطأ وخطوات تكراره، دون كلمة مرور أو رموز تحقق. ' +
              'الخطوة التالية: مقارنة التجربة بالسجلات ثم مراجعة خطة المعالجة مع الإدارة. إذا أرسلت التفاصيل بالفعل فلا تحتاج تكرارها.')
     if know['knowledge'] == 'known' and know['confirmed']:
-        reply = 'راجعنا طلبك #' + str(t['id']) + '. ' + know['customerReply'] + (' إذا بقيت المشكلة بعد ذلك اكتب لنا هنا.' if resolved_by_explanation else '')
+        if is_dev and repeat:
+            reply = 'وصلتنا ملاحظتك على التطبيق مرة ثانية. رفعناها لإدارة خدووم كأولوية، وسنبلغك هنا عند صدور التحديث.'
+        elif is_dev:
+            reply = know['customerReply']
+        elif repeated_after_answer:
+            reply = 'وصلتنا شكواك مرة ثانية بعد الحل السابق. حوّلناها لإدارة خدووم لمراجعتها يدويًا، وسنرد عليك هنا.'
+        else:
+            reply = 'راجعنا طلبك #' + str(t['id']) + '. ' + know['customerReply'] + (' إذا تكررت المشكلة أرسل لنا من جديد.' if resolved_by_explanation else '')
     elif know['knowledge'] == 'learned':
         reply = 'طلبك #' + str(t['id']) + ' يشبه حالة سبق أن عالجناها. حوّلناه للإدارة لتأكيد الحل المناسب لحالتك، وسنرد عليك هنا.'
     elif know['knowledge'] == 'novel':
         reply = ('طلبك #' + str(t['id']) + ' من نوع جديد علينا، وحوّلناه لإدارة خدووم لمراجعته يدويًا وسنرد عليك هنا. ' +
                  'إذا عندك وقت حدوث المشكلة وخطواتها اكتبها هنا، بدون كلمات مرور أو رموز تحقق.')
-    next_status = 'awaiting_user' if resolved_by_explanation or t['status'] == 'awaiting_user' else 'under_review'
+    # حل يقوم به المشترك: يُغلق الطلب. خلل في التطبيق: يبقى «جاري الحل» بلا انتظار رد منه حتى يصدر التحديث.
+    next_status = 'resolved' if resolved_by_explanation else 'in_progress' if is_dev and know['confirmed'] else 'awaiting_user' if t['status'] == 'awaiting_user' else 'under_review'
     # رد المدير البشري لا يُستبدل بالرد الآلي؛ يُسجل تقرير الفحص في السجل فقط.
     applied = owner.automated_ticket_update(c, t['id'], next_status, reply, ts)
     human_reply = applied != next_status or c.execute("SELECT 1 FROM support_tickets WHERE id=? AND owner_reply_by='admin' AND owner_reply<>''", (t['id'],)).fetchone() is not None
@@ -415,6 +516,7 @@ def run_pending(c, owner, server, limit=5):
     tickets = c.execute("""SELECT t.* FROM support_tickets t
         WHERE t.status IN ('open','under_review','in_progress','awaiting_user')
           AND NOT EXISTS (SELECT 1 FROM technical_tasks k WHERE k.support_ticket_id=t.id AND k.status='approved')
+          AND NOT EXISTS (SELECT 1 FROM technical_tasks k WHERE k.support_ticket_id=t.id AND k.problem_type='app_bug' AND k.status='proposed')
           AND (EXISTS (SELECT 1 FROM technical_tasks k WHERE k.support_ticket_id=t.id AND k.status IN ('queued','diagnosing'))
                OR NOT EXISTS (SELECT 1 FROM support_ticket_events e WHERE e.ticket_id=t.id AND e.event_type='technical_evidence_report' AND e.created_at>=?))
         ORDER BY t.id LIMIT ?""", (cutoff, limit)).fetchall()

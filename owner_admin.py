@@ -180,7 +180,7 @@ def migrate(c,postgres=False):
    legacy=c.execute('SELECT price_sar FROM package_offers WHERE package=? AND paid_months=? AND bonus_months=0 ORDER BY id LIMIT 1',(package,months)).fetchone()
    value=float(legacy['price_sar']) if legacy else fallback
    c.execute('INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES(?,?,?,?) ON CONFLICT(package,duration_months) DO NOTHING',(package,months,value,stamp()))
- for table,fields in {'platform_packages':[('ai_monthly','INTEGER')],'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''"),('owner_reply_by',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT"),('knowledge',"TEXT NOT NULL DEFAULT ''"),('problem_type',"TEXT NOT NULL DEFAULT ''"),('needs_owner',"INTEGER NOT NULL DEFAULT 0"),('facts',"TEXT NOT NULL DEFAULT ''"),('interpretation',"TEXT NOT NULL DEFAULT ''")],'platform_admins':[('totp_secret',"TEXT NOT NULL DEFAULT ''"),('totp_enabled','INTEGER NOT NULL DEFAULT 0'),('totp_last_step','BIGINT NOT NULL DEFAULT 0')],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
+ for table,fields in {'platform_packages':[('ai_monthly','INTEGER')],'activation_codes':[('starts_at','TEXT'),('discount_amount','REAL NOT NULL DEFAULT 0'),('eligible_packages',"TEXT NOT NULL DEFAULT 'basic,vip'"),('eligible_durations',"TEXT NOT NULL DEFAULT '1,3,6,12'")],'package_offers':[('starts_at','TEXT'),('ends_at','TEXT'),('offer_type',"TEXT NOT NULL DEFAULT 'price'"),('discount_percent','REAL NOT NULL DEFAULT 0'),('base_price_sar','REAL')],'support_tickets':[('device_name',"TEXT NOT NULL DEFAULT ''"),('app_version',"TEXT NOT NULL DEFAULT ''"),('reference_code',"TEXT NOT NULL DEFAULT ''"),('title',"TEXT NOT NULL DEFAULT ''"),('scope',"TEXT NOT NULL DEFAULT 'private'"),('assigned_admin_id',"BIGINT"),('last_error',"TEXT NOT NULL DEFAULT ''"),('owner_reply_by',"TEXT NOT NULL DEFAULT ''")],'technical_tasks':[('support_ticket_id',"BIGINT"),('knowledge',"TEXT NOT NULL DEFAULT ''"),('problem_type',"TEXT NOT NULL DEFAULT ''"),('needs_owner',"INTEGER NOT NULL DEFAULT 0"),('facts',"TEXT NOT NULL DEFAULT ''"),('interpretation',"TEXT NOT NULL DEFAULT ''"),('suggested_action',"TEXT NOT NULL DEFAULT ''")],'platform_admins':[('totp_secret',"TEXT NOT NULL DEFAULT ''"),('totp_enabled','INTEGER NOT NULL DEFAULT 0'),('totp_last_step','BIGINT NOT NULL DEFAULT 0')],'advertisements':[('scheduled_at','TEXT'),('image_data',"TEXT NOT NULL DEFAULT ''"),('deleted',"INTEGER NOT NULL DEFAULT 0"),('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'platform_advertisements':[('display_seconds',"INTEGER NOT NULL DEFAULT 8"),('banner_config',"TEXT NOT NULL DEFAULT '{}'"),('published_at','TEXT')],'login_failures':[('backend_status',"TEXT NOT NULL DEFAULT 'ok'"),('session_status',"TEXT NOT NULL DEFAULT 'not_created'"),('user_exists','INTEGER NOT NULL DEFAULT 0'),('account_active','INTEGER NOT NULL DEFAULT 0'),('organization_linked','INTEGER NOT NULL DEFAULT 0'),('password_hash_status',"TEXT NOT NULL DEFAULT 'not_checked'"),('permissions_status',"TEXT NOT NULL DEFAULT 'not_checked'")]}.items():
   existing=set() if postgres else {r['name'] for r in c.execute('PRAGMA table_info('+table+')')}
   for name,typ in fields:
    if postgres or name not in existing: c.execute(f'ALTER TABLE {table} ADD COLUMN '+('IF NOT EXISTS ' if postgres else '')+name+' '+typ)
@@ -916,6 +916,50 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   return {'saved':True,'status':'online'}
  if r=='integrations' and m=='GET':
   return {'items':rows(c,'SELECT key,name,category,status,required_permission,provider_configured,notes,updated_at FROM platform_integrations ORDER BY id'),'note':'هذه الوحدات مجهزة للتوسع فقط. لا توجد خدمة مستقبلية مفعلة دون تكامل رسمي وإعداد خادم وصلاحية مناسبة.'}
+ if re.fullmatch(r'technical-ai/tasks/\d+/execute',r) and m=='POST':
+  # الإجراء الذي اقترحه الموظف التقني ينفَّذ فقط بضغطة المدير، وبصلاحية المدير نفسه، وبعد إعادة التحقق من الحالة الآن.
+  ensure_owner_tables(c,s,('technical_agent_state','technical_tasks'))
+  ident=int(r.split('/')[2]); task=c.execute('SELECT * FROM technical_tasks WHERE id=?',(ident,)).fetchone()
+  if not task: raise s.ApiError(404,'مهمة موظف AI غير موجودة')
+  task=dict(task); org=task.get('organization_id')
+  try: plan=json.loads(task.get('suggested_action') or 'null')
+  except ValueError: plan=None
+  if not isinstance(plan,dict) or not org or task['status'] in ('completed','failed','not_executed'): raise ValueError('لا يوجد إجراء مقترح قابل للتنفيذ لهذه المهمة')
+  def need(perm):
+   if perm not in a['permissions']: raise s.ApiError(403,'هذا الإجراء يحتاج صلاحية غير متاحة لحسابك')
+  kind=plan.get('type')
+  if kind=='unsuspend':
+   need('suspend')
+   if not suspended(c,org): raise ValueError('المؤسسة غير موقوفة الآن؛ لا حاجة للإجراء')
+   dispatch(c,'organizations/%d/status'%org,'POST',{'suspended':False},{},page,a,h,s)
+   done='فُك إيقاف المؤسسة'; customer='تم تفعيل حساب مؤسستك من جديد. سجّل الدخول الآن، وإذا بقيت المشكلة اكتب لنا هنا.'
+  elif kind=='activate_user':
+   need('organizations.edit')
+   target=c.execute('SELECT id,name,active FROM users WHERE organization_id=? AND username=? AND archived_at IS NULL',(org,str(plan.get('username',''))),).fetchone()
+   if not target: raise ValueError('المستخدم لم يعد موجودًا في هذه المؤسسة')
+   if target['active']: raise ValueError('المستخدم مفعّل الآن؛ لا حاجة للإجراء')
+   dispatch(c,'organizations/%d/users/%d/status'%(org,target['id']),'POST',{'active':True},{},page,a,h,s)
+   done='أُعيد تفعيل المستخدم «'+str(plan.get('username'))+'»'; customer='أعدنا تفعيل المستخدم «'+str(plan.get('username'))+'». يقدر يسجّل الدخول الآن، وإذا بقيت المشكلة اكتب لنا هنا.'
+  elif kind=='add_credit':
+   need('usage')
+   amount=number(d.get('amount'),1,100000,True)
+   state=service_quota.snapshot(c,org)['services']
+   wanted=[x for x in (plan.get('services') or []) if x in SERVICE_LABELS and not state[x]['unlimited']]
+   if not wanted: raise ValueError('لا توجد خدمة محددة الرصيد لزيادتها')
+   dispatch(c,'credits/%d'%org,'POST',{'adjustments':{x:amount for x in wanted},'reason':'زيادة من الموظف التقني لطلب دعم '+str(task.get('support_ticket_id') or '')},{},page,a,h,s)
+   names=' و'.join(SERVICE_LABELS[x] for x in wanted)
+   done='زيد رصيد '+names+' بمقدار '+str(amount)+' لهذه الدورة'; customer='أضفنا لك رصيدًا إضافيًا ('+str(amount)+') في '+names+' لهذه الدورة. تقدر تكمل استخدامك الآن.'
+  else: raise ValueError('هذا الإجراء يُنفذ من صفحته في اللوحة')
+  ts=stamp()
+  c.execute("UPDATE technical_tasks SET status='completed',approved_by=?,action_taken=?,result=?,finished_at=?,needs_owner=0,suggested_action='' WHERE id=?",(a['name'],done+' بأمر '+a['name'],'نُفّذ الإجراء من لوحة الإدارة وأُبلغ المشترك وأُغلق الطلب.',ts,ident))
+  if task.get('support_ticket_id') and table_exists(c,'support_tickets',s):
+   ticket=c.execute('SELECT * FROM support_tickets WHERE id=?',(task['support_ticket_id'],)).fetchone()
+   if ticket:
+    c.execute("UPDATE support_tickets SET status='resolved',owner_reply=?,owner_reply_by='admin',updated_at=? WHERE id=?",(customer,ts,ticket['id']))
+    support_event(c,dict(ticket),actor_type='admin',actor_name=a['name'],event_type='technical_action_executed',body=done,from_status=ticket['status'],to_status='resolved')
+    s.audit_log(c,ticket['organization_id'],None,'support_ticket_updated','رد إدارة خدووم على طلب الدعم #'+str(ticket['id']),'security',str(ticket['id']))
+  audit(c,a['name'],'technical_action_executed',json.dumps({'task_id':ident,'organization_id':org,'type':kind,'result':done},ensure_ascii=False))
+  return {'saved':True,'message':done+'، وأُرسل الرد للمشترك.'}
  if re.fullmatch(r'technical-ai/tasks/\d+/(start|report|approve|complete|fail|skip)',r) and m=='POST':
   ensure_owner_tables(c,s,('technical_agent_state','technical_tasks'))
   parts=r.split('/'); ident=int(parts[2]); action=parts[3]
@@ -1303,10 +1347,13 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   # Backfill readable references for legacy requests without changing their internal IDs.
   for legacy in rows(c, "SELECT id,created_at FROM support_tickets WHERE reference_code='' OR reference_code IS NULL"):
    c.execute('UPDATE support_tickets SET reference_code=? WHERE id=?',(support_reference(legacy['id'],legacy.get('created_at')),legacy['id']))
-  if q.get('status'): where+=' AND t.status=?'; args.append(q['status'])
+  if q.get('status')=='dev':
+   # شكاوى خلل في التطبيق محوّلة للتطوير: انتهى النقاش فيها مع المشترك وتنتظر صدور التحديث.
+   where+=" AND t.status NOT IN ('resolved','closed') AND EXISTS (SELECT 1 FROM technical_tasks k WHERE k.support_ticket_id=t.id AND k.problem_type='app_bug')"
+  elif q.get('status'): where+=' AND t.status=?'; args.append(q['status'])
   out=paged(c,'SELECT t.*,o.name organization_name,s.package,pa.name assigned_admin_name',where,args,'t.id DESC',page)
   ids=[t['id'] for t in out['items']]; marks=','.join('?' for _ in ids)
-  task_columns='id,support_ticket_id,status,diagnosis,proposal,action_taken,result,started_at,finished_at,knowledge,problem_type,needs_owner'
+  task_columns='id,support_ticket_id,status,diagnosis,proposal,action_taken,result,started_at,finished_at,knowledge,problem_type,needs_owner,suggested_action'
   # مهام ومتابعات وملاحظات كل الطلبات المعروضة تُجلب دفعة واحدة بدل استعلامات لكل طلب.
   tasks={}
   if ids:
@@ -1329,6 +1376,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
      support_event(c,t,actor_type='technical_ai',actor_name='موظف التقنية AI',event_type='technical_assigned',body=reply,from_status=t['status'],to_status=applied)
     task=dict(c.execute(f'SELECT {task_columns} FROM technical_tasks WHERE id=?',(task['id'],)).fetchone())
    t['technical_task']={k:task.get(k) for k in ('id','status','diagnosis','proposal','action_taken','result','started_at','finished_at','knowledge','problem_type','needs_owner')}
+   try: t['technical_task']['suggested_action']=json.loads(task.get('suggested_action') or 'null') if task.get('status') not in ('completed','failed','not_executed') else None
+   except ValueError: t['technical_task']['suggested_action']=None
    t['technical_task_id']=task['id']
    t['technical_status']=task['status']
    t['notes']=[]; t['events']=[]
@@ -1341,6 +1390,20 @@ def dispatch(c,r,m,d,q,page,a,h,s):
     bucket=by_id[event['ticket_id']]['events']
     if len(bucket)<50: bucket.append({k:event[k] for k in ('actor_type','actor_name','event_type','from_status','to_status','body','created_at')})
   return out
+ if r=='support/dev-fixed' and m=='POST':
+  # صدر تحديث يعالج الخلل: تُغلق الشكاوى المحوّلة للتطوير (كلها أو المحددة) ويُبلَّغ أصحابها.
+  ensure_owner_tables(c,s,('support_tickets','technical_tasks','support_ticket_events'))
+  wanted=d.get('ids'); message=str(d.get('message','')).strip()[:1000] or 'تم إصلاح الملاحظة التي بلّغت عنها في تحديث جديد للتطبيق. حدّث التطبيق من المتجر، وإذا بقيت المشكلة أرسل لنا من جديد.'
+  found=rows(c,"SELECT t.* FROM support_tickets t WHERE t.status NOT IN ('resolved','closed') AND EXISTS (SELECT 1 FROM technical_tasks k WHERE k.support_ticket_id=t.id AND k.problem_type='app_bug') ORDER BY t.id")
+  if isinstance(wanted,list): found=[t for t in found if t['id'] in {int(x) for x in wanted if str(x).isdigit()}]
+  ts=stamp()
+  for t in found:
+   c.execute("UPDATE support_tickets SET status='resolved',owner_reply=?,owner_reply_by='admin',updated_at=? WHERE id=?",(message,ts,t['id']))
+   c.execute("UPDATE technical_tasks SET status='completed',approved_by=?,action_taken=?,result=?,finished_at=?,needs_owner=0 WHERE support_ticket_id=? AND problem_type='app_bug'",(a['name'],'أُصلح الخلل في تحديث للتطبيق','أُبلغ المشترك بصدور التحديث وأُغلق الطلب.',ts,t['id']))
+   support_event(c,t,actor_type='admin',actor_name=a['name'],event_type='status_changed',body=message,from_status=t['status'],to_status='resolved')
+   s.audit_log(c,t['organization_id'],None,'support_ticket_updated','رد إدارة خدووم على طلب الدعم '+str(t.get('reference_code') or ('#'+str(t['id'])))+': تم الإصلاح في تحديث جديد','security',str(t['id']))
+  if found: audit(c,a['name'],'support_dev_fixed',json.dumps({'tickets':[t['id'] for t in found]},ensure_ascii=False))
+  return {'saved':True,'count':len(found),'message':'أُغلقت '+str(len(found))+' شكوى وأُبلغ أصحابها بصدور التحديث.' if found else 'لا توجد شكاوى محوّلة للتطوير.'}
  if re.fullmatch(r'support/\d+/technical-followup',r) and m=='POST':
   ensure_owner_tables(c,s,('technical_tasks',))
   ident=int(r.split('/')[1]); ticket=c.execute('SELECT organization_id,user_id,category,message FROM support_tickets WHERE id=?',(ident,)).fetchone()
@@ -1367,8 +1430,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
  if re.fullmatch(r'support/\d+',r) and m=='PUT':
   ident=int(r.split('/')[1]); status=d.get('status')
   if status not in ('open','under_review','in_progress','awaiting_user','resolved','closed'): raise ValueError('حالة غير صحيحة')
-  ticket=c.execute('SELECT id,organization_id,user_id,status,scope FROM support_tickets WHERE id=?',(ident,)).fetchone()
+  ticket=c.execute('SELECT id,organization_id,user_id,status,scope,owner_reply FROM support_tickets WHERE id=?',(ident,)).fetchone()
   if not ticket: raise s.ApiError(404,'طلب الدعم غير موجود')
+  previous_reply=str(ticket['owner_reply'] or '')
   reply=str(d.get('owner_reply',''))[:1000]; note=str(d.get('note',''))[:2000]
   last_error=str(d.get('last_error',''))[:1000]
   scope=str(d.get('scope') or ticket['scope'] or 'private')
@@ -1377,6 +1441,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   c.execute('UPDATE support_tickets SET status=?,scope=?,last_error=?,owner_reply=?,owner_reply_by=?,assigned_admin_id=COALESCE(?,assigned_admin_id),updated_at=? WHERE id=?',(status,scope,last_error,reply,'admin' if reply.strip() else '',assigned,stamp(),ident))
   event_type='scope_changed' if scope!=ticket['scope'] else 'status_changed' if status!=ticket['status'] else 'reply_updated'
   support_event(c,dict(ticket),actor_type='admin',actor_name=a['name'],event_type=event_type,body=note or reply or last_error,from_status=ticket['status'],to_status=status)
+  # رد جديد من الإدارة يظهر للمشترك تنبيهًا في جرس التطبيق.
+  if reply.strip() and reply.strip()!=previous_reply.strip():
+   s.audit_log(c,ticket['organization_id'],None,'support_ticket_updated','رد إدارة خدووم على طلب الدعم #'+str(ident),'security',str(ident))
   learned=None
   if status in ('resolved','closed') and (reply.strip() or note.strip()):
    import technical_support
