@@ -4027,7 +4027,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if path == "/api/calls/number-request" and method == "POST":
                 if user["role"] != "admin":
                     raise ApiError(403, "طلب اعتماد رقم المكالمات متاح لمالك المؤسسة فقط")
-                result = number_requests.submit(connection, organization_id, user.get("name") or user.get("username") or "", self._body().get("phone"), ApiError, now())
+                number_body = self._body()
+                result = number_requests.submit(connection, organization_id, user.get("name") or user.get("username") or "", number_body.get("phone"), ApiError, now(), number_body.get("kind"))
                 audit_log(connection, organization_id, user["id"], "calls_number_requested", "طلب اعتماد رقم مكالمات", "calls", str(organization_id))
                 connection.commit()
                 self._send(200, result)

@@ -21,16 +21,40 @@ def migrate(c, postgres: bool = False) -> None:
         status TEXT NOT NULL DEFAULT 'pending', note TEXT NOT NULL DEFAULT '', requested_by TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL, decided_by TEXT NOT NULL DEFAULT '', decided_at TEXT NOT NULL DEFAULT '')""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_service_number_requests_org ON service_number_requests(organization_id,service,status)")
+    # نوع الرقم كما اختاره المشترك: ثابت أو جوال أو موحد.
+    if postgres:
+        c.execute("ALTER TABLE service_number_requests ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT ''")
+    elif "kind" not in {row[1] for row in c.execute("PRAGMA table_info(service_number_requests)").fetchall()}:
+        c.execute("ALTER TABLE service_number_requests ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+
+
+KINDS = {"landline": "هاتف ثابت", "mobile": "جوال", "unified": "رقم موحد"}
 
 
 def normalize(value: Any) -> str:
-    """أرقام بصيغة دولية بلا + ولا 00. الجوال السعودي المكتوب محليًا (05xxxxxxxx) يُحوَّل إلى 9665xxxxxxxx."""
+    """أرقام بصيغة دولية بلا + ولا 00. الصيغ السعودية المحلية تُحوَّل تلقائيًا:
+
+    جوال 05xxxxxxxx، ثابت 01xxxxxxxx، موحد 9200xxxxx، مجاني 800xxxxxxx.
+    """
     digits = owner_admin.service_phone(value)
-    if len(digits) == 10 and digits.startswith("05"):
+    if len(digits) == 10 and digits.startswith(("05", "01")):
         return "966" + digits[1:]
     if len(digits) == 9 and digits.startswith("5"):
         return "966" + digits
+    if (len(digits) == 9 and digits.startswith("9200")) or (len(digits) == 10 and digits.startswith("800")):
+        return "966" + digits
     return digits
+
+
+def kind_of(phone: str, chosen: Any = "") -> str:
+    """نوع الرقم من صيغته؛ اختيار المشترك يُعتمد فقط إذا لم تدل الصيغة على نوع آخر."""
+    if phone.startswith("9665"):
+        return "mobile"
+    if phone.startswith("9661"):
+        return "landline"
+    if phone.startswith(("9669200", "966800")):
+        return "unified"
+    return chosen if chosen in KINDS else ""
 
 
 def state(c, organization_id: int) -> dict[str, Any]:
@@ -53,29 +77,29 @@ def _used_elsewhere(c, organization_id: int, phone: str) -> bool:
     return bool(c.execute("SELECT 1 FROM call_connections WHERE phone_number=? AND organization_id<>?", (phone, organization_id)).fetchone())
 
 
-def submit(c, organization_id: int, requested_by: str, value: Any, error, now: str) -> dict[str, Any]:
+def submit(c, organization_id: int, requested_by: str, value: Any, error, now: str, kind: Any = "") -> dict[str, Any]:
     phone = normalize(value)
     if not re.fullmatch(r"[1-9][0-9]{7,14}", phone):
-        raise error(400, "رقم غير صالح. اكتب رقم هاتف المؤسسة مع رمز الدولة مثل 9665xxxxxxxx")
+        raise error(400, "رقم غير صالح. اكتب رقم المؤسسة كاملًا، مثل 0112345678 للثابت أو 0542027855 للجوال أو 920012345 للموحد")
     if _used_elsewhere(c, organization_id, phone):
         raise error(409, "هذا الرقم مستخدم لمؤسسة أخرى في خدوم")
     if phone == owner_admin.granted_number(c, organization_id, SERVICE):
         return state(c, organization_id)
     c.execute("UPDATE service_number_requests SET status='replaced' WHERE organization_id=? AND service=? AND status='pending'", (organization_id, SERVICE))
-    c.execute("INSERT INTO service_number_requests(organization_id,service,phone,status,requested_by,created_at) VALUES(?,?,?,?,?,?)",
-              (organization_id, SERVICE, phone, "pending", str(requested_by or "")[:120], now))
+    c.execute("INSERT INTO service_number_requests(organization_id,service,phone,status,requested_by,created_at,kind) VALUES(?,?,?,?,?,?,?)",
+              (organization_id, SERVICE, phone, "pending", str(requested_by or "")[:120], now, kind_of(phone, kind)))
     return state(c, organization_id)
 
 
 def open_requests(c) -> list[dict[str, Any]]:
-    rows = c.execute("""SELECT r.id,r.organization_id,o.name AS organization_name,r.phone,r.requested_by,r.created_at
+    rows = c.execute("""SELECT r.id,r.organization_id,o.name AS organization_name,r.phone,r.requested_by,r.created_at,r.kind
         FROM service_number_requests r JOIN organizations o ON o.id=r.organization_id
         WHERE r.service=? AND r.status='pending' ORDER BY r.id ASC LIMIT ?""", (SERVICE, MAX_OPEN_LIST)).fetchall()
     result = []
     for row in rows:
         current = owner_admin.granted_number(c, row["organization_id"], SERVICE)
         result.append({"id": row["id"], "organizationId": row["organization_id"], "organizationName": row["organization_name"],
-                       "phone": row["phone"], "currentApprovedPhone": current, "requestedBy": row["requested_by"], "createdAt": row["created_at"]})
+                       "phone": row["phone"], "kind": row["kind"] or "", "kindLabel": KINDS.get(row["kind"] or "", ""), "currentApprovedPhone": current, "requestedBy": row["requested_by"], "createdAt": row["created_at"]})
     return result
 
 

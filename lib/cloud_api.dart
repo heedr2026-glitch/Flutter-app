@@ -863,11 +863,14 @@ class KhdoomCloudApi {
     return Map<String, dynamic>.from(result as Map);
   }
 
-  Future<Map<String, dynamic>> requestCallsNumber(String phone) async {
+  Future<Map<String, dynamic>> requestCallsNumber(
+    String phone, [
+    String kind = '',
+  ]) async {
     final result = await _request(
       'POST',
       '/api/calls/number-request',
-      body: {'phone': phone},
+      body: {'phone': phone, 'kind': kind},
     );
     return Map<String, dynamic>.from(result as Map);
   }

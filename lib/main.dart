@@ -14613,40 +14613,72 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
           ? (_cloudCalls?['requestedPhone']?.toString() ?? '')
           : '',
     );
-    final phone = await showDialog<String>(
+    String kind = 'landline';
+    const labels = {
+      'landline': 'هاتف ثابت',
+      'mobile': 'جوال',
+      'unified': 'رقم موحد',
+    };
+    const examples = {
+      'landline': 'مثال: 0112345678',
+      'mobile': 'مثال: 0542027855',
+      'unified': 'مثال: 920012345',
+    };
+    final request = await showDialog<Map<String, String>>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('رقم هاتف المؤسسة للمكالمات'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'اكتب رقم هاتف المؤسسة الذي يتصل عليه العملاء. يختلف عن رقم جوالك الشخصي، وتعتمده إدارة خدوم قبل الربط.',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('رقم هاتف المؤسسة للمكالمات'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'اختر نوع الرقم واكتب رقم المؤسسة الذي يتصل عليه العملاء. يختلف عن رقم جوالك الشخصي، وتعتمده إدارة خدوم قبل الربط.',
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    for (final entry in labels.entries)
+                      ChoiceChip(
+                        label: Text(entry.value),
+                        selected: kind == entry.key,
+                        onSelected: (_) =>
+                            setDialogState(() => kind = entry.key),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: controller,
+                  keyboardType: TextInputType.phone,
+                  decoration: InputDecoration(labelText: examples[kind]),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
-                labelText: 'مثال: 9665xxxxxxxx',
-              ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إلغاء'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, {
+                'phone': controller.text.trim(),
+                'kind': kind,
+              }),
+              child: const Text('إرسال الطلب'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إلغاء'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('إرسال الطلب'),
-          ),
-        ],
       ),
     );
-    if (phone == null || phone.isEmpty || !mounted) return;
+    final phone = request?['phone'] ?? '';
+    final chosenKind = request?['kind'] ?? '';
+    if (phone.isEmpty || !mounted) return;
     setState(() => _callsBusy = true);
     try {
       final prefs = await BranchPreferences.getInstance();
@@ -14663,7 +14695,7 @@ class _CallsEmployeePageState extends State<CallsEmployeePage> {
         scope: prefs,
       )..token = token;
       try {
-        await api.requestCallsNumber(phone);
+        await api.requestCallsNumber(phone, chosenKind);
       } finally {
         api.close();
       }

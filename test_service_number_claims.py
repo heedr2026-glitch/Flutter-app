@@ -129,6 +129,18 @@ class ServiceNumberClaimsTest(unittest.TestCase):
         status, config = self.call('/api/calls/config', user=1)
         self.assertEqual((status, config['phone'], config['approvedPhone'], config['requestStatus']), (200, None, '', 'none'))
         self.assertEqual(self.call('/api/calls/number-request', 'POST', {'phone': '123'}, user=1)[0], 400)
+        # الصيغ المحلية للثابت والموحد والجوال تُحوَّل للدولية، والنوع يُعرف من الرقم.
+        for typed, stored, kind in (('011 234 5678', '966112345678', 'landline'), ('920012345', '966920012345', 'unified'),
+                                    ('8001234567', '9668001234567', 'unified'), ('+966 13 812 3456', '966138123456', 'landline'),
+                                    ('542027850', '966542027850', 'mobile')):
+            body = self.call('/api/calls/number-request', 'POST', {'phone': typed, 'kind': 'mobile'}, user=1)[1]
+            self.assertEqual(body['requestedPhone'], stored)
+            listed = self.call('/owner/api/organizations-number-requests')[1]['requests']
+            self.assertEqual([(r['phone'], r['kind']) for r in listed], [(stored, kind)])
+            self.assertTrue(listed[0]['kindLabel'])
+        foreign = self.call('/api/calls/number-request', 'POST', {'phone': '97143334444', 'kind': 'landline'}, user=1)[1]
+        self.assertEqual(foreign['requestedPhone'], '97143334444')
+        self.assertEqual(self.call('/owner/api/organizations-number-requests')[1]['requests'][0]['kind'], 'landline')
         status, body = self.call('/api/calls/number-request', 'POST', {'phone': '٠٥٤ ٢٠٢ ٧٨٥٥'}, user=1)
         self.assertEqual((status, body['requestedPhone'], body['requestStatus'], body['approvedPhone']), (200, '966542027855', 'pending', ''))
         # طلب أحدث يستبدل المعلّق، والربط مرفوض حتى الاعتماد.
