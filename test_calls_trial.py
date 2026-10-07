@@ -173,6 +173,37 @@ class ReportTest(unittest.TestCase):
             self.assertIn('أبي موعد', saved['transcript'])
             self.assertEqual(saved['durationSeconds'], 0)
 
+    def test_report_reads_time_phone_and_gets_the_current_time(self):
+        client = FakeClient(json.dumps({'callerName': 'حيدر', 'request': 'مرآة', 'appointment': 'الخميس', 'appointmentAt': '2026-10-08T16:00', 'service': 'قياس مرآة', 'callerPhone': '٠٥٤٢٠٢٧٨٥٥ ', 'followUp': True, 'summary': 'س'}, ensure_ascii=False))
+        report = calls_trial.build_report(calls_trial.clean_turns(TURNS), client, datetime(2026, 10, 7, 15, 0, tzinfo=calls_trial.RIYADH))
+        self.assertTrue(client.payloads[0]['input'].startswith('الوقت الآن: الأربعاء 2026-10-07'))
+        self.assertEqual((report['appointmentAt'], report['service'], report['callerPhone']), ('2026-10-08T16:00', 'قياس مرآة', '0542027855'))
+
+    def test_booking_rules(self):
+        c = sqlite3.connect(':memory:'); c.row_factory = sqlite3.Row
+        c.execute('''CREATE TABLE appointment_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER, chat_session_id INTEGER, branch_id TEXT,
+            request_type TEXT, title TEXT, customer_name TEXT, phone TEXT, notes TEXT, scheduled_at TEXT, status TEXT, source TEXT, created_at TEXT, updated_at TEXT)''')
+        now, org = datetime(2026, 10, 7, 15, 0, tzinfo=calls_trial.RIYADH), {'id': 7, 'name': 'مراتك'}
+        base = {'callerName': 'حيدر', 'request': 'مرآة حمام', 'service': 'قياس مرآة', 'callerPhone': '0542027855', 'appointmentAt': '2026-10-08T16:00'}
+        book = lambda report, organization=org: calls_trial.book_appointment(c, organization, report, 'created', now)
+        self.assertEqual(book(base, None), {'created': False, 'reason': ''})
+        self.assertEqual(book({**base, 'appointmentAt': ''}), {'created': False, 'reason': ''})
+        for bad in ({'appointmentAt': 'بكرة العصر'}, {'callerName': ''}, {'appointmentAt': '2026-10-07T14:00'}, {'appointmentAt': '2027-10-07T14:00'}):
+            result = book({**base, **bad})
+            self.assertFalse(result['created']); self.assertTrue(result['reason'])
+        self.assertEqual(c.execute('SELECT COUNT(*) n FROM appointment_requests').fetchone()['n'], 0)
+        made = book(base)
+        self.assertTrue(made['created'])
+        row = c.execute('SELECT * FROM appointment_requests WHERE id=?', (made['id'],)).fetchone()
+        self.assertEqual((row['organization_id'], row['branch_id'], row['status'], row['source'], row['scheduled_at'], row['customer_name'], row['phone'], row['title']),
+                         (7, 'main', 'pending', 'ai_call', '2026-10-08T16:00:00+03:00', 'حيدر', '0542027855', 'قياس مرآة'))
+        again = book(base)
+        self.assertFalse(again['created']); self.assertIn('#%d' % made['id'], again['reason'])
+        self.assertTrue(book(base, {'id': 8, 'name': 'ثانية'})['created'])
+        tools = ai_core.CompanyTools(c, ai_core.AgentContext(company_id=7, role='reception'), lambda: 'x')
+        self.assertNotIn('2026-10-08T16:00:00+03:00', tools.get_available_appointments('2026-10-08')['available'])
+        c.close()
+
     def test_old_report_table_gains_organization_columns(self):
         old = sqlite3.connect(':memory:'); old.row_factory = sqlite3.Row
         old.execute('''CREATE TABLE call_trial_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, caller_name TEXT NOT NULL DEFAULT '', request_text TEXT NOT NULL DEFAULT '',
@@ -238,9 +269,22 @@ class HttpTest(unittest.TestCase):
                 self.assertIn('2:00 مساءً', day_line)
                 saved = req('/owner/api/calls-trial/report', 'POST', {'turns': TURNS, 'durationSeconds': 30, 'organizationId': 7})
                 self.assertEqual(saved['organizationName'], 'مراتك للزجاج')
+                self.assertFalse(saved['appointmentRequest']['created'])
                 self.assertEqual(req('/owner/api/calls-trial/report', 'POST', {'turns': TURNS, 'organizationId': 999})['organizationName'], '')
                 with server.db() as connection:
                     self.assertEqual(connection.execute('SELECT COUNT(*) n FROM appointment_requests').fetchone()['n'], 1)
+                after = (datetime.now(calls_trial.RIYADH) + timedelta(days=2)).strftime('%Y-%m-%d')
+                booked_reply = {'output_text': json.dumps({'callerName': 'حيدر', 'request': 'مرآة حمام', 'appointment': 'بعد بكرة 4 العصر', 'appointmentAt': after + 'T16:00', 'service': 'قياس مرآة', 'callerPhone': '0542027855', 'followUp': True, 'summary': 'س'}, ensure_ascii=False)}
+                with patch.object(ai_core.ResponsesClient, '_http', lambda self, payload: booked_reply):
+                    booked = req('/owner/api/calls-trial/report', 'POST', {'turns': TURNS, 'organizationId': 7})
+                    self.assertTrue(booked['appointmentRequest']['created'])
+                    self.assertIn('بانتظار الموافقة', booked['appointment'])
+                    self.assertFalse(req('/owner/api/calls-trial/report', 'POST', {'turns': TURNS, 'organizationId': 7})['appointmentRequest']['created'])
+                    self.assertFalse(req('/owner/api/calls-trial/report', 'POST', {'turns': TURNS})['appointmentRequest']['created'])
+                with server.db() as connection:
+                    rows = connection.execute("SELECT organization_id,status,source,scheduled_at FROM appointment_requests WHERE source='ai_call'").fetchall()
+                    self.assertEqual([(r['organization_id'], r['status'], r['scheduled_at']) for r in rows], [(7, 'pending', after + 'T16:00:00+03:00')])
+                    connection.execute("DELETE FROM appointment_requests WHERE source='ai_call'"); connection.commit()
                     connection.execute('DELETE FROM call_trial_reports'); connection.commit()
                 with urlopen(base + '/owner/calls-trial', timeout=10) as page:
                     html = page.read().decode('utf-8')

@@ -3153,7 +3153,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 if data.get('organizationId') not in (None, ''):
                     found = [row for row in calls_trial.list_organizations(connection) if str(row['id']) == str(data.get('organizationId'))]
                     organization = found[0] if found else None
+                booking = calls_trial.book_appointment(connection, organization, report, now())
+                if booking['reason']:
+                    report['appointment'] = (report['appointment'] + ' — ' if report['appointment'] else '') + booking['reason']
                 result = calls_trial.save_report(connection, report, turns, data.get('durationSeconds'), now(), organization)
+                result['appointmentRequest'] = booking
                 connection.commit()
             self._send(201, result)
             return
