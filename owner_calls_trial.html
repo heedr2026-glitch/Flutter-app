@@ -29,6 +29,11 @@ pre{white-space:pre-wrap;font:inherit;margin:8px 0 0}
 <section class="card">
 <label for="key">مفتاح المالك</label><input id="key" type="password" autocomplete="off">
 <div class="row">
+<div><label for="organization">المؤسسة التي يرد الموظف باسمها</label><select id="organization"><option value="">خدوم (بدون مؤسسة)</option></select></div>
+<div><label>&nbsp;</label><button id="loadOrganizations" type="button">تحميل المؤسسات</button></div>
+</div>
+<p class="muted" id="organizationNote">اضغط «تحميل المؤسسات» بعد إدخال المفتاح، ثم اختر المؤسسة.</p>
+<div class="row">
 <div><label for="voice">صوت الموظف</label><select id="voice"><option value="male">رجل</option><option value="female">امرأة</option></select></div>
 <div><label>&nbsp;</label><button id="start" type="button">ابدأ المكالمة</button></div>
 <div><label>&nbsp;</label><button id="stop" type="button" class="stop" disabled>أنهِ المكالمة</button></div>
@@ -52,7 +57,8 @@ let pc=null,dc=null,mic=null,startedAt=0,ticker=null,maxSeconds=600,order=[],tur
 function say(text){$('status').textContent=text}
 function esc(text){const d=document.createElement('div');d.textContent=String(text??'');return d.innerHTML}
 function clock(seconds){const m=Math.floor(seconds/60),s=String(Math.floor(seconds%60)).padStart(2,'0');return m+':'+s}
-function busy(inCall){$('start').disabled=inCall;$('stop').disabled=!inCall;$('voice').disabled=inCall}
+function busy(inCall){$('start').disabled=inCall;$('stop').disabled=!inCall;$('voice').disabled=inCall;$('organization').disabled=inCall}
+let callOrganization='';
 
 function remember(id,role,text){
   if(!id)id='x'+order.length;
@@ -82,10 +88,11 @@ async function startCall(){
     say('نطلب إذن المايك…');
     mic=await navigator.mediaDevices.getUserMedia({audio:true});
     say('نجهّز الموظف…');
-    const r=await fetch('/owner/api/calls-trial/session',{method:'POST',headers:hdr(),body:JSON.stringify({voice:$('voice').value})});
+    const r=await fetch('/owner/api/calls-trial/session',{method:'POST',headers:hdr(),body:JSON.stringify({voice:$('voice').value,organizationId:$('organization').value})});
     const session=await r.json();
     if(!r.ok)throw new Error(session.error||'تعذر بدء المكالمة');
-    maxSeconds=session.maxSeconds||600;
+    maxSeconds=session.maxSeconds||600;callOrganization=$('organization').value;
+    if(session.organizationName)$('organizationNote').textContent='الموظف يرد باسم «'+session.organizationName+'». '+(session.knowledgeLines?'عنده '+session.knowledgeLines+' سطر من معلومات المؤسسة وأسعارها.':'المؤسسة لم تكتب أسعارًا ولا معلومات، فلن يذكر أي سعر.');
     pc=new RTCPeerConnection();
     pc.ontrack=e=>{$('voiceOut').srcObject=e.streams[0]};
     pc.onconnectionstatechange=()=>{if(pc&&['failed','disconnected'].includes(pc.connectionState)&&!ending){say('انقطع الاتصال بالموظف.');endCall()}};
@@ -121,7 +128,7 @@ async function endCall(){
   if(!list.length){say('انتهت المكالمة بدون كلام مسجّل، فلم يُكتب تقرير.');busy(false);return}
   say('انتهت المكالمة. نكتب التقرير…');
   try{
-    const r=await fetch('/owner/api/calls-trial/report',{method:'POST',headers:hdr(),body:JSON.stringify({turns:list,durationSeconds:seconds})});
+    const r=await fetch('/owner/api/calls-trial/report',{method:'POST',headers:hdr(),body:JSON.stringify({turns:list,durationSeconds:seconds,organizationId:callOrganization})});
     const report=await r.json();
     if(!r.ok)throw new Error(report.error||'تعذر حفظ التقرير');
     $('report').innerHTML=reportHtml(report);$('reportCard').hidden=false;
@@ -130,7 +137,7 @@ async function endCall(){
   busy(false);
 }
 function reportHtml(r){
-  return '<dl><dt>المتصل</dt><dd>'+esc(r.callerName||'لم يذكر اسمه')+'</dd><dt>الطلب</dt><dd>'+esc(r.request||'—')+'</dd><dt>الموعد المطلوب</dt><dd>'+esc(r.appointment||'لا يوجد')+'</dd><dt>يحتاج متابعة</dt><dd>'+(r.followUp?'نعم':'لا')+'</dd><dt>الملخص</dt><dd>'+esc(r.summary||'—')+'</dd><dt>المدة</dt><dd>'+clock(r.durationSeconds||0)+'</dd></dl><details><summary>نص المكالمة كاملًا</summary><pre>'+esc(r.transcript)+'</pre></details>';
+  return '<dl><dt>المؤسسة</dt><dd>'+esc(r.organizationName||'خدوم')+'</dd><dt>المتصل</dt><dd>'+esc(r.callerName||'لم يذكر اسمه')+'</dd><dt>الطلب</dt><dd>'+esc(r.request||'—')+'</dd><dt>الموعد المطلوب</dt><dd>'+esc(r.appointment||'لا يوجد')+'</dd><dt>يحتاج متابعة</dt><dd>'+(r.followUp?'نعم':'لا')+'</dd><dt>الملخص</dt><dd>'+esc(r.summary||'—')+'</dd><dt>المدة</dt><dd>'+clock(r.durationSeconds||0)+'</dd></dl><details><summary>نص المكالمة كاملًا</summary><pre>'+esc(r.transcript)+'</pre></details>';
 }
 function when(iso){const d=new Date(iso);return isNaN(d)?'':d.toLocaleString('ar-SA',{dateStyle:'medium',timeStyle:'short',hour12:true})}
 async function loadReports(){
@@ -139,8 +146,21 @@ async function loadReports(){
     const r=await fetch('/owner/api/calls-trial/reports',{headers:hdr(),cache:'no-store'});
     const data=await r.json();
     if(!r.ok)throw new Error(data.error||'تعذر تحميل التقارير');
-    $('reports').innerHTML=data.reports.length?data.reports.map(x=>'<details><summary>'+esc(when(x.createdAt))+' · '+esc(x.callerName||'متصل بدون اسم')+'</summary>'+reportHtml(x)+'</details>').join(''):'<p class="muted">لا توجد تقارير بعد. ابدأ أول مكالمة تجريبية.</p>';
+    $('reports').innerHTML=data.reports.length?data.reports.map(x=>'<details><summary>'+esc(when(x.createdAt))+' · '+esc(x.organizationName||'خدوم')+' · '+esc(x.callerName||'متصل بدون اسم')+'</summary>'+reportHtml(x)+'</details>').join(''):'<p class="muted">لا توجد تقارير بعد. ابدأ أول مكالمة تجريبية.</p>';
   }catch(error){$('reports').innerHTML='<p class="muted">'+esc(error.message)+'</p>'}
 }
+async function loadOrganizations(){
+  if(!$('key').value.trim()){$('organizationNote').textContent='أدخل مفتاح المالك أولًا.';return}
+  try{
+    const r=await fetch('/owner/api/calls-trial/organizations',{headers:hdr(),cache:'no-store'});
+    const data=await r.json();
+    if(!r.ok)throw new Error(data.error||'تعذر تحميل المؤسسات');
+    const select=$('organization'),kept=select.value;
+    select.innerHTML='<option value="">خدوم (بدون مؤسسة)</option>'+data.organizations.map(o=>'<option value="'+esc(o.id)+'">'+esc(o.name)+(o.activity?' · '+esc(o.activity):'')+'</option>').join('');
+    select.value=kept;
+    $('organizationNote').textContent=data.organizations.length?'تم تحميل '+data.organizations.length+' مؤسسة. اختر المؤسسة ثم ابدأ المكالمة.':'لا توجد مؤسسات مسجلة.';
+  }catch(error){$('organizationNote').textContent=error.message}
+}
+$('loadOrganizations').onclick=loadOrganizations;
 $('start').onclick=startCall;$('stop').onclick=endCall;$('loadReports').onclick=loadReports;
 </script></body></html>

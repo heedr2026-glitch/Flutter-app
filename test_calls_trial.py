@@ -1,5 +1,6 @@
 import io
 import json
+from datetime import datetime, timedelta
 import os
 import sqlite3
 import tempfile
@@ -126,6 +127,19 @@ class ReportTest(unittest.TestCase):
             self.assertIn('أبي موعد', saved['transcript'])
             self.assertEqual(saved['durationSeconds'], 0)
 
+    def test_old_report_table_gains_organization_columns(self):
+        old = sqlite3.connect(':memory:'); old.row_factory = sqlite3.Row
+        old.execute('''CREATE TABLE call_trial_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, caller_name TEXT NOT NULL DEFAULT '', request_text TEXT NOT NULL DEFAULT '',
+            appointment TEXT NOT NULL DEFAULT '', follow_up INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL DEFAULT '', transcript TEXT NOT NULL DEFAULT '',
+            duration_seconds INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)''')
+        old.execute("INSERT INTO call_trial_reports(caller_name,created_at) VALUES('قديم','2026-10-07T09:00:00+00:00')")
+        calls_trial.migrate(old); calls_trial.migrate(old)
+        self.assertEqual(calls_trial.list_reports(old)[0]['organizationName'], '')
+        saved = calls_trial.save_report(old, calls_trial.build_report([], None), calls_trial.clean_turns(TURNS), 1, '2026-10-07T10:00:00+00:00', {'id': 7, 'name': 'مراتك للزجاج'})
+        self.assertEqual(saved['organizationName'], 'مراتك للزجاج')
+        self.assertEqual(calls_trial.list_reports(old)[0]['organizationName'], 'مراتك للزجاج')
+        old.close()
+
     def test_trial_never_touches_subscriber_tables(self):
         calls_trial.save_report(self.c, calls_trial.build_report([], None), calls_trial.clean_turns(TURNS), 5, '2026-10-07T09:00:00+00:00')
         tables = {row['name'] for row in self.c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -147,7 +161,41 @@ class HttpTest(unittest.TestCase):
                 if owner: headers['X-Owner-Key'] = 'test-only'
                 with urlopen(Request(base + path, method=method, headers=headers, data=None if data is None else json.dumps(data).encode()), timeout=10) as r:
                     return json.load(r)
+            tomorrow = (datetime.now(calls_trial.RIYADH) + timedelta(days=1)).strftime('%Y-%m-%d')
+            with server.db() as connection:
+                connection.execute("INSERT INTO organizations(id,name,activity,phone,created_at) VALUES(?,?,?,?,?)", (7, 'مراتك للزجاج', 'زجاج ومرايا', '966500000000', server.now()))
+                connection.execute("INSERT INTO organizations(id,name,activity,phone,created_at) VALUES(?,?,?,?,?)", (8, 'مؤسسة ثانية', 'مقاولات', '966500000001', server.now()))
+                connection.execute("INSERT INTO ai_training(organization_id,employee_type,content,updated_at) VALUES(?,?,?,?)", (7, 'reception', 'تركيب مرآة حمام 150 ريال\nالدوام من السبت إلى الخميس', server.now()))
+                connection.execute("INSERT INTO ai_training(organization_id,employee_type,content,updated_at) VALUES(?,?,?,?)", (8, 'reception', 'سعر سري للمؤسسة الثانية 999 ريال', server.now()))
+                connection.execute("INSERT INTO appointment_requests(organization_id,branch_id,title,customer_name,phone,scheduled_at,status,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                   (7, 'main', 'قياس', 'عميل', '0500000000', tomorrow + 'T11:00:00+03:00', 'accepted', 'public_chat', server.now(), server.now()))
+                connection.commit()
+            sent = []
+            calls_trial._http = lambda payload: sent.append(payload) or {'value': 'ek_http'}
             try:
+                self.assertEqual(sorted(o['name'] for o in req('/owner/api/calls-trial/organizations')['organizations']), sorted(['مراتك للزجاج', 'مؤسسة ثانية']))
+                with self.assertRaises(HTTPError) as error: req('/owner/api/calls-trial/organizations', owner=False)
+                self.assertEqual(error.exception.code, 401); error.exception.close()
+                with self.assertRaises(HTTPError) as error: req('/owner/api/calls-trial/session', 'POST', {'organizationId': 999})
+                self.assertEqual(error.exception.code, 404); error.exception.close()
+                session = req('/owner/api/calls-trial/session', 'POST', {'voice': 'male', 'organizationId': 7})
+                self.assertEqual((session['organizationName'], session['knowledgeLines']), ('مراتك للزجاج', 2))
+                instructions = sent[-1]['session']['instructions']
+                self.assertIn('موظف الاستقبال في «مراتك للزجاج»', instructions)
+                self.assertNotIn('«خدوم»', instructions)
+                self.assertIn('تركيب مرآة حمام 150 ريال', instructions)
+                self.assertIn('المقاسات', instructions)
+                self.assertNotIn('999', instructions)
+                day_line = [line for line in instructions.splitlines() if tomorrow in line and line.startswith('- ')][0]
+                self.assertNotIn('11:00', day_line)
+                self.assertIn('9:00 صباحًا', day_line)
+                self.assertIn('2:00 مساءً', day_line)
+                saved = req('/owner/api/calls-trial/report', 'POST', {'turns': TURNS, 'durationSeconds': 30, 'organizationId': 7})
+                self.assertEqual(saved['organizationName'], 'مراتك للزجاج')
+                self.assertEqual(req('/owner/api/calls-trial/report', 'POST', {'turns': TURNS, 'organizationId': 999})['organizationName'], '')
+                with server.db() as connection:
+                    self.assertEqual(connection.execute('SELECT COUNT(*) n FROM appointment_requests').fetchone()['n'], 1)
+                    connection.execute('DELETE FROM call_trial_reports'); connection.commit()
                 with urlopen(base + '/owner/calls-trial', timeout=10) as page:
                     html = page.read().decode('utf-8')
                     self.assertIn('تجربة المكالمات', html)

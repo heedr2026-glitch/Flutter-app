@@ -3117,14 +3117,29 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             return
         if path == '/owner/api/calls-trial/session' and method == 'POST':
             self._owner()
+            data = self._body()
+            organization = None
+            if data.get('organizationId') not in (None, ''):
+                with db() as connection:
+                    organization = calls_trial.organization_brief(connection, data.get('organizationId'))
+                if organization is None:
+                    raise ApiError(404, 'المؤسسة غير موجودة')
             try:
-                result = calls_trial.create_session(self._body().get('voice'))
+                result = calls_trial.create_session(data.get('voice'), instructions=organization['instructions'] if organization else None)
             except ai_core.AIServiceError as error:
                 raise ApiError(error.status, error.message)
+            if organization:
+                result.update({'organizationId': organization['id'], 'organizationName': organization['name'], 'knowledgeLines': organization['knowledgeLines']})
             with db() as connection:
-                owner_admin.audit(connection, self.platform_actor['name'], 'calls_trial_started', 'بدء مكالمة تجريبية')
+                owner_admin.audit(connection, self.platform_actor['name'], 'calls_trial_started', 'بدء مكالمة تجريبية' + (' باسم مؤسسة ' + str(organization['id']) if organization else ''))
                 connection.commit()
             self._send(200, result)
+            return
+        if path == '/owner/api/calls-trial/organizations' and method == 'GET':
+            self._owner()
+            with db() as connection:
+                result = calls_trial.list_organizations(connection)
+            self._send(200, {'organizations': result})
             return
         if path == '/owner/api/calls-trial/report' and method == 'POST':
             self._owner()
@@ -3134,7 +3149,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 raise ApiError(400, 'لا يوجد نص مكالمة لحفظه')
             report = calls_trial.build_report(turns)
             with db() as connection:
-                result = calls_trial.save_report(connection, report, turns, data.get('durationSeconds'), now())
+                organization = None
+                if data.get('organizationId') not in (None, ''):
+                    found = [row for row in calls_trial.list_organizations(connection) if str(row['id']) == str(data.get('organizationId'))]
+                    organization = found[0] if found else None
+                result = calls_trial.save_report(connection, report, turns, data.get('durationSeconds'), now(), organization)
                 connection.commit()
             self._send(201, result)
             return
