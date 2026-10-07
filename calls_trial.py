@@ -27,7 +27,8 @@ SPEECH_SPEED = 0.85
 IDENTITY = "أنت موظف استقبال هاتفي في «{name}»، ترد على مكالمة واردة من متصل.\n"
 CALL_RULES = """تكلم بالعربية بلهجة سعودية طبيعية وواضحة، بنبرة ودودة وهادئة، وبجمل قصيرة مثل كلام الناس في الهاتف.
 تكلم على مهلك وبسرعة هادئة، ولا تستعجل في الكلام، وخذ وقفة قصيرة بين الجملة والثانية.
-ابدأ المكالمة أنت بالترحيب: عرّف بنفسك أنك موظف الاستقبال في «{name}»، وبلّغ المتصل أن المكالمة تُسجَّل كتابيًا، ثم اسأله كيف تخدمه.
+لا تبدأ الكلام أنت. انتظر حتى يسلّم المتصل أو يتكلم، ثم رد عليه السلام ورحّب به، وعرّف بنفسك أنك موظف الاستقبال في «{name}»، وبلّغه أن المكالمة تُسجَّل كتابيًا، ثم اسأله كيف تخدمه.
+بعد كل كلام من المتصل رد عليه، ولا تبقَ ساكتًا.
 المطلوب منك في المكالمة:
 - اعرف اسم المتصل.
 - افهم طلبه أو مشكلته بالتفصيل الكافي، واسأل سؤالًا واحدًا في كل مرة.
@@ -157,13 +158,20 @@ def organization_brief(c, organization_id: Any, moment: datetime | None = None) 
             "instructions": (IDENTITY + CALL_RULES).replace("{name}", str(company["name"])) + ORGANIZATION_RULES + "\n".join(lines)}
 
 
-def session_payload(voice: str, transcription: bool = True, speed: bool = True, instructions: str | None = None) -> dict[str, Any]:
+# متى يُعتبر المتصل أنهى كلامه فيرد الموظف: حساسية أعلى قليلًا من الافتراضي لمايك اللابتوب، وصمت 0.6 ثانية.
+TURN_DETECTION = {"type": "server_vad", "threshold": 0.4, "prefix_padding_ms": 300, "silence_duration_ms": 600,
+                  "create_response": True, "interrupt_response": True}
+
+
+def session_payload(voice: str, transcription: bool = True, speed: bool = True, instructions: str | None = None, turns: bool = True) -> dict[str, Any]:
     model = os.environ.get("KHDOOM_REALTIME_MODEL", "").strip() or REALTIME_MODEL
     audio: dict[str, Any] = {"output": {"voice": VOICES[voice]}}
     if speed:
         audio["output"]["speed"] = speech_speed()
     if transcription:
         audio["input"] = {"transcription": {"model": "gpt-4o-mini-transcribe", "language": "ar"}}
+        if turns:
+            audio["input"]["turn_detection"] = dict(TURN_DETECTION)
     return {"session": {"type": "realtime", "model": model, "instructions": instructions or INSTRUCTIONS, "audio": audio}}
 
 
@@ -173,11 +181,11 @@ def create_session(voice: Any, transport: Callable[[dict[str, Any]], dict[str, A
     send = transport or _http
     result: dict[str, Any] | None = None
     transcription = True
-    # تفريغ كلام المتصل وضبط السرعة اختياريان: إن رفض المزود أحدهما نكمل بدونه ولا نعطل التجربة.
-    attempts = ((True, True), (True, False), (False, False))
-    for index, (transcription, speed) in enumerate(attempts):
+    # ضبط السرعة وتوقيت الرد وتفريغ كلام المتصل اختيارية: إن رفض المزود أحدها نكمل بدونه ولا نعطل التجربة.
+    attempts = ((True, True, True), (True, False, True), (True, False, False), (False, False, False))
+    for index, (transcription, speed, turns) in enumerate(attempts):
         try:
-            result = send(session_payload(choice, transcription, speed, instructions))
+            result = send(session_payload(choice, transcription, speed, instructions, turns))
             break
         except HTTPError as error:
             print(f"OPENAI REALTIME SESSION ERROR: {error.code}")

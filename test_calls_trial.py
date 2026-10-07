@@ -47,7 +47,21 @@ class SessionTest(unittest.TestCase):
         self.assertIn('transcription', session['audio']['input'])
         self.assertEqual(session['audio']['output']['speed'], calls_trial.SPEECH_SPEED)
         self.assertIn('على مهلك', session['instructions'])
+        self.assertIn('لا تبدأ الكلام أنت', session['instructions'])
         self.assertIn('سعودية', session['instructions'])
+        self.assertEqual(session['audio']['input']['turn_detection']['type'], 'server_vad')
+        self.assertTrue(session['audio']['input']['turn_detection']['create_response'])
+
+    def test_turn_setting_rejected_keeps_caller_transcription(self):
+        sent = []
+        def transport(payload):
+            sent.append(payload)
+            if 'turn_detection' in payload['session']['audio'].get('input', {}): raise refuse(400)
+            return {'value': 'ek_turns'}
+        result = calls_trial.create_session('male', transport)
+        self.assertEqual(len(sent), 3)
+        self.assertTrue(result['callerTranscription'])
+        self.assertIn('transcription', sent[-1]['session']['audio']['input'])
 
     def test_unknown_voice_is_male_and_nested_secret(self):
         result = calls_trial.create_session('robot', lambda payload: {'client_secret': {'value': 'ek_nested'}})
@@ -60,7 +74,7 @@ class SessionTest(unittest.TestCase):
             if 'input' in payload['session']['audio']: raise refuse(400)
             return {'value': 'ek_plain'}
         result = calls_trial.create_session('male', transport)
-        self.assertEqual(len(sent), 3)
+        self.assertEqual(len(sent), 4)
         self.assertFalse(result['callerTranscription'])
         self.assertEqual(result['clientSecret'], 'ek_plain')
 

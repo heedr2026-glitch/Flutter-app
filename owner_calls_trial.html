@@ -21,6 +21,8 @@ dl{margin:0}dt{color:#7dd3fc;margin-top:10px}dd{margin:0}
 details{border-top:1px solid #285682;padding:10px 0}summary{cursor:pointer}
 pre{white-space:pre-wrap;font:inherit;margin:8px 0 0}
 #timer{font-variant-numeric:tabular-nums}
+.meter{height:10px;background:#09152e;border:1px solid #285682;border-radius:99px;overflow:hidden;margin-top:6px}
+.meter i{display:block;height:100%;width:0;background:#22c55e;transition:width .08s linear}
 </style></head><body><main>
 <a href="/owner">لوحة المالك</a>
 <h1>تجربة المكالمات</h1>
@@ -40,6 +42,7 @@ pre{white-space:pre-wrap;font:inherit;margin:8px 0 0}
 </div>
 <p id="status" role="status"></p>
 <p class="muted">مدة المكالمة: <span id="timer">0:00</span> · تنتهي تلقائيًا بعد عشر دقائق.</p>
+<div class="muted" id="micRow" hidden>المايك: <span id="micText">بانتظار الصوت…</span><div class="meter"><i id="micBar"></i></div></div>
 <audio id="voiceOut" autoplay></audio>
 </section>
 
@@ -59,6 +62,24 @@ function esc(text){const d=document.createElement('div');d.textContent=String(te
 function clock(seconds){const m=Math.floor(seconds/60),s=String(Math.floor(seconds%60)).padStart(2,'0');return m+':'+s}
 function busy(inCall){$('start').disabled=inCall;$('stop').disabled=!inCall;$('voice').disabled=inCall;$('organization').disabled=inCall}
 let callOrganization='';
+let meterContext=null,meterFrame=0,heardSound=false,quietSince=0;
+// مؤشر المايك: يبيّن هل صوت المتصل يصل للمتصفح أصلًا، حتى نفرّق بين مايك مكتوم وموظف لا يرد.
+function startMeter(stream){
+  try{
+    const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;
+    meterContext=new Ctx();const analyser=meterContext.createAnalyser();analyser.fftSize=512;
+    meterContext.createMediaStreamSource(stream).connect(analyser);
+    const data=new Uint8Array(analyser.fftSize);heardSound=false;quietSince=Date.now();$('micRow').hidden=false;
+    const tick=()=>{
+      analyser.getByteTimeDomainData(data);let peak=0;for(const v of data)peak=Math.max(peak,Math.abs(v-128));
+      const level=Math.min(100,Math.round(peak/128*220));$('micBar').style.width=level+'%';
+      if(level>8){heardSound=true;quietSince=Date.now();$('micText').textContent='يلقط صوتك'}
+      else if(Date.now()-quietSince>5000)$('micText').textContent=heardSound?'هادئ الآن':'ما يلقط أي صوت. تأكد أن المايك غير مكتوم وأنه المايك الصحيح.';
+      meterFrame=requestAnimationFrame(tick);
+    };tick();
+  }catch(e){}
+}
+function stopMeter(){cancelAnimationFrame(meterFrame);if(meterContext){try{meterContext.close()}catch(e){}meterContext=null}$('micBar').style.width='0';$('micRow').hidden=true}
 
 function remember(id,role,text){
   if(!id)id='x'+order.length;
@@ -77,6 +98,14 @@ function onEvent(message){
   if(type==='conversation.item.added'||type==='conversation.item.created'){if(ev.item&&ev.item.id)remember(ev.item.id)}
   else if(type==='conversation.item.input_audio_transcription.completed')remember(ev.item_id,'caller',ev.transcript||'');
   else if(type==='response.output_audio_transcript.done'||type==='response.audio_transcript.done')remember(ev.item_id,'agent',ev.transcript||'');
+  else if(type==='input_audio_buffer.speech_started')say('الموظف يسمعك الآن…');
+  else if(type==='input_audio_buffer.speech_stopped')say('وصل كلامك، الموظف يجهّز الرد…');
+  else if(type==='output_audio_buffer.started')say('الموظف يتكلم…');
+  else if(type==='output_audio_buffer.stopped')say('دورك، تكلم.');
+  else if(type==='response.done'){
+    const res=ev.response||{},details=res.status_details||{};
+    if(res.status==='failed'||res.status==='incomplete')say('الموظف ما قدر يرد: '+((details.error&&(details.error.message||details.error.code))||details.reason||res.status));
+  }
   else if(type==='error')say('تنبيه من خدمة الصوت: '+((ev.error&&ev.error.message)||'خطأ غير معروف'));
 }
 
@@ -86,7 +115,8 @@ async function startCall(){
   busy(true);order=[];turns={};drawTurns();$('reportCard').hidden=true;ending=false;
   try{
     say('نطلب إذن المايك…');
-    mic=await navigator.mediaDevices.getUserMedia({audio:true});
+    mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    startMeter(mic);
     say('نجهّز الموظف…');
     const r=await fetch('/owner/api/calls-trial/session',{method:'POST',headers:hdr(),body:JSON.stringify({voice:$('voice').value,organizationId:$('organization').value})});
     const session=await r.json();
@@ -99,7 +129,7 @@ async function startCall(){
     pc.addTrack(mic.getTracks()[0],mic);
     dc=pc.createDataChannel('oai-events');
     dc.onmessage=onEvent;
-    dc.onopen=()=>{dc.send(JSON.stringify({type:'response.create'}));say(session.callerTranscription?'المكالمة شغالة، تكلم.':'المكالمة شغالة، تكلم. (كلامك لن يظهر مكتوبًا في هذه التجربة)')};
+    dc.onopen=()=>{say('المكالمة شغالة. سلّم على الموظف وهو يرد عليك.'+(session.callerTranscription?'':' (كلامك لن يظهر مكتوبًا في هذه التجربة)'))};
     const offer=await pc.createOffer();
     await pc.setLocalDescription(offer);
     const answer=await fetch('https://api.openai.com/v1/realtime/calls',{method:'POST',body:offer.sdp,headers:{'Authorization':'Bearer '+session.clientSecret,'Content-Type':'application/sdp'}});
@@ -113,7 +143,7 @@ async function startCall(){
   }
 }
 function hangUp(){
-  clearInterval(ticker);ticker=null;
+  clearInterval(ticker);ticker=null;stopMeter();
   if(mic){mic.getTracks().forEach(t=>t.stop());mic=null}
   if(dc){try{dc.close()}catch(e){}dc=null}
   if(pc){try{pc.close()}catch(e){}pc=null}
