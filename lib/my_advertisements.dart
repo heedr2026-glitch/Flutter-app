@@ -1646,7 +1646,10 @@ class _AdvertisementRequestDialogState
                 onSelected: (_) => setState(() => _selectedElement = 'logo'),
               ),
               OutlinedButton.icon(
-                onPressed: _pickingImage ? null : _pickImage,
+                onPressed: _pickingImage
+                    ? null
+                    // في وضع «صورة كاملة» تغطي الصورة الشريط كله، وفي «شعار + نص» تكون شعارًا.
+                    : (_fullImageMode ? _pickFullBannerImage : _pickImage),
                 icon: const Icon(Icons.add_photo_alternate_outlined),
                 label: const Text('إضافة صورة'),
               ),
