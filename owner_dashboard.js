@@ -841,7 +841,8 @@ const khdoomBriefRender=render;render=async function(){await khdoomBriefRender()
  const line=(label,value,warn)=>'<li>'+(warn?'🟡 ':'')+esc(label)+': <b>'+esc(value)+'</b></li>';
  let box=document.createElement('div');box.id='dailyBrief';box.className='panel';
  const problems=(b.services_with_problems||[]);
- box.innerHTML='<h3>تقرير اليوم</h3><ul style="margin:0;padding-inline-start:18px;line-height:2">'
+ const late=b.overdue_complaints_no_admin_reply_24h||[];
+ box.innerHTML=(late.length?'<div style="background:#7f1d1d;border:1px solid #fecaca;border-radius:12px;padding:10px 12px;margin-bottom:10px"><b>🔴 شكاوى بدون رد منك من أكثر من 24 ساعة: '+late.length+'</b>'+late.map(x=>'<br>'+esc(x.reference_code||('#'+x.id))+' — '+esc(x.organization||'')+' — '+esc(x.category||'')+' — تنتظر من '+esc(x.hours_waiting)+' ساعة').join('')+'</div>':'')+'<h3>تقرير اليوم</h3><ul style="margin:0;padding-inline-start:18px;line-height:2">'
   +line('مؤسسات جديدة آخر 24 ساعة',(b.new_organizations_24h||[]).length+((b.new_organizations_24h||[]).length?' ('+(b.new_organizations_24h||[]).map(x=>x.name).join('، ')+')':''))
   +line('كل المؤسسات',b.organizations_total??0)
   +line('شكاوى مفتوحة',(b.open_complaints??0)+(b.complaints_older_than_2_days?' — منها '+b.complaints_older_than_2_days+' أقدم من يومين':''),b.complaints_older_than_2_days>0)

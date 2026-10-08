@@ -101,6 +101,23 @@ class AdminAgentTest(ServiceNumberClaimsTest):
         brief = self.call('/owner/api/agent/brief')[1]
         self.assertEqual(brief['income']['this_month']['total_sar'], 150.0)
 
+    def test_complaint_reply_and_overdue(self):
+        from datetime import datetime, timedelta, timezone
+        status, saved = self.call('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'ما أقدر أدخل الحساب'}, user=1)
+        with server.db() as c:
+            c.execute('UPDATE support_tickets SET created_at=? WHERE id=?', ((datetime.now(timezone.utc) - timedelta(hours=30)).isoformat(), saved['id']))
+            c.commit()
+        late = self.call('/owner/api/agent/brief')[1]['overdue_complaints_no_admin_reply_24h']
+        self.assertEqual([x['id'] for x in late], [saved['id']])
+        self.assertGreaterEqual(late[0]['hours_waiting'], 29)
+        proposal = self.tool('propose_complaint_reply', {'reference': saved['referenceCode'], 'reply': 'تم حل المشكلة، سجل دخول من جديد', 'close': True})
+        self.assertIn('إقفالها', proposal['summary'])
+        self.assertTrue(self.tool('confirm_action', {'token': proposal['token']}, user_text='أكد')['done'])
+        mine = self.call('/api/support-tickets', user=1)[1][0]
+        self.assertEqual((mine['status'], mine['owner_reply']), ('resolved', 'تم حل المشكلة، سجل دخول من جديد'))
+        self.assertEqual(self.call('/owner/api/agent/brief')[1]['overdue_complaints_no_admin_reply_24h'], [])
+        self.assertIn('error', self.tool('propose_complaint_reply', {'reference': saved['referenceCode'], 'reply': ''}))
+
     def test_complaint_details_by_reference(self):
         status, saved = self.call('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'الصفحة ما تفتح عندي'}, user=1)
         self.assertEqual(status, 201)

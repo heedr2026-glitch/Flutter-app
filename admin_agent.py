@@ -34,7 +34,8 @@ INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، 
 أسئلة الأرقام العامة (كم مؤسسة، كم مشترك، كم VIP، كم جديد) جاوبها من platform_stats ولا تبحث عن مؤسسة.
 أسئلة مستخدمي مؤسسة من organization_users، وإعادة كلمة المرور من password_resets، والعروض والأكواد من current_offers.
 
-التعديلات (بيانات مؤسسة، الباقة والاشتراك، العروض والخصومات، أكواد الخصم، قرار الإعلانات):
+إذا فيه شكاوى بدون رد من الإدارة أكثر من 24 ساعة (overdue_complaints_no_admin_reply_24h في daily_brief) نبّه المدير عليها أول شي.
+التعديلات (الرد على شكوى أو إقفالها، بيانات مؤسسة، الباقة والاشتراك، العروض والخصومات، أكواد الخصم، قرار الإعلانات):
 1) جهّز الطلب بأداة propose_… المناسبة.
 2) اقرأ للمدير الملخص الراجع بالضبط واسأله: «أأكد؟».
 3) لا تستدعي confirm_action إلا إذا قال المدير صراحة «أكد» في رسالته الأخيرة. أي رد ثاني يعني لا تنفذ.
@@ -48,7 +49,7 @@ PERMISSION = {
     "pending_ads": "ads", "current_offers": "offers", "platform_stats": "organizations.view",
     "daily_brief": "organizations.view", "expiring_subscriptions": "organizations.view",
     "sleeping_organizations": "organizations.view", "transfer_requests": "packages", "income_summary": "finance",
-    "propose_transfer_decision": "packages",
+    "propose_transfer_decision": "packages", "propose_complaint_reply": "support",
     "organization_users": "organizations.view", "password_resets": "organizations.view", "propose_update_organization": "organizations.edit",
     "propose_subscription": "packages", "propose_offer": "offers", "propose_ad_decision": "ads", "propose_discount_code": "codes",
 }
@@ -100,6 +101,8 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": _obj({"code": {"type": "string"}, "discount_percent": {"type": "number"}, "discount_amount": {"type": "number"},
                          "packages": {"type": "string", "enum": ["basic", "vip", "basic,vip"]}, "durations": {"type": "string"},
                          "max_uses": {"type": "integer"}, "days_valid": {"type": "integer"}}, ["code"])},
+    {"type": "function", "name": "propose_complaint_reply", "description": "تجهيز رد من إدارة خدووم على شكوى برقمها يوصل للمشترك، مع إقفالها (close=true) إذا انحلت. لا ينفذ قبل تأكيد المدير",
+     "parameters": _obj({"reference": {"type": "string"}, "reply": {"type": "string"}, "close": {"type": "boolean"}}, ["reference", "reply"])},
     {"type": "function", "name": "propose_ad_decision", "description": "تجهيز الموافقة على طلب إعلان أو رفضه برقمه. لا ينفذ قبل تأكيد المدير",
      "parameters": _obj({"ad_id": {"type": "integer"}, "decision": {"type": "string", "enum": ["approve", "reject"]}, "note": {"type": "string"}}, ["ad_id", "decision"])},
     {"type": "function", "name": "confirm_action", "description": "تنفيذ طلب مجهز بعد أن قال المدير «أكد» صراحة",
@@ -314,6 +317,12 @@ class Agent:
         if exists("support_tickets"):
             brief["open_complaints"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE status NOT IN ('resolved','closed')")
             brief["complaints_older_than_2_days"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE status NOT IN ('resolved','closed') AND created_at<?", ((now - timedelta(days=2)).isoformat(),))
+            overdue = owner_admin.rows(c, """SELECT t.id,t.reference_code,t.category,t.created_at,o.name organization FROM support_tickets t LEFT JOIN organizations o ON o.id=t.organization_id
+                WHERE t.status NOT IN ('resolved','closed') AND COALESCE(t.owner_reply_by,'')<>'admin' AND t.created_at<? ORDER BY t.id LIMIT 20""", ((now - timedelta(hours=24)).isoformat(),))
+            for item in overdue:
+                opened = _parse(item["created_at"])
+                item["hours_waiting"] = int((now - opened).total_seconds() // 3600) if opened else None
+            brief["overdue_complaints_no_admin_reply_24h"] = overdue
             brief["new_complaints_24h"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE created_at>=?", (day,))
         expiring = self.expiring_subscriptions(c, 7)
         brief["expiring_in_7_days"] = [{"organization": x["organization"], "package": x["package"], "days_left": x["days_left"]} for x in expiring["items"]]
@@ -564,6 +573,23 @@ class Agent:
                                       "eligible_durations": months, "max_uses": uses, "starts_at": start.isoformat(),
                                       "expires_at": (start + timedelta(days=valid)).isoformat(), "recipient_name": "عرض عام"}, summary)
 
+    def propose_complaint_reply(self, c, reference: Any = None, reply: Any = None, close: Any = False, **_):
+        ident = _reference_id(c, reference)
+        ticket = c.execute("SELECT t.id,t.reference_code,t.status,t.scope,t.last_error,o.name organization FROM support_tickets t LEFT JOIN organizations o ON o.id=t.organization_id WHERE t.id=?", (ident,)).fetchone() if ident else None
+        if ticket is None:
+            raise ValueError("ما لقيت شكوى بهذا الرقم")
+        text = " ".join(str(reply or "").split())[:1000]
+        if len(text) < 3:
+            raise ValueError("اكتب نص الرد")
+        if ticket["status"] in ("resolved", "closed") and not close:
+            status = ticket["status"]
+        else:
+            status = "resolved" if close is True else ("in_progress" if ticket["status"] == "open" else ticket["status"])
+        ref = ticket["reference_code"] or f"#{ticket['id']}"
+        summary = f"رد على الشكوى {ref} من «{ticket['organization']}»: «{text}»" + ("، وإقفالها كمحلولة" if status == "resolved" and close is True else "")
+        return self._propose("complaint", {"ticket_id": ticket["id"], "status": status, "owner_reply": text, "scope": ticket["scope"] or "private",
+                                           "last_error": ticket["last_error"] or ""}, summary)
+
     def propose_ad_decision(self, c, ad_id: Any = None, decision: Any = None, note: Any = None, **_):
         if decision not in ("approve", "reject"):
             raise ValueError("القرار لازم يكون موافقة أو رفض")
@@ -593,7 +619,7 @@ class Agent:
                 raise ValueError("هذا الطلب جهزه مدير آخر")
             _pending.pop(str(token), None)
         kind, args = item["kind"], item["args"]
-        if not self._allowed({"organization": "organizations.edit", "subscription": "packages", "offer": "offers", "ad": "ads", "code": "codes", "transfer": "packages"}[kind]):
+        if not self._allowed({"organization": "organizations.edit", "subscription": "packages", "offer": "offers", "ad": "ads", "code": "codes", "transfer": "packages", "complaint": "support"}[kind]):
             raise PermissionError("ما عندك صلاحية لهذا التعديل")
         actor = self.actor.get("name") or "المدير"
         if kind == "organization":
@@ -614,6 +640,8 @@ class Agent:
             owner_admin.audit(c, actor, "agent_discount_code_created", json.dumps({k: v for k, v in args.items() if k != "code"} | {"code_prefix": args["code"][:3]}, ensure_ascii=False))
         elif kind == "transfer":
             self.s.process_subscription_request(c, args["request_id"], args["action"], {"durationDays": args["days"]}, actor)
+        elif kind == "complaint":
+            self._dispatch(c, "support/%d" % args["ticket_id"], "PUT", {k: v for k, v in args.items() if k != "ticket_id"})
         elif kind == "ad":
             data = {k: v for k, v in args.items() if k != "ad_id"}
             self._dispatch(c, "ads/%d" % args["ad_id"], "PUT", data)
