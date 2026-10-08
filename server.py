@@ -4812,7 +4812,10 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 logo_data = str(data.get("logoData", "")).strip()
                 if logo_data and (len(logo_data) > 450000 or not re.fullmatch(r"data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+", logo_data)):
                     raise ApiError(400, "شعار المؤسسة يجب أن يكون PNG أو JPG أو WebP وبحجم مناسب")
-                connection.execute("UPDATE organizations SET name=?,activity=?,phone=?,logo_data=CASE WHEN ?='' THEN logo_data ELSE ? END WHERE id=?", (str(data.get("name", "")).strip(), str(data.get("activity", "")).strip(), str(data.get("phone", "")).strip(), logo_data, logo_data, organization_id))
+                organization_name = " ".join(str(data.get("name", "")).split())[:120]
+                if not organization_name:
+                    raise ApiError(400, "اكتب اسم المؤسسة")
+                connection.execute("UPDATE organizations SET name=?,activity=?,phone=?,logo_data=CASE WHEN ?='' THEN logo_data ELSE ? END WHERE id=?", (organization_name, " ".join(str(data.get("activity", "")).split())[:120], str(data.get("phone", "")).strip()[:30], logo_data, logo_data, organization_id))
                 audit_log(connection, organization_id, user["id"], "organization_updated", "تم تعديل بيانات المؤسسة", "organization", organization_id)
                 connection.commit()
                 self._send(200, {"saved": True})

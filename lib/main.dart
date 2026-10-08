@@ -8432,6 +8432,29 @@ class _MyBusinessPageState extends State<MyBusinessPage> {
     }
   }
 
+  Future<bool> _syncOrganizationProfile(BranchPreferences prefs) async {
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'cloud_session_token');
+    if (token == null || token.isEmpty) return false;
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
+    try {
+      await api.updateOrganization({
+        'name': businessName,
+        'activity': activity == 'غير محدد' ? '' : activity,
+        'phone': phone == 'غير مضاف' ? '' : phone,
+      });
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      api.close();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Directionality(
@@ -8620,6 +8643,19 @@ class _MyBusinessPageState extends State<MyBusinessPage> {
                         businessName,
                       );
                       await prefs.setString('account_phone', phone);
+                      // بيانات المؤسسة الرئيسية تُحفظ في الخادم أيضًا، لا في الجوال فقط،
+                      // فتظهر في لوحة الإدارة والأجهزة الأخرى ويستخدمها موظفو AI.
+                      final synced = await _syncOrganizationProfile(prefs);
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            synced
+                                ? 'تم حفظ بيانات المؤسسة ✓'
+                                : 'انحفظت على جوالك، وتعذر حفظها في الخادم الآن. حاول مرة ثانية لاحقًا.',
+                          ),
+                        ),
+                      );
                     }
                   }
                 },

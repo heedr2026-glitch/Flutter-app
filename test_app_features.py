@@ -56,6 +56,12 @@ class AppFeaturesTest(ServiceNumberClaimsTest):
         self.call('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'رسالة قديمة â€” فيها شرطة'}, user=1)
         self.assertIn('قديمة — فيها', self.call('/api/support-tickets', user=1)[1][0]['message'])
 
+    def test_organization_edit_reaches_server_and_never_blanks_name(self):
+        self.assertEqual(self.call('/api/organization', 'PUT', {'name': '   ', 'activity': 'زجاج', 'phone': ''}, user=1)[0], 400)
+        self.assertEqual(self.call('/api/organization', 'PUT', {'name': ' مراتك   للزجاج ', 'activity': 'زجاج ومرايا', 'phone': '0500000000'}, user=1)[0], 200)
+        organization = self.call('/api/organization', user=1)[1]
+        self.assertEqual((organization['name'], organization['activity']), ('مراتك للزجاج', 'زجاج ومرايا'))
+
     def test_attachment_validation(self):
         class E(Exception):
             def __init__(self, status, message): super().__init__(message); self.status = status
