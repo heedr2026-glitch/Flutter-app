@@ -106,6 +106,11 @@ class AdminAgentTest(ServiceNumberClaimsTest):
             saved = c.execute("SELECT discount_percent,eligible_packages,max_uses,code_kind FROM activation_codes WHERE code_prefix='KH20'").fetchone()
         self.assertEqual(tuple(saved), (20.0, 'vip', 50, 'discount'))
         self.assertIn('موجود', self.tool('propose_discount_code', {'code': 'KH20', 'discount_amount': 30})['error'])
+        listing = self.tool('current_offers')
+        self.assertEqual(listing['package_prices']['الأساسية']['6 شهر'], 300.0)
+        self.assertEqual(listing['running_offers'], 3)
+        self.assertEqual([o['type'] for o in listing['offers']][:3], ['سعر خاص', 'نسبة خصم', 'أشهر مجانية'])
+        self.assertEqual((listing['discount_codes'][0]['code'], listing['discount_codes'][0]['discount'], listing['discount_codes'][0]['used'], listing['discount_codes'][0]['status']), ('KH20', '20%', '0 من 50', 'شغال'))
 
     def test_ad_decision(self):
         with server.db() as c:

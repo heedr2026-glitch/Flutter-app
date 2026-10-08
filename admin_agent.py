@@ -40,7 +40,7 @@ INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، 
 PERMISSION = {
     "find_organization": "organizations.view", "organization_status": "organizations.view",
     "complaint_details": "support", "recheck_complaint": "support", "platform_status": "security",
-    "pending_ads": "ads", "propose_update_organization": "organizations.edit",
+    "pending_ads": "ads", "current_offers": "offers", "propose_update_organization": "organizations.edit",
     "propose_subscription": "packages", "propose_offer": "offers", "propose_ad_decision": "ads", "propose_discount_code": "codes",
 }
 
@@ -57,6 +57,8 @@ TOOLS: list[dict[str, Any]] = [
     {"type": "function", "name": "platform_status", "description": "وضع المنصة الحالي: الخدمات والشكاوى المفتوحة والمتأخرة",
      "parameters": _obj({})},
     {"type": "function", "name": "pending_ads", "description": "طلبات الإعلانات الجديدة التي تنتظر الموافقة",
+     "parameters": _obj({})},
+    {"type": "function", "name": "current_offers", "description": "العروض الحالية على الباقات وأكواد الخصم وأسعار الباقات العادية، مع حالة كل وحدة",
      "parameters": _obj({})},
     {"type": "function", "name": "propose_update_organization", "description": "تجهيز تعديل بيانات مؤسسة (الاسم أو النشاط أو رقم التواصل). لا ينفذ قبل تأكيد المدير",
      "parameters": _obj({"organization_id": {"type": "integer"}, "name": {"type": "string"}, "activity": {"type": "string"}, "phone": {"type": "string"}}, ["organization_id"])},
@@ -180,6 +182,37 @@ class Agent:
         items = [{"ad_id": ad.get("id"), "organization": ad.get("organization_name"), "title": ad.get("title"), "message": str(ad.get("message") or "")[:200],
                   "requested_days": ad.get("requested_days"), "created_at": ad.get("created_at")} for ad in (out.get("items") or [])]
         return {"items": items, "count": len(items)}
+
+    def current_offers(self, c, **_):
+        now = _now().isoformat()
+        prices = {}
+        if owner_admin.table_exists(c, "package_prices", self.s):
+            for row in c.execute("SELECT package,duration_months,price_sar FROM package_prices ORDER BY package,duration_months").fetchall():
+                prices.setdefault(PACKAGE_NAMES.get(row["package"], row["package"]), {})[f"{row['duration_months']} شهر"] = row["price_sar"]
+        offers = []
+        if owner_admin.table_exists(c, "package_offers", self.s):
+            for row in owner_admin.rows(c, "SELECT * FROM package_offers ORDER BY id DESC LIMIT 30"):
+                running = bool(row.get("active")) and owner_admin.active_offer(row)
+                ended = bool(row.get("ends_at")) and str(row["ends_at"]) <= now
+                offers.append({"id": row.get("id"), "package": PACKAGE_NAMES.get(row.get("package"), row.get("package")), "paid_months": row.get("paid_months"),
+                               "type": {"bonus": "أشهر مجانية", "percent": "نسبة خصم", "price": "سعر خاص"}.get(row.get("offer_type") or "price", row.get("offer_type")),
+                               "bonus_months": row.get("bonus_months"), "discount_percent": row.get("discount_percent"),
+                               "original_price": row.get("base_price_sar"), "offer_price": row.get("price_sar"), "label": row.get("label"),
+                               "starts_at": row.get("starts_at"), "ends_at": row.get("ends_at"),
+                               # عروض قديمة بلا سعر أساسي لا يعرضها التطبيق للمشتركين.
+                               "status": "غير ظاهر في التطبيق" if row.get("base_price_sar") is None else "شغال" if running else "منتهي" if ended else "متوقف"})
+        codes = []
+        if owner_admin.table_exists(c, "activation_codes", self.s):
+            for row in owner_admin.rows(c, "SELECT code_prefix,discount_percent,discount_amount,eligible_packages,eligible_durations,max_uses,used_count,starts_at,expires_at,active FROM activation_codes WHERE code_kind='discount' ORDER BY id DESC LIMIT 30"):
+                expired = bool(row.get("expires_at")) and str(row["expires_at"]) <= now
+                used_up = row.get("max_uses") is not None and (row.get("used_count") or 0) >= row["max_uses"]
+                codes.append({"code": row.get("code_prefix"), "discount": f"{row['discount_percent']:g}%" if row.get("discount_percent") else f"{row.get('discount_amount') or 0:g} ريال",
+                              "packages": " و".join(PACKAGE_NAMES.get(p, p) for p in str(row.get("eligible_packages") or "").split(",") if p),
+                              "durations": row.get("eligible_durations"), "used": f"{row.get('used_count') or 0} من {row.get('max_uses')}",
+                              "expires_at": row.get("expires_at"),
+                              "status": "متوقف" if not row.get("active", 1) else "منتهي" if expired else "مستنفد" if used_up else "شغال"})
+        return {"package_prices": prices, "offers": offers, "discount_codes": codes,
+                "running_offers": sum(1 for o in offers if o["status"] == "شغال"), "running_codes": sum(1 for x in codes if x["status"] == "شغال")}
 
     # ---------- تجهيز التعديلات ----------
     def _propose(self, kind: str, args: dict[str, Any], summary: str) -> dict[str, Any]:
