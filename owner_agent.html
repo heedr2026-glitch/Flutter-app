@@ -1,0 +1,145 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف الإدارة</title>
+<style>
+body{background:#0b1020;color:#fff;font-family:Tahoma,sans-serif;margin:0;padding:24px;line-height:1.8}
+main{max-width:760px;margin:auto}
+a{color:#7dd3fc}
+h1{color:#28c7ff;margin:12px 0 4px}
+.card{background:#111f42;padding:22px;border:1px solid #285682;border-radius:18px;margin:16px 0}
+label{display:block;margin-top:12px}
+input,select,button,textarea{box-sizing:border-box;width:100%;font:inherit;padding:14px;margin:8px 0;border-radius:10px;background:#09152e;color:#fff;border:1px solid #38bdf8}
+textarea{min-height:70px;resize:vertical}
+button{background:#0284c7;cursor:pointer;font-weight:bold}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.stop{background:#b91c1c;border-color:#fca5a5}
+button.ok{background:#15803d;border-color:#86efac}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1 1 160px}
+#status{white-space:pre-wrap;color:#fbbf24;min-height:1.8em}
+.turn{padding:10px 14px;border-radius:12px;margin:8px 0;max-width:88%;white-space:pre-wrap}
+.turn.agent{background:#174887}
+.turn.user{background:#1f2937;margin-inline-start:auto}
+.turn b{display:block;font-size:.85em;color:#bae6fd}
+.pending{border:2px solid #fbbf24;border-radius:14px;padding:12px;margin:10px 0;background:#1c1917}
+.muted{color:#cbd5e1;font-size:.92em}
+</style></head><body><main>
+<a href="/owner">لوحة المالك</a>
+<h1>موظف الإدارة</h1>
+<p class="muted">اسأله أو أعطه أمر بالكتابة أو بالصوت: «شيك الشكوى 22»، «وش وضع مؤسسة مراتك؟»، «مدد اشتراكهم 30 يوم»، «سو عرض 6 شهور ويضاف شهر للأساسية»، «وش طلبات الإعلانات الجديدة؟». أي تعديل ما يتنفذ إلا بعد ما تقول «أكد» أو تضغط زر التأكيد.</p>
+
+<section class="card">
+<label for="key">مفتاح المالك</label><input id="key" type="password" autocomplete="off">
+<div id="pendingBox"></div>
+</section>
+
+<section class="card">
+<h2>المحادثة</h2>
+<div id="turns"><p class="muted">تظهر هنا المحادثة الكتابية والصوتية.</p></div>
+<textarea id="message" placeholder="اكتب سؤالك أو أمرك هنا"></textarea>
+<button id="send" type="button">إرسال</button>
+</section>
+
+<section class="card">
+<h2>مكالمة صوتية</h2>
+<div class="row">
+<div><label for="voice">صوت الموظف</label><select id="voice"><option value="male">رجل</option><option value="female">امرأة</option></select></div>
+<div><label>&nbsp;</label><button id="start" type="button">ابدأ المكالمة</button></div>
+<div><label>&nbsp;</label><button id="stop" type="button" class="stop" disabled>أنهِ المكالمة</button></div>
+</div>
+<p id="status" role="status"></p>
+<audio id="voiceOut" autoplay></audio>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':$('key').value.trim()});
+function esc(t){const d=document.createElement('div');d.textContent=String(t??'');return d.innerHTML}
+function say(t){$('status').textContent=t}
+let chatHistory=[],order=[],turns={},pc=null,dc=null,mic=null,lastUserText='',lastUserAt=0,lastSpeechStop=0;
+
+function add(role,text){chatHistory.push({role:role==='user'?'user':'assistant',text});order.push('t'+order.length);turns[order[order.length-1]]={role,text};draw()}
+function remember(id,role,text){if(!order.includes(id))order.push(id);if(text!==undefined)turns[id]={role,text:String(text).trim()};draw()}
+function draw(){const list=order.map(id=>turns[id]).filter(t=>t&&t.text);$('turns').innerHTML=list.length?list.map(t=>'<div class="turn '+(t.role==='user'?'user':'agent')+'"><b>'+(t.role==='user'?'أنت':'موظف الإدارة')+'</b>'+esc(t.text)+'</div>').join(''):'<p class="muted">تظهر هنا المحادثة الكتابية والصوتية.</p>'}
+
+// طلب مجهز ينتظر التأكيد: يظهر كبطاقة فيها زر «أكد» و«إلغاء».
+function showPending(item){
+  if(!item||!item.token||$('p-'+item.token))return;
+  const box=document.createElement('div');box.className='pending';box.id='p-'+item.token;
+  box.innerHTML='<b>بانتظار تأكيدك:</b><p>'+esc(item.summary)+'</p><div class="row"><button type="button" class="ok">أكد</button><button type="button" class="stop">إلغاء</button></div>';
+  const [ok,cancel]=box.querySelectorAll('button');
+  ok.onclick=async()=>{ok.disabled=cancel.disabled=true;try{const r=await fetch('/owner/api/agent/confirm',{method:'POST',headers:hdr(),body:JSON.stringify({token:item.token})});const d=await r.json();if(!r.ok||d.error)throw new Error(d.error||'تعذر التنفيذ');box.innerHTML='<b>✅ تم التنفيذ:</b> '+esc(d.summary);add('agent','تم التنفيذ: '+d.summary)}catch(e){box.innerHTML='<b>⚠️ ما تنفذ:</b> '+esc(e.message)}};
+  cancel.onclick=()=>{box.innerHTML='<b>تم الإلغاء.</b> '+esc(item.summary);setTimeout(()=>box.remove(),4000)};
+  $('pendingBox').prepend(box);
+}
+function settle(token,text){const box=$('p-'+token);if(box)box.innerHTML=text}
+
+async function send(){
+  const text=$('message').value.trim();if(!text)return;
+  if(!$('key').value.trim()){say('أدخل مفتاح المالك أولًا.');return}
+  $('message').value='';const past=chatHistory.slice(-10);add('user',text);$('send').disabled=true;
+  try{
+    const r=await fetch('/owner/api/agent/chat',{method:'POST',headers:hdr(),body:JSON.stringify({message:text,history:past})});
+    const d=await r.json();if(!r.ok)throw new Error(d.error||'تعذر الرد');
+    add('agent',d.answer);(d.pending||[]).forEach(showPending);
+  }catch(e){add('agent','⚠️ '+e.message)}finally{$('send').disabled=false}
+}
+$('send').onclick=send;
+$('message').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
+
+// الأدوات في المكالمة: النموذج يطلبها، والمتصفح ينقلها لخادم خدووم، ثم يرجع النتيجة للنموذج.
+async function runTool(ev){
+  let userText=lastUserText;
+  if(ev.name==='confirm_action'){
+    // ننتظر قليلًا حتى يكتمل تفريغ آخر كلام المدير، فالتأكيد يعتمد على كلمة «أكد» نفسها.
+    const until=Date.now()+3500;while(lastUserAt<lastSpeechStop&&Date.now()<until)await new Promise(r=>setTimeout(r,200));userText=lastUserText;
+  }
+  let output;
+  try{
+    const r=await fetch('/owner/api/agent/tool',{method:'POST',headers:hdr(),body:JSON.stringify({name:ev.name,arguments:ev.arguments,userText})});
+    output=await r.json();if(!r.ok)output={error:output.error||'تعذر التنفيذ'};
+  }catch(e){output={error:'تعذر الاتصال بخادم خدووم'}}
+  if(output&&output.token)showPending(output);
+  if(ev.name==='confirm_action'&&output&&output.done){let a={};try{a=JSON.parse(ev.arguments||'{}')}catch(_){}settle(a.token,'<b>✅ تم التنفيذ:</b> '+esc(output.summary))}
+  if(!dc||dc.readyState!=='open')return;
+  dc.send(JSON.stringify({type:'conversation.item.create',item:{type:'function_call_output',call_id:ev.call_id,output:JSON.stringify(output).slice(0,12000)}}));
+  dc.send(JSON.stringify({type:'response.create'}));
+}
+function onEvent(message){
+  let ev;try{ev=JSON.parse(message.data)}catch(e){return}
+  const type=ev.type||'';
+  if(type==='conversation.item.added'||type==='conversation.item.created'){if(ev.item&&ev.item.id&&ev.item.type==='message')remember(ev.item.id)}
+  else if(type==='conversation.item.input_audio_transcription.completed'){lastUserText=ev.transcript||'';lastUserAt=Date.now();remember(ev.item_id,'user',lastUserText);chatHistory.push({role:'user',text:lastUserText})}
+  else if(type==='response.output_audio_transcript.done'||type==='response.audio_transcript.done'){remember(ev.item_id,'agent',ev.transcript||'');chatHistory.push({role:'assistant',text:ev.transcript||''})}
+  else if(type==='response.function_call_arguments.done')runTool(ev);
+  else if(type==='input_audio_buffer.speech_started')say('يسمعك…');
+  else if(type==='input_audio_buffer.speech_stopped'){lastSpeechStop=Date.now();say('يفكر…')}
+  else if(type==='output_audio_buffer.started')say('يتكلم…');
+  else if(type==='output_audio_buffer.stopped')say('دورك، تكلم.');
+  else if(type==='error')say('تنبيه من خدمة الصوت: '+((ev.error&&ev.error.message)||'خطأ غير معروف'));
+}
+async function startCall(){
+  if(!$('key').value.trim()){say('أدخل مفتاح المالك أولًا.');return}
+  if(!navigator.mediaDevices||!window.RTCPeerConnection){say('هذا المتصفح لا يدعم المكالمة. جرّب Chrome أو Edge.');return}
+  $('start').disabled=true;$('stop').disabled=false;
+  try{
+    say('نطلب إذن المايك…');
+    mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    say('نجهّز الموظف…');
+    const r=await fetch('/owner/api/agent/voice-session',{method:'POST',headers:hdr(),body:JSON.stringify({voice:$('voice').value})});
+    const session=await r.json();if(!r.ok)throw new Error(session.error||'تعذر بدء المكالمة');
+    pc=new RTCPeerConnection();pc.ontrack=e=>{$('voiceOut').srcObject=e.streams[0]};
+    pc.addTrack(mic.getTracks()[0],mic);
+    dc=pc.createDataChannel('oai-events');dc.onmessage=onEvent;dc.onopen=()=>say('المكالمة شغالة. تكلم.');
+    const offer=await pc.createOffer();await pc.setLocalDescription(offer);
+    const answer=await fetch('https://api.openai.com/v1/realtime/calls',{method:'POST',body:offer.sdp,headers:{'Authorization':'Bearer '+session.clientSecret,'Content-Type':'application/sdp'}});
+    if(!answer.ok)throw new Error('خدمة الصوت رفضت الاتصال ('+answer.status+')');
+    await pc.setRemoteDescription({type:'answer',sdp:await answer.text()});
+    setTimeout(()=>{if(pc)stopCall('انتهت مدة المكالمة (10 دقائق).')},(session.maxSeconds||600)*1000);
+  }catch(e){stopCall(e&&e.name==='NotAllowedError'?'المتصفح منع المايك. اسمح له من إعدادات الموقع.':(e.message||'تعذر بدء المكالمة'))}
+}
+function stopCall(text){
+  if(mic){mic.getTracks().forEach(t=>t.stop());mic=null}
+  if(dc){try{dc.close()}catch(e){}dc=null}
+  if(pc){try{pc.close()}catch(e){}pc=null}
+  $('start').disabled=false;$('stop').disabled=true;say(text||'انتهت المكالمة.');
+}
+$('start').onclick=startCall;$('stop').onclick=()=>stopCall();
+</script></body></html>

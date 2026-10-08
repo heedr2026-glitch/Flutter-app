@@ -191,7 +191,8 @@ def session_payload(voice: str, transcription: Any = TRANSCRIBE_MODELS[0], speed
     return {"session": {"type": "realtime", "model": model, "instructions": instructions or INSTRUCTIONS, "audio": audio}}
 
 
-def create_session(voice: Any, transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None, instructions: str | None = None) -> dict[str, Any]:
+def create_session(voice: Any, transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None, instructions: str | None = None,
+                   tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """مفتاح مؤقت قصير العمر يتصل به المتصفح مباشرة؛ مفتاح الخادم الحقيقي لا يغادره."""
     choice = "female" if str(voice or "").strip().lower() == "female" else "male"
     send = transport or _http
@@ -199,7 +200,12 @@ def create_session(voice: Any, transport: Callable[[dict[str, Any]], dict[str, A
     transcription = True
     for index, (transcription, speed, turns, extras) in enumerate(ATTEMPTS):
         try:
-            result = send(session_payload(choice, transcription, speed, instructions, turns, extras))
+            payload = session_payload(choice, transcription, speed, instructions, turns, extras)
+            if tools:
+                # أدوات يستدعيها النموذج أثناء المكالمة؛ المتصفح ينقلها لخادم خدووم لينفذها.
+                payload["session"]["tools"] = tools
+                payload["session"]["tool_choice"] = "auto"
+            result = send(payload)
             break
         except HTTPError as error:
             print(f"OPENAI REALTIME SESSION ERROR: {error.code}")

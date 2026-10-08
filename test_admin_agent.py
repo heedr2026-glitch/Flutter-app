@@ -1,0 +1,154 @@
+"""موظف الإدارة: القراءة تنفذ مباشرة، والتعديلات لا تنفذ إلا بتأكيد صريح من المدير."""
+import json
+import unittest
+from urllib.request import urlopen
+
+import admin_agent
+import ai_core
+import server
+from unittest.mock import patch
+from test_service_number_claims import ServiceNumberClaimsTest
+
+
+class AdminAgentTest(ServiceNumberClaimsTest):
+    def tool(self, name, arguments=None, user_text=''):
+        return self.call('/owner/api/agent/tool', 'POST', {'name': name, 'arguments': json.dumps(arguments or {}), 'userText': user_text})[1]
+
+    def test_read_tools(self):
+        found = self.tool('find_organization', {'name': 'مؤسسة'})
+        self.assertEqual(found['count'], 2)
+        status = self.tool('organization_status', {'organization_id': 1})
+        self.assertEqual((status['name'], status['package'], status['users']), ('مؤسسة 1', 'VIP', 1))
+        self.assertIn('error', self.tool('organization_status', {'organization_id': 999}))
+        self.assertIn('error', self.tool('unknown_tool'))
+        # المشترك ما يقدر يستخدم موظف الإدارة.
+        self.assertEqual(self.call('/owner/api/agent/tool', 'POST', {'name': 'find_organization', 'arguments': '{}'}, user=1)[0], 401)
+
+    def test_complaint_details_by_reference(self):
+        status, saved = self.call('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'الصفحة ما تفتح عندي'}, user=1)
+        self.assertEqual(status, 201)
+        details = self.tool('complaint_details', {'reference': saved['referenceCode']})
+        self.assertEqual(details['ticket']['id'], saved['id'])
+        self.assertEqual(details['ticket']['organization_name'], 'مؤسسة 1')
+        self.assertEqual(self.tool('complaint_details', {'reference': str(saved['id'])})['ticket']['id'], saved['id'])
+        self.assertIn('error', self.tool('complaint_details', {'reference': 'KHD-2026-999999'}))
+        recheck = self.tool('recheck_complaint', {'reference': saved['referenceCode']})
+        self.assertNotIn('error', recheck)
+        self.assertTrue(recheck)
+        self.assertNotIn('error', self.tool('platform_status'))
+
+    def test_changes_need_explicit_confirmation(self):
+        proposal = self.tool('propose_update_organization', {'organization_id': 1, 'name': 'مراتك للزجاج', 'activity': 'زجاج'})
+        self.assertIn('مراتك للزجاج', proposal['summary'])
+        # بدون كلمة «أكد» لا يتنفذ شي.
+        self.assertIn('error', self.tool('confirm_action', {'token': proposal['token']}, user_text='تمام'))
+        with server.db() as c:
+            self.assertEqual(c.execute('SELECT name FROM organizations WHERE id=1').fetchone()['name'], 'مؤسسة 1')
+        done = self.tool('confirm_action', {'token': proposal['token']}, user_text='أكد')
+        self.assertTrue(done['done'])
+        with server.db() as c:
+            row = c.execute('SELECT name,activity FROM organizations WHERE id=1').fetchone()
+            self.assertEqual((row['name'], row['activity']), ('مراتك للزجاج', 'زجاج'))
+            self.assertTrue(c.execute("SELECT 1 FROM platform_audit WHERE action='agent_organization_updated'").fetchone())
+        # نفس الطلب ما يتنفذ مرتين.
+        self.assertIn('error', self.tool('confirm_action', {'token': proposal['token']}, user_text='أكد'))
+        self.assertIn('error', self.tool('propose_update_organization', {'organization_id': 1}))
+
+    def test_subscription_extend_and_change(self):
+        with server.db() as c:
+            before = c.execute('SELECT expires_at FROM subscriptions WHERE organization_id=2').fetchone()['expires_at']
+        extend = self.tool('propose_subscription', {'organization_id': 2, 'add_days': 30})
+        self.assertIn('تمديد', extend['summary'])
+        # التأكيد من زر الصفحة.
+        self.assertTrue(self.call('/owner/api/agent/confirm', 'POST', {'token': extend['token']})[1]['done'])
+        with server.db() as c:
+            after = c.execute('SELECT package,expires_at FROM subscriptions WHERE organization_id=2').fetchone()
+        self.assertEqual(after['package'], 'vip')
+        self.assertEqual((admin_agent._parse(after['expires_at']) - admin_agent._parse(before)).days, 30)
+        change = self.tool('propose_subscription', {'organization_id': 2, 'package': 'basic'})
+        self.assertIn('الأساسية', change['summary'])
+        self.tool('confirm_action', {'token': change['token']}, user_text='اكد')
+        with server.db() as c:
+            self.assertEqual(c.execute('SELECT package FROM subscriptions WHERE organization_id=2').fetchone()['package'], 'basic')
+        self.assertIn('error', self.tool('propose_subscription', {'organization_id': 2}))
+        self.assertIn('error', self.tool('propose_subscription', {'organization_id': 2, 'package': 'gold'}))
+
+    def test_offer_requires_prices_and_creates_bonus_offer(self):
+        self.assertIn('error', self.tool('propose_offer', {'package': 'basic', 'paid_months': 5, 'bonus_months': 1}))
+        with server.db() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS package_prices(package TEXT, duration_months INTEGER, price_sar REAL)")
+            c.execute("DELETE FROM package_prices")
+            c.execute("INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES('basic',6,300,?)", (server.now(),))
+            c.commit()
+        self.assertIn('error', self.tool('propose_offer', {'package': 'vip', 'paid_months': 6, 'bonus_months': 1}))
+        proposal = self.tool('propose_offer', {'package': 'basic', 'paid_months': 6, 'bonus_months': 1})
+        self.assertIn('6 شهر', proposal['summary'])
+        self.assertTrue(self.tool('confirm_action', {'token': proposal['token']}, user_text='أكد')['done'])
+        with server.db() as c:
+            offer = c.execute('SELECT package,paid_months,bonus_months,price_sar,offer_type,active FROM package_offers ORDER BY id DESC LIMIT 1').fetchone()
+        self.assertEqual(tuple(offer), ('basic', 6, 1, 300.0, 'bonus', 1))
+
+    def test_ad_decision(self):
+        with server.db() as c:
+            c.execute("INSERT INTO advertisements(organization_id,title,message,contact,active,approved,created_at,requested_days) VALUES(1,'خصم الزجاج','تفاصيل','050',1,0,?,5)", (server.now(),))
+            c.commit()
+            ad_id = c.execute('SELECT id FROM advertisements ORDER BY id DESC LIMIT 1').fetchone()['id']
+        pending = self.tool('pending_ads')
+        self.assertEqual([x['ad_id'] for x in pending['items']], [ad_id])
+        proposal = self.tool('propose_ad_decision', {'ad_id': ad_id, 'decision': 'approve'})
+        self.assertIn('5 يوم', proposal['summary'])
+        self.assertTrue(self.tool('confirm_action', {'token': proposal['token']}, user_text='أكد')['done'])
+        with server.db() as c:
+            ad = c.execute('SELECT approved,active,expires_at FROM advertisements WHERE id=?', (ad_id,)).fetchone()
+        self.assertEqual((ad['approved'], ad['active']), (1, 1))
+        self.assertTrue(ad['expires_at'])
+        self.assertEqual(self.tool('pending_ads')['count'], 0)
+
+    def test_text_chat_runs_tools_and_returns_pending(self):
+        replies = [
+            {'output': [{'type': 'function_call', 'call_id': 'c1', 'name': 'propose_update_organization', 'arguments': json.dumps({'organization_id': 1, 'phone': '0555555555'})}]},
+            {'output_text': 'جهزت التعديل. أأكد؟'},
+        ]
+        with patch.object(ai_core.ResponsesClient, '_http', lambda self, payload: replies.pop(0)):
+            status, result = self.call('/owner/api/agent/chat', 'POST', {'message': 'غير رقم مؤسسة 1', 'history': []})
+        self.assertEqual(status, 200)
+        self.assertEqual(result['answer'], 'جهزت التعديل. أأكد؟')
+        self.assertEqual(len(result['pending']), 1)
+        self.assertIn('0555555555', result['pending'][0]['summary'])
+        # النموذج ما يقدر يأكد بنفسه إذا رسالة المدير ما فيها «أكد».
+        replies = [
+            {'output': [{'type': 'function_call', 'call_id': 'c2', 'name': 'confirm_action', 'arguments': json.dumps({'token': result['pending'][0]['token']})}]},
+            {'output_text': 'ما تنفذ'},
+        ]
+        with patch.object(ai_core.ResponsesClient, '_http', lambda self, payload: replies.pop(0)):
+            self.call('/owner/api/agent/chat', 'POST', {'message': 'وش رأيك؟', 'history': []})
+        with server.db() as c:
+            self.assertNotEqual(c.execute('SELECT phone FROM organizations WHERE id=1').fetchone()['phone'], '0555555555')
+        with urlopen(f'http://127.0.0.1:{self.httpd.server_port}/owner/agent', timeout=10) as page:
+            self.assertIn('موظف الإدارة', page.read().decode())
+
+    def test_confirm_words(self):
+        for text in ('أكد', 'اكد', 'أكّد', 'نعم أكد التعديل', 'أؤكد'):
+            self.assertTrue(admin_agent.confirmed_by(text), text)
+        for text in ('تمام', 'لا', '', 'وش رأيك'):
+            self.assertFalse(admin_agent.confirmed_by(text), text)
+
+
+
+
+
+class VoiceSessionTest(unittest.TestCase):
+    def test_voice_session_carries_tools_only_for_agent(self):
+        import calls_trial
+        sent = []
+        with patch.object(calls_trial, '_http', lambda p: sent.append(p) or {'value': 'ek'}):
+            self.assertEqual(admin_agent.voice_session('المالك')['clientSecret'], 'ek')
+            calls_trial.create_session('male')
+        self.assertEqual((sent[0]['session']['tool_choice'], len(sent[0]['session']['tools'])), ('auto', len(admin_agent.TOOLS)))
+        self.assertNotIn('tools', sent[1]['session'])
+
+
+del ServiceNumberClaimsTest
+
+if __name__ == '__main__':
+    unittest.main()

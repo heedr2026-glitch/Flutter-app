@@ -30,6 +30,7 @@ COPY calls_trial.py owner_calls_trial.html /app/
 COPY number_requests.py /app/number_requests.py
 COPY call_gateway.py /app/call_gateway.py
 COPY app_features.py /app/app_features.py
+COPY admin_agent.py owner_agent.html /app/
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/
 COPY service_quota.py /app/service_quota.py

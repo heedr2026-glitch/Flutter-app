@@ -829,3 +829,6 @@ const khdoomAppFeaturesRender=render;render=async function(){await khdoomAppFeat
   box.querySelectorAll('[data-feature]').forEach(button=>button.onclick=async()=>{let k=button.dataset.feature;if(!flags[k]&&!confirm('إظهار «'+names[k]+'» لكل المشتركين؟'))return;button.disabled=true;try{let x=await fetch('/owner/api/app-features',{method:'POST',headers,body:JSON.stringify({name:k,enabled:!flags[k]})}),d=await x.json();if(!x.ok)throw Error(d.error||'تعذر الحفظ');flags=d;flash(flags[k]?'صار ظاهرًا في التطبيق':'تم إخفاؤه من التطبيق');draw()}catch(err){flash(err.message);button.disabled=false}})};
  draw();$('content').append(box);
 }catch(_){}}};
+
+// رابط موظف الإدارة (كتابة أو صوت) أعلى الرئيسية.
+const khdoomAgentLinkRender=render;render=async function(){await khdoomAgentLinkRender();if(current==='home'&&!$('agentLink')){let box=document.createElement('div');box.id='agentLink';box.className='panel';box.innerHTML='<h3>موظف الإدارة</h3><p class="muted">اسأله أو أعطه أوامر بالكتابة أو بالصوت: الشكاوى، وضع المؤسسات، الاشتراكات، العروض، طلبات الإعلانات. التعديلات ما تتنفذ إلا بعد تأكيدك.</p><p><a href="/owner/agent" target="_blank" rel="noopener"><button type="button" class="primary">افتح موظف الإدارة</button></a></p>';$('content').prepend(box)}};
