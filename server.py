@@ -43,6 +43,7 @@ import number_requests
 import call_gateway
 import app_features
 import admin_agent
+import platform_backup
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1396,6 +1397,7 @@ def init_db() -> None:
             number_requests.migrate(connection, postgres=True)
             call_gateway.migrate(connection, postgres=True)
             app_features.migrate(connection, postgres=True)
+            platform_backup.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1803,6 +1805,7 @@ def init_db() -> None:
         number_requests.migrate(connection)
         call_gateway.migrate(connection)
         app_features.migrate(connection)
+        platform_backup.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -3238,6 +3241,25 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         # موظف الإدارة: محادثة كتابية أو صوتية تقرأ وتفحص وتنفذ أوامر محددة بعد تأكيد المدير.
         if method == 'GET' and path == '/owner/agent':
             self._send_html((ROOT / 'owner_agent.html').read_text(encoding='utf-8'))
+            return
+        # نسخة احتياطية يدوية: للمالك فقط (مفتاح المالك)، وكل تنزيل يُسجل.
+        if path == '/owner/api/backup' and method == 'GET':
+            self._owner()
+            if (self.platform_actor or {}).get('role') != 'owner' or self.platform_actor.get('id') is not None:
+                raise ApiError(403, 'النسخة الاحتياطية متاحة للمالك فقط')
+            with db() as connection:
+                data, summary = platform_backup.export(connection, bool(DATABASE_URL), self.platform_actor['name'])
+                owner_admin.audit(connection, self.platform_actor['name'], 'platform_backup_downloaded', json.dumps({k: summary[k] for k in ('tables', 'rows', 'bytes')}))
+                connection.commit()
+            stamp = summary['created_at'][:10]
+            self._last_status = 200
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/gzip')
+            self.send_header('Content-Disposition', f'attachment; filename="khadoum-backup-{stamp}.json.gz"')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
         if path in ('/owner/api/agent/brief', '/owner/api/agent/expiring') and method == 'GET':
             self._owner()

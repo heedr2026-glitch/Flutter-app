@@ -336,6 +336,11 @@ class Agent:
             brief["pending_transfer_requests"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM subscription_requests WHERE status='pending'")
         if exists("service_number_requests"):
             brief["pending_calls_number_requests"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM service_number_requests WHERE status='pending'")
+        if exists("platform_backups"):
+            last = c.execute("SELECT created_at FROM platform_backups ORDER BY id DESC LIMIT 1").fetchone()
+            brief["last_backup_at"] = last["created_at"] if last else None
+            stamp = _parse(last["created_at"]) if last else None
+            brief["backup_overdue"] = stamp is None or (now - stamp).days >= 7
         sleeping = self.sleeping_organizations(c, 14)
         brief["sleeping_organizations"] = sleeping["items"][:15]
         income = self.income_summary(c)

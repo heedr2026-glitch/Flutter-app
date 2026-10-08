@@ -851,6 +851,7 @@ const khdoomBriefRender=render;render=async function(){await khdoomBriefRender()
   +line('طلبات تحويل اشتراك تنتظر',b.pending_transfer_requests??0,b.pending_transfer_requests>0)
   +line('حالة الخدمات',problems.length?'فيها مشكلة: '+problems.join('، '):'سليمة',problems.length>0)
   +(b.income?line('دخل هالشهر',b.income.this_month.total_sar+' ريال ('+b.income.this_month.new+' جديد، '+b.income.this_month.renewals+' تجديد) — الشهر اللي قبله: '+b.income.last_month.total_sar+' ريال'+(b.income.change_percent===null?'':' ('+(b.income.change_percent>=0?'+':'')+b.income.change_percent+'%)')):'')
+  +line('آخر نسخة احتياطية',b.last_backup_at?new Date(b.last_backup_at).toLocaleDateString('ar-SA-u-ca-gregory-nu-latn'):'ما انسوت أبدًا',b.backup_overdue)
   +'</ul>'+(b.income?'<p class="muted" style="margin:4px 0 0">الدخل يشمل التحويلات المعتمدة والمدفوعات المسجلة في لوحة الإدارة فقط.</p>':'');
  if(e&&e.items&&e.items.length){
   box.innerHTML+='<h3 style="margin-top:14px">اشتراكات تنتهي خلال 14 يوم</h3>'+e.items.map(x=>{
@@ -863,6 +864,7 @@ const khdoomBriefRender=render;render=async function(){await khdoomBriefRender()
    const msg=encodeURIComponent('السلام عليكم، معك خدوم 👋\nلاحظنا إنك ما دخلت التطبيق من فترة. تحتاج مساعدة في شي؟ إحنا موجودين.');
    return '<p style="border-top:1px solid #33415588;padding-top:8px"><b>'+esc(x.organization)+'</b> — '+esc(x.package)+' — '+(x.days_since_login===null?'ما دخل أبدًا':'آخر دخول قبل '+esc(x.days_since_login)+' يوم')+(x.whatsapp?' <a href="https://wa.me/'+esc(x.whatsapp)+'?text='+msg+'" target="_blank" rel="noopener"><button type="button">رسالة واتساب</button></a>':(x.phone?' · '+esc(x.phone):' · <span class="muted">بدون رقم</span>'))+'</p>'}).join('');
  }
+ if(ownerKey&&!token){const backup=document.createElement('p');backup.innerHTML='<button type="button">⬇️ تنزيل نسخة احتياطية</button> <span class="muted">احفظها في مكان آمن عندك؛ فيها بيانات كل المشتركين. يُفضّل مرة كل أسبوع.</span>';backup.querySelector('button').onclick=async e=>{const btn=e.target;btn.disabled=true;btn.textContent='جاري التجهيز…';try{const r=await fetch('/owner/api/backup',{headers:{'X-Owner-Key':ownerKey},cache:'no-store'});if(!r.ok){let d={};try{d=await r.json()}catch(_){}throw new Error(d.error||'تعذر تنزيل النسخة')}const blob=await r.blob(),a=document.createElement('a'),name=(r.headers.get('Content-Disposition')||'').match(/filename="([^"]+)"/);a.href=URL.createObjectURL(blob);a.download=name?name[1]:'khadoum-backup.json.gz';document.body.append(a);a.click();a.remove();flash('تم تنزيل النسخة الاحتياطية ✓')}catch(err){flash(err.message)}finally{btn.disabled=false;btn.textContent='⬇️ تنزيل نسخة احتياطية'}};box.append(backup)}
  $('content').prepend(box);
 }catch(_){}};
 
