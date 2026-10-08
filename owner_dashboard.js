@@ -849,11 +849,18 @@ const khdoomBriefRender=render;render=async function(){await khdoomBriefRender()
   +line('طلبات إعلانات تنتظر',b.pending_ads??0,b.pending_ads>0)
   +line('طلبات تحويل اشتراك تنتظر',b.pending_transfer_requests??0,b.pending_transfer_requests>0)
   +line('حالة الخدمات',problems.length?'فيها مشكلة: '+problems.join('، '):'سليمة',problems.length>0)
-  +'</ul>';
+  +(b.income?line('دخل هالشهر',b.income.this_month.total_sar+' ريال ('+b.income.this_month.new+' جديد، '+b.income.this_month.renewals+' تجديد) — الشهر اللي قبله: '+b.income.last_month.total_sar+' ريال'+(b.income.change_percent===null?'':' ('+(b.income.change_percent>=0?'+':'')+b.income.change_percent+'%)')):'')
+  +'</ul>'+(b.income?'<p class="muted" style="margin:4px 0 0">الدخل يشمل التحويلات المعتمدة والمدفوعات المسجلة في لوحة الإدارة فقط.</p>':'');
  if(e&&e.items&&e.items.length){
   box.innerHTML+='<h3 style="margin-top:14px">اشتراكات تنتهي خلال 14 يوم</h3>'+e.items.map(x=>{
    const msg=encodeURIComponent('السلام عليكم، معك خدوم 👋\nاشتراك «'+x.organization+'» في باقة '+x.package+' ينتهي بعد '+x.days_left+' يوم. جدد الحين من التطبيق عشان ما تتوقف خدماتك.');
    return '<p style="border-top:1px solid #33415588;padding-top:8px"><b>'+esc(x.organization)+'</b> — '+esc(x.package)+' — باقي <b>'+esc(x.days_left)+'</b> يوم'+(x.whatsapp?' <a href="https://wa.me/'+esc(x.whatsapp)+'?text='+msg+'" target="_blank" rel="noopener"><button type="button">تذكير واتساب</button></a>':(x.phone?' · '+esc(x.phone):' · <span class="muted">بدون رقم</span>'))+'</p>'}).join('');
+ }
+ const sleeping=b.sleeping_organizations||[];
+ if(sleeping.length){
+  box.innerHTML+='<h3 style="margin-top:14px">مؤسسات نايمة (ما دخلت من 14 يوم أو أكثر)</h3>'+sleeping.map(x=>{
+   const msg=encodeURIComponent('السلام عليكم، معك خدوم 👋\nلاحظنا إنك ما دخلت التطبيق من فترة. تحتاج مساعدة في شي؟ إحنا موجودين.');
+   return '<p style="border-top:1px solid #33415588;padding-top:8px"><b>'+esc(x.organization)+'</b> — '+esc(x.package)+' — '+(x.days_since_login===null?'ما دخل أبدًا':'آخر دخول قبل '+esc(x.days_since_login)+' يوم')+(x.whatsapp?' <a href="https://wa.me/'+esc(x.whatsapp)+'?text='+msg+'" target="_blank" rel="noopener"><button type="button">رسالة واتساب</button></a>':(x.phone?' · '+esc(x.phone):' · <span class="muted">بدون رقم</span>'))+'</p>'}).join('');
  }
  $('content').prepend(box);
 }catch(_){}};

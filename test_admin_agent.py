@@ -71,6 +71,36 @@ class AdminAgentTest(ServiceNumberClaimsTest):
             self.call('/owner/api/agent/chat', 'POST', {'message': 'هلا', 'history': []})
         self.assertNotIn('المالك', sent[0]['instructions'])
 
+    def test_sleeping_transfers_and_income(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        with server.db() as c:
+            c.execute('UPDATE organizations SET created_at=? WHERE id IN (1,2)', (old,))
+            c.execute("UPDATE organizations SET phone='0501112222' WHERE id=2")
+            server.audit_log(c, 1, 1, 'login', 'دخول', 'security', '1')
+            c.execute("INSERT INTO subscription_requests(organization_id,requested_package,paid_months,bonus_months,quoted_price,transfer_name,status,created_at) VALUES(2,'basic',3,0,150,'محمد','pending',?)", (server.now(),))
+            c.commit()
+            request_id = c.execute('SELECT id FROM subscription_requests ORDER BY id DESC LIMIT 1').fetchone()['id']
+        sleeping = self.tool('sleeping_organizations')
+        self.assertEqual([x['organization_id'] for x in sleeping['items']], [2])
+        self.assertEqual(sleeping['items'][0]['whatsapp'], '966501112222')
+        pending = self.tool('transfer_requests')
+        self.assertEqual((pending['count'], pending['items'][0]['transfer_name'], pending['items'][0]['package']), (1, 'محمد', 'الأساسية'))
+        proposal = self.tool('propose_transfer_decision', {'request_id': request_id, 'decision': 'approve'})
+        self.assertIn('150 ريال', proposal['summary'])
+        self.assertTrue(self.tool('confirm_action', {'token': proposal['token']}, user_text='أكد')['done'])
+        with server.db() as c:
+            sub = c.execute('SELECT package,expires_at FROM subscriptions WHERE organization_id=2').fetchone()
+            self.assertEqual(c.execute('SELECT status FROM subscription_requests WHERE id=?', (request_id,)).fetchone()['status'], 'approved')
+        self.assertEqual(sub['package'], 'basic')
+        self.assertGreaterEqual((admin_agent._parse(sub['expires_at']) - datetime.now(timezone.utc)).days, 88)
+        income = self.tool('income_summary')
+        self.assertEqual((income['this_month']['total_sar'], income['this_month']['new'], income['this_month']['renewals']), (150.0, 1, 0))
+        self.assertEqual(self.tool('transfer_requests')['count'], 0)
+        self.assertIn('error', self.tool('propose_transfer_decision', {'request_id': request_id, 'decision': 'approve'}))
+        brief = self.call('/owner/api/agent/brief')[1]
+        self.assertEqual(brief['income']['this_month']['total_sar'], 150.0)
+
     def test_complaint_details_by_reference(self):
         status, saved = self.call('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'الصفحة ما تفتح عندي'}, user=1)
         self.assertEqual(status, 201)

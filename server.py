@@ -1961,6 +1961,58 @@ def issue_token(
     return token
 
 
+def process_subscription_request(connection: Any, request_id: int, action: str, data: dict, actor_name: str) -> dict:
+    """اعتماد طلب اشتراك بالتحويل أو رفضه؛ تستخدمه لوحة الإدارة وموظف الإدارة بنفس القواعد."""
+    request_row = connection.execute(
+        "SELECT * FROM subscription_requests WHERE id=? AND status='pending'",
+        (request_id,),
+    ).fetchone()
+    if request_row is None:
+        raise ApiError(404, "طلب الترقية غير موجود أو تمت معالجته")
+    if action == "approve":
+        selected_package = str(data.get("selectedPackage", request_row["requested_package"])).strip().lower()
+        if selected_package not in ("free", "basic", "vip"):
+            raise ApiError(400, "اختر الباقة المجانية أو الأساسية أو VIP")
+        offer_months = int(request_row["paid_months"] or 0) + int(request_row["bonus_months"] or 0)
+        days = max(1, min(offer_months * 30 if request_row["offer_id"] else int(data.get("durationDays", 30)), 3650))
+        held = connection.execute("SELECT package,expires_at FROM subscriptions WHERE organization_id=?", (request_row["organization_id"],)).fetchone()
+        start_from = datetime.now(timezone.utc)
+        if held and held["package"] == selected_package and held["expires_at"] and held["expires_at"] > now():
+            # تجديد نفس الباقة قبل انتهائها: تضاف المدة الجديدة فوق المتبقي.
+            start_from = datetime.fromisoformat(held["expires_at"])
+        expires_at = None if selected_package == "free" else (start_from + timedelta(days=days)).isoformat()
+        connection.execute(
+            "INSERT INTO subscriptions(organization_id,package,starts_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET package=excluded.package,starts_at=excluded.starts_at,expires_at=excluded.expires_at",
+            (request_row["organization_id"], selected_package, now(), expires_at),
+        )
+        owner_admin.clear_gift_fallback(connection, request_row["organization_id"], __import__('sys').modules[__name__])
+        if selected_package != "free":
+            # الدفعة المعتمدة تدخل سجل الإيرادات بالمبلغ المستلم فعليًا (أو المبلغ المطلوب إن لم يُعدَّل).
+            try:
+                received = float(data["amount"]) if data.get("amount") not in (None, "") else float(request_row["quoted_price"] or 0)
+            except (TypeError, ValueError):
+                raise ApiError(400, "المبلغ المستلم يجب أن يكون رقمًا")
+            if not 0 <= received <= 10_000_000:
+                raise ApiError(400, "المبلغ المستلم غير منطقي")
+            connection.execute(
+                "INSERT INTO platform_payments(organization_id,package,months,amount,discount_code,source,request_id,approved_by,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
+                (request_row["organization_id"], selected_package, max(1, round(days / 30)), received, request_row["discount_code"] or "", "transfer", request_id, actor_name, now()),
+            )
+        owner_admin.audit(connection, actor_name, "subscription_request_approved", json.dumps({"request_id": request_id, "organization_id": request_row["organization_id"], "package": selected_package, "expires_at": expires_at, "previous": dict(held) if held else None}, ensure_ascii=False))
+        if selected_package != "free" and request_row["discount_code"]:
+            code_hash = hashlib.sha256(request_row["discount_code"].encode()).hexdigest()
+            connection.execute(
+                "UPDATE activation_codes SET used_count=used_count+1 WHERE code_hash=? AND used_count<max_uses",
+                (code_hash,),
+            )
+    connection.execute(
+        "UPDATE subscription_requests SET status=?,processed_at=? WHERE id=?",
+        ("approved" if action == "approve" else "rejected", now(), request_id),
+    )
+    connection.commit()
+    return {"saved": True, "status": "approved" if action == "approve" else "rejected"}
+
+
 def audit_log(
     connection: Any,
     organization_id: int,
@@ -3698,54 +3750,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if action not in ("approve", "reject"):
                 raise ApiError(400, "اختر قبول الطلب أو رفضه")
             with db() as connection:
-                request_row = connection.execute(
-                    "SELECT * FROM subscription_requests WHERE id=? AND status='pending'",
-                    (request_id,),
-                ).fetchone()
-                if request_row is None:
-                    raise ApiError(404, "طلب الترقية غير موجود أو تمت معالجته")
-                if action == "approve":
-                    selected_package = str(data.get("selectedPackage", request_row["requested_package"])).strip().lower()
-                    if selected_package not in ("free", "basic", "vip"):
-                        raise ApiError(400, "اختر الباقة المجانية أو الأساسية أو VIP")
-                    offer_months = int(request_row["paid_months"] or 0) + int(request_row["bonus_months"] or 0)
-                    days = max(1, min(offer_months * 30 if request_row["offer_id"] else int(data.get("durationDays", 30)), 3650))
-                    held = connection.execute("SELECT package,expires_at FROM subscriptions WHERE organization_id=?", (request_row["organization_id"],)).fetchone()
-                    start_from = datetime.now(timezone.utc)
-                    if held and held["package"] == selected_package and held["expires_at"] and held["expires_at"] > now():
-                        # تجديد نفس الباقة قبل انتهائها: تضاف المدة الجديدة فوق المتبقي.
-                        start_from = datetime.fromisoformat(held["expires_at"])
-                    expires_at = None if selected_package == "free" else (start_from + timedelta(days=days)).isoformat()
-                    connection.execute(
-                        "INSERT INTO subscriptions(organization_id,package,starts_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET package=excluded.package,starts_at=excluded.starts_at,expires_at=excluded.expires_at",
-                        (request_row["organization_id"], selected_package, now(), expires_at),
-                    )
-                    owner_admin.clear_gift_fallback(connection, request_row["organization_id"], __import__('sys').modules[__name__])
-                    if selected_package != "free":
-                        # الدفعة المعتمدة تدخل سجل الإيرادات بالمبلغ المستلم فعليًا (أو المبلغ المطلوب إن لم يُعدَّل).
-                        try:
-                            received = float(data["amount"]) if data.get("amount") not in (None, "") else float(request_row["quoted_price"] or 0)
-                        except (TypeError, ValueError):
-                            raise ApiError(400, "المبلغ المستلم يجب أن يكون رقمًا")
-                        if not 0 <= received <= 10_000_000:
-                            raise ApiError(400, "المبلغ المستلم غير منطقي")
-                        connection.execute(
-                            "INSERT INTO platform_payments(organization_id,package,months,amount,discount_code,source,request_id,approved_by,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING",
-                            (request_row["organization_id"], selected_package, max(1, round(days / 30)), received, request_row["discount_code"] or "", "transfer", request_id, (self.platform_actor or {}).get("name", "المالك"), now()),
-                        )
-                    owner_admin.audit(connection, (self.platform_actor or {}).get("name", "المالك"), "subscription_request_approved", json.dumps({"request_id": request_id, "organization_id": request_row["organization_id"], "package": selected_package, "expires_at": expires_at, "previous": dict(held) if held else None}, ensure_ascii=False))
-                    if selected_package != "free" and request_row["discount_code"]:
-                        code_hash = hashlib.sha256(request_row["discount_code"].encode()).hexdigest()
-                        connection.execute(
-                            "UPDATE activation_codes SET used_count=used_count+1 WHERE code_hash=? AND used_count<max_uses",
-                            (code_hash,),
-                        )
-                connection.execute(
-                    "UPDATE subscription_requests SET status=?,processed_at=? WHERE id=?",
-                    ("approved" if action == "approve" else "rejected", now(), request_id),
-                )
-                connection.commit()
-            self._send(200, {"saved": True, "status": "approved" if action == "approve" else "rejected"})
+                result = process_subscription_request(connection, request_id, action, data, (self.platform_actor or {}).get("name", "المالك"))
+            self._send(200, result)
             return
         if path.startswith("/owner/api/subscription-requests/") and method == "DELETE":
             self._owner()

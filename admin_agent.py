@@ -29,6 +29,7 @@ INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، 
 لا تذكر معلومة لم ترجع من أداة. إذا ما قدرت تعرف شي قل وش الناقص.
 الأرقام: رقم الشكوى مثل KHD-2026-000022 أو 22، ورقم الإعلان، ورقم المؤسسة.
 إذا ذكر المدير مؤسسة بالاسم ابحث عنها بـ find_organization، وإذا طلع أكثر من نتيجة اسأله أي وحدة.
+للمؤسسات النايمة sleeping_organizations، ولطلبات التحويل transfer_requests، وللدخل income_summary.
 لسؤال «وش الجديد؟» أو «وش عندنا اليوم؟» استخدم daily_brief، وللاشتراكات اللي قربت تنتهي expiring_subscriptions.
 أسئلة الأرقام العامة (كم مؤسسة، كم مشترك، كم VIP، كم جديد) جاوبها من platform_stats ولا تبحث عن مؤسسة.
 أسئلة مستخدمي مؤسسة من organization_users، وإعادة كلمة المرور من password_resets، والعروض والأكواد من current_offers.
@@ -46,6 +47,8 @@ PERMISSION = {
     "complaint_details": "support", "recheck_complaint": "support", "platform_status": "security",
     "pending_ads": "ads", "current_offers": "offers", "platform_stats": "organizations.view",
     "daily_brief": "organizations.view", "expiring_subscriptions": "organizations.view",
+    "sleeping_organizations": "organizations.view", "transfer_requests": "packages", "income_summary": "finance",
+    "propose_transfer_decision": "packages",
     "organization_users": "organizations.view", "password_resets": "organizations.view", "propose_update_organization": "organizations.edit",
     "propose_subscription": "packages", "propose_offer": "offers", "propose_ad_decision": "ads", "propose_discount_code": "codes",
 }
@@ -68,6 +71,14 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": _obj({})},
     {"type": "function", "name": "expiring_subscriptions", "description": "المؤسسات اللي اشتراكها المدفوع ينتهي خلال عدد أيام (افتراضي 14) مع رقم التواصل",
      "parameters": _obj({"days": {"type": "integer"}})},
+    {"type": "function", "name": "sleeping_organizations", "description": "المؤسسات النايمة: ما دخل منها أحد من عدد أيام (افتراضي 14)، مع رقم التواصل",
+     "parameters": _obj({"days": {"type": "integer"}})},
+    {"type": "function", "name": "transfer_requests", "description": "طلبات الاشتراك بالتحويل البنكي اللي تنتظر الاعتماد",
+     "parameters": _obj({})},
+    {"type": "function", "name": "income_summary", "description": "ملخص الدخل: هالشهر والشهر اللي قبله، وعدد الاشتراكات الجديدة والتجديدات",
+     "parameters": _obj({})},
+    {"type": "function", "name": "propose_transfer_decision", "description": "تجهيز اعتماد طلب اشتراك بالتحويل (يفعّل الباقة ويسجل الدفعة) أو رفضه. لا ينفذ قبل تأكيد المدير",
+     "parameters": _obj({"request_id": {"type": "integer"}, "decision": {"type": "string", "enum": ["approve", "reject"]}}, ["request_id", "decision"])},
     {"type": "function", "name": "platform_stats", "description": "أرقام المنصة: عدد المؤسسات كلها وحسب الباقة، الجديدة هالأسبوع وهالشهر، الموقوفة، وعدد المستخدمين",
      "parameters": _obj({})},
     {"type": "function", "name": "organization_users", "description": "مستخدمو مؤسسة: العدد والأسماء والأدوار وآخر دخول ومحاولات الدخول الفاشلة لكل واحد",
@@ -222,6 +233,77 @@ class Agent:
                           "phone": phone, "whatsapp": digits if len(digits) >= 11 else ""})
         return {"days": span, "count": len(items), "items": items}
 
+    @staticmethod
+    def _whatsapp(phone: Any) -> str:
+        digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+        if digits.startswith("05") and len(digits) == 10:
+            digits = "966" + digits[1:]
+        return digits if len(digits) >= 11 else ""
+
+    def sleeping_organizations(self, c, days: Any = 14, **_):
+        try:
+            span = max(3, min(int(days or 14), 180))
+        except (TypeError, ValueError):
+            span = 14
+        since = (_now() - timedelta(days=span)).isoformat()
+        rows = owner_admin.rows(c, """SELECT o.id,o.name,o.phone,o.created_at,COALESCE(s.package,'free') package,
+            (SELECT MAX(a.created_at) FROM audit_logs a WHERE a.organization_id=o.id AND a.action='login') last_login,
+            (SELECT u.phone FROM users u WHERE u.organization_id=o.id AND u.role='admin' AND u.archived_at IS NULL ORDER BY u.id LIMIT 1) owner_phone
+            FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id WHERE o.created_at<? ORDER BY o.id""", (since,))
+        items = []
+        for row in rows:
+            if row["last_login"] and str(row["last_login"]) >= since:
+                continue
+            phone = str(row.get("phone") or row.get("owner_phone") or "").strip()
+            last = _parse(row["last_login"])
+            items.append({"organization_id": row["id"], "organization": row["name"], "package": PACKAGE_NAMES.get(row["package"], row["package"]),
+                          "last_login": row["last_login"], "days_since_login": (_now() - last).days if last else None,
+                          "phone": phone, "whatsapp": self._whatsapp(phone)})
+        return {"days": span, "count": len(items), "items": items[:50]}
+
+    def transfer_requests(self, c, **_):
+        if not owner_admin.table_exists(c, "subscription_requests", self.s):
+            return {"count": 0, "items": []}
+        rows = owner_admin.rows(c, """SELECT r.id,o.name organization,r.requested_package,r.paid_months,r.bonus_months,r.quoted_price,r.transfer_name,r.discount_code,r.created_at,
+            CASE WHEN r.transfer_receipt<>'' THEN 1 ELSE 0 END has_receipt FROM subscription_requests r JOIN organizations o ON o.id=r.organization_id
+            WHERE r.status='pending' ORDER BY r.id""")
+        for row in rows:
+            row["package"] = PACKAGE_NAMES.get(row.pop("requested_package"), "")
+            row["has_receipt"] = bool(row["has_receipt"])
+        return {"count": len(rows), "items": rows}
+
+    def income_summary(self, c, **_):
+        if not owner_admin.table_exists(c, "platform_payments", self.s):
+            return {"error": "سجل المدفوعات غير موجود بعد"}
+        riyadh = timezone(timedelta(hours=3))
+        local = _now().astimezone(riyadh)
+        this_start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        last_start = (this_start - timedelta(days=1)).replace(day=1)
+        def month(start: datetime, end: datetime | None) -> dict[str, Any]:
+            args = [start.astimezone(timezone.utc).isoformat()] + ([end.astimezone(timezone.utc).isoformat()] if end else [])
+            rows = owner_admin.rows(c, "SELECT organization_id,amount,created_at FROM platform_payments WHERE created_at>=?" + (" AND created_at<?" if end else ""), tuple(args))
+            renewals = sum(1 for r in rows if c.execute("SELECT 1 FROM platform_payments WHERE organization_id=? AND created_at<? LIMIT 1", (r["organization_id"], r["created_at"])).fetchone())
+            return {"total_sar": round(sum(float(r["amount"] or 0) for r in rows), 2), "payments": len(rows), "new": len(rows) - renewals, "renewals": renewals}
+        current, previous = month(this_start, None), month(last_start, this_start)
+        change = None if not previous["total_sar"] else round((current["total_sar"] - previous["total_sar"]) * 100 / previous["total_sar"], 1)
+        return {"this_month": {"from": this_start.date().isoformat(), **current}, "last_month": {"from": last_start.date().isoformat(), **previous},
+                "change_percent": change, "note": "يشمل التحويلات المعتمدة والمدفوعات المسجلة في لوحة الإدارة فقط"}
+
+    def propose_transfer_decision(self, c, request_id: Any = None, decision: Any = None, **_):
+        if decision not in ("approve", "reject"):
+            raise ValueError("القرار لازم يكون اعتماد أو رفض")
+        try:
+            ident = int(request_id)
+        except (TypeError, ValueError):
+            raise ValueError("رقم الطلب غير صحيح")
+        row = c.execute("SELECT r.id,r.requested_package,r.paid_months,r.bonus_months,r.quoted_price,r.transfer_name,o.name organization FROM subscription_requests r JOIN organizations o ON o.id=r.organization_id WHERE r.id=? AND r.status='pending'", (ident,)).fetchone()
+        if row is None:
+            raise ValueError("ما لقيت طلب تحويل معلق بهذا الرقم")
+        months = int(row["paid_months"] or 1) + int(row["bonus_months"] or 0)
+        summary = (f"اعتماد طلب التحويل رقم {ident} من «{row['organization']}»: باقة {PACKAGE_NAMES.get(row['requested_package'])} لمدة {months} شهر، المبلغ {float(row['quoted_price'] or 0):g} ريال باسم المحوّل «{row['transfer_name']}». تأكد إن المبلغ وصل حسابك قبل التأكيد"
+                   if decision == "approve" else f"رفض طلب التحويل رقم {ident} من «{row['organization']}»")
+        return self._propose("transfer", {"request_id": ident, "action": decision, "days": months * 30}, summary)
+
     def daily_brief(self, c, **_):
         now = _now()
         day = (now - timedelta(days=1)).isoformat()
@@ -241,6 +323,11 @@ class Agent:
             brief["pending_transfer_requests"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM subscription_requests WHERE status='pending'")
         if exists("service_number_requests"):
             brief["pending_calls_number_requests"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM service_number_requests WHERE status='pending'")
+        sleeping = self.sleeping_organizations(c, 14)
+        brief["sleeping_organizations"] = sleeping["items"][:15]
+        income = self.income_summary(c)
+        if "error" not in income:
+            brief["income"] = income
         try:
             import service_monitor
             services = service_monitor.snapshot().get("services", [])
@@ -506,7 +593,7 @@ class Agent:
                 raise ValueError("هذا الطلب جهزه مدير آخر")
             _pending.pop(str(token), None)
         kind, args = item["kind"], item["args"]
-        if not self._allowed({"organization": "organizations.edit", "subscription": "packages", "offer": "offers", "ad": "ads", "code": "codes"}[kind]):
+        if not self._allowed({"organization": "organizations.edit", "subscription": "packages", "offer": "offers", "ad": "ads", "code": "codes", "transfer": "packages"}[kind]):
             raise PermissionError("ما عندك صلاحية لهذا التعديل")
         actor = self.actor.get("name") or "المدير"
         if kind == "organization":
@@ -525,6 +612,8 @@ class Agent:
         elif kind == "code":
             self._dispatch(c, "codes", "POST", dict(args))
             owner_admin.audit(c, actor, "agent_discount_code_created", json.dumps({k: v for k, v in args.items() if k != "code"} | {"code_prefix": args["code"][:3]}, ensure_ascii=False))
+        elif kind == "transfer":
+            self.s.process_subscription_request(c, args["request_id"], args["action"], {"durationDays": args["days"]}, actor)
         elif kind == "ad":
             data = {k: v for k, v in args.items() if k != "ad_id"}
             self._dispatch(c, "ads/%d" % args["ad_id"], "PUT", data)
