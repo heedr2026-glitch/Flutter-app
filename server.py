@@ -2396,9 +2396,13 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
             form = {key: values[0] for key, values in parse_qs(self._raw_body().decode("utf-8", "replace"), keep_blank_values=True).items()}
             supplied_signature = self.headers.get("X-Twilio-Signature")
             if not any(call_gateway.valid_twilio(gateway["twilioToken"], called_url, form, supplied_signature) for called_url in call_gateway.twilio_urls(self.headers, self.path)):
-                call_gateway.note_problem("twilio", f"توقيع Twilio لم يطابق؛ host={self.headers.get('Host')} forwarded={self.headers.get('X-Forwarded-Host')} path={self.path[:80]} "
-                                                    f"signature={'yes' if supplied_signature else 'no'} fields={len(form)} type={self.headers.get('Content-Type')}")
-                raise ApiError(401, "تعذر التحقق من مزود الاتصال")
+                field_names = ",".join(sorted(form))[:160]
+                if call_gateway.unsigned_active():
+                    call_gateway.note_problem("twilio", f"قُبل طلب بدون توقيع (وضع التجربة المؤقت)؛ fields={field_names}")
+                else:
+                    call_gateway.note_problem("twilio", f"توقيع Twilio لم يطابق؛ host={self.headers.get('Host')} forwarded={self.headers.get('X-Forwarded-Host')} path={self.path[:80]} "
+                                                        f"signature={'yes' if supplied_signature else 'no'} fields={field_names} type={self.headers.get('Content-Type')}")
+                    raise ApiError(401, "تعذر التحقق من مزود الاتصال")
             with db() as gateway_connection:
                 def calls_blocked(organization_id: int) -> bool:
                     try:
@@ -3244,6 +3248,15 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             with db() as connection:
                 result = call_gateway.status(connection, base_url)
             self._send(200, result)
+            return
+        if path == '/owner/api/calls-gateway/unsigned' and method == 'POST':
+            self._owner()
+            minutes = self._body().get('minutes')
+            until = call_gateway.set_unsigned(minutes)
+            with db() as connection:
+                owner_admin.audit(connection, self.platform_actor['name'], 'calls_gateway_unsigned_' + ('on' if until else 'off'), 'minutes=' + str(minutes))
+                connection.commit()
+            self._send(200, {'active': call_gateway.unsigned_active()})
             return
         if path == '/owner/api/calls-gateway/numbers' and method == 'POST':
             self._owner()

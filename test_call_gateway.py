@@ -334,6 +334,18 @@ class HttpTest(unittest.TestCase):
                                      headers={'Content-Type': 'application/x-www-form-urlencoded', 'X-Twilio-Signature': public}), timeout=10) as r:
                     self.assertEqual(r.read().decode(), call_gateway.REJECT_TWIML)
                 self.assertIn('رقم غير مربوط', owner('/owner/api/calls-gateway')['problems'][0]['detail'])
+                # وضع التجربة المؤقت: الإدارة فقط تشغله، ويقبل غير الموقّع ثم يُطفأ.
+                unsigned = Request(base + '/webhooks/twilio/voice', method='POST', data=urlencode(dict(params, To='+19990000000')).encode(), headers={'Content-Type': 'application/x-www-form-urlencoded'})
+                with self.assertRaises(HTTPError): urlopen(unsigned, timeout=10)
+                with self.assertRaises(HTTPError) as denied: owner('/owner/api/calls-gateway/unsigned', 'POST', {'minutes': 60}, key='')
+                self.assertEqual(denied.exception.code, 401)
+                self.assertTrue(owner('/owner/api/calls-gateway/unsigned', 'POST', {'minutes': 60})['active'])
+                self.assertTrue(owner('/owner/api/calls-gateway')['unsignedUntil'])
+                with urlopen(unsigned, timeout=10) as r: self.assertEqual(r.read().decode(), call_gateway.REJECT_TWIML)
+                self.assertIn('بدون توقيع', owner('/owner/api/calls-gateway')['problems'][1]['detail'])
+                self.assertFalse(owner('/owner/api/calls-gateway/unsigned', 'POST', {'minutes': 0})['active'])
+                with self.assertRaises(HTTPError): urlopen(unsigned, timeout=10)
+                self.assertEqual(call_gateway.set_unsigned(9999) > time.time() + 7000, True); call_gateway.set_unsigned(0)
                 content_type, twiml = twilio(params)
                 self.assertTrue(content_type.startswith('text/xml'))
                 ref = twiml.split('x-khdoom-ref=')[1].split('<')[0]

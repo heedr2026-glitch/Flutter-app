@@ -50,6 +50,26 @@ def note_problem(step: str, detail: str) -> None:
         del _problems[10:]
 
 
+# وضع تجربة مؤقت تشغّله الإدارة: يقبل طلب Twilio غير الموقّع (رقم التجربة المشترك يمر عبر وسيط
+# يحذف التوقيع). في الذاكرة فقط، فينطفئ تلقائيًا بانتهاء مدته أو بإعادة تشغيل الخادم.
+_unsigned_until = 0.0
+MAX_UNSIGNED_MINUTES = 120
+
+
+def set_unsigned(minutes: Any) -> float:
+    global _unsigned_until
+    try:
+        minutes = max(0, min(int(minutes), MAX_UNSIGNED_MINUTES))
+    except (TypeError, ValueError):
+        minutes = 0
+    _unsigned_until = time.time() + minutes * 60 if minutes else 0.0
+    return _unsigned_until
+
+
+def unsigned_active() -> bool:
+    return time.time() < _unsigned_until
+
+
 def twilio_urls(headers: Any, path: str) -> list[str]:
     """العناوين التي قد يكون Twilio وقّع بها الطلب؛ الخادم خلف وسيط فلا نعتمد على ترويسة واحدة."""
     hosts = [str(headers.get(name) or "").split(",")[0].strip() for name in ("X-Forwarded-Host", "Host")]
@@ -95,6 +115,7 @@ def status(c, base_url: str) -> dict[str, Any]:
             "twilioWebhookUrl": base_url + "/webhooks/twilio/voice", "openaiWebhookUrl": base_url + "/webhooks/openai/realtime",
             "numbers": list_numbers(c),
             "problems": list(_problems),
+            "unsignedUntil": datetime.fromtimestamp(_unsigned_until, timezone.utc).isoformat() if unsigned_active() else "",
             "recentCalls": [{"id": row["id"], "caller": row["caller"], "called": row["called"], "status": row["status"],
                              "note": row["note"], "createdAt": row["created_at"], "organizationName": row["organization_name"] or ""} for row in calls]}
 
