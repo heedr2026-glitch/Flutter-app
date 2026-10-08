@@ -1359,6 +1359,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if ids:
    for row in rows(c,f'SELECT {task_columns} FROM technical_tasks WHERE support_ticket_id IN ({marks}) ORDER BY id DESC',ids): tasks.setdefault(row['support_ticket_id'],row)
   for t in out['items']:
+   # الصورة المرفقة لا تُرسل مع القائمة (قد تكون كبيرة)؛ تُطلب عند الضغط على «عرض الصورة».
+   t['has_attachment']=bool(t.pop('attachment_data','') or '')
    task=tasks.get(t['id'])
    if not task:
     # مهام قديمة قبل إضافة عمود الربط كانت تُعرف من نص المشكلة.
@@ -1422,6 +1424,10 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   c.execute('INSERT INTO platform_notes(ticket_id,note,actor,created_at) VALUES(?,?,?,?)',(ident,'تم إرسال الطلب للمتابعة مع الموظف التقني AI','لوحة أمن خدووم',ts))
   audit(c,a['name'],'support_technical_followup',json.dumps({'ticket_id':ident,'task_id':task_id},ensure_ascii=False))
   return {'saved':True,'taskId':task_id,'message':'تم إرسال الطلب للمتابعة مع الموظف التقني AI'}
+ if re.fullmatch(r'support/\d+/attachment',r) and m=='GET':
+  found=c.execute('SELECT attachment_data FROM support_tickets WHERE id=?',(int(r.split('/')[1]),)).fetchone()
+  if not found or not found['attachment_data']: raise s.ApiError(404,'لا توجد صورة مرفقة بهذه الشكوى')
+  return {'image':found['attachment_data']}
  if re.fullmatch(r'support/\d+',r) and m=='DELETE':
   ident=int(r.split('/')[1]); require_senior(a,s,'حذف طلب الدعم نهائيًا')
   if not c.execute('SELECT id FROM support_tickets WHERE id=?',(ident,)).fetchone(): raise s.ApiError(404,'طلب الدعم غير موجود')

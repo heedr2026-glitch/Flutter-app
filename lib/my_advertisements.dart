@@ -1657,13 +1657,7 @@ class _AdvertisementRequestDialogState
               ),
             ],
           ),
-        const SizedBox(height: 4),
-        Text(
-          'المعاينة النهائية المطابقة لشريط المشترك:',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 8),
-        preview,
+        // بنر واحد فقط: البنر القابل للتعديل نفسه هو المعاينة، بدون نسخة ثانية تحته.
         const SizedBox(height: 12),
       ],
     );

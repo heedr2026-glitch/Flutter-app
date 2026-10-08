@@ -491,11 +491,16 @@ class KhdoomCloudApi {
   Future<Map<String, dynamic>> createSupportTicket({
     required String category,
     required String message,
+    String imageData = '',
   }) async {
     final result = await _request(
       'POST',
       '/api/support-tickets',
-      body: {'category': category, 'message': message},
+      body: {
+        'category': category,
+        'message': message,
+        if (imageData.isNotEmpty) 'imageData': imageData,
+      },
     );
     return Map<String, dynamic>.from(result as Map);
   }

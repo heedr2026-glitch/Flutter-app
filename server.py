@@ -41,6 +41,7 @@ import signup_offer
 import calls_trial
 import number_requests
 import call_gateway
+import app_features
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1393,6 +1394,7 @@ def init_db() -> None:
             calls_trial.migrate(connection, postgres=True)
             number_requests.migrate(connection, postgres=True)
             call_gateway.migrate(connection, postgres=True)
+            app_features.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1799,6 +1801,7 @@ def init_db() -> None:
         calls_trial.migrate(connection)
         number_requests.migrate(connection)
         call_gateway.migrate(connection)
+        app_features.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -2360,6 +2363,11 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
             except Exception:
                 database_status = "degraded"
             self._send(200, {"status": "ok" if STARTUP_READY and database_status == "ok" else "degraded", "databasePooling": bool(DATABASE_URL and ConnectionPool is not None and _postgres_pool is not None), "service": "khdoom-api", "services": {"api": "ok", "database": database_status, "whatsapp": "configured" if whatsapp_is_configured() else "not_configured", "ai": "configured" if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "not_configured", "calls": "configured" if os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip() else "not_configured"}})
+            return
+        # ما يظهر من خدمات في التطبيق (الواتساب والمكالمات)؛ تتحكم به الإدارة. لا يحوي أي بيانات خاصة.
+        if path == "/api/app-features" and method == "GET":
+            with db() as features_connection:
+                self._send(200, app_features.flags(features_connection))
             return
         if path == "/webhooks/calls" and method == "POST":
             expected = os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip()
@@ -3242,6 +3250,21 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(201, result)
             return
         # ربط الهاتف الحقيقي: حالة الإعداد وأرقام المزود المعيّنة للمؤسسات.
+        if path == '/owner/api/app-features' and method == 'GET':
+            self._owner()
+            with db() as connection:
+                result = app_features.flags(connection)
+            self._send(200, result)
+            return
+        if path == '/owner/api/app-features' and method == 'POST':
+            self._owner()
+            data = self._body()
+            with db() as connection:
+                result = app_features.set_flag(connection, data.get('name'), data.get('enabled'), self.platform_actor['name'], now(), ApiError)
+                owner_admin.audit(connection, self.platform_actor['name'], 'app_feature_' + ('shown' if data.get('enabled') is True else 'hidden'), str(data.get('name'))[:40])
+                connection.commit()
+            self._send(200, result)
+            return
         if path == '/owner/api/calls-gateway' and method == 'GET':
             self._owner()
             base_url = 'https://' + (self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or 'khdoom-api.onrender.com')
@@ -4188,10 +4211,14 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 self._send(202, {"saved": True})
                 return
             if path == "/api/support-tickets" and method == "GET":
-                rows = connection.execute("SELECT id,reference_code,title,category,message,status,owner_reply,created_at,updated_at FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
+                rows = connection.execute("SELECT id,reference_code,title,category,message,status,owner_reply,created_at,updated_at,CASE WHEN attachment_data<>'' THEN 1 ELSE 0 END AS has_attachment FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
                 items = []
                 for row in rows:
                     item = dict(row)
+                    # نصوص قديمة حُفظت بترميز مخربط (مثل «â€"» بدل الشرطة) تُصحح عند العرض.
+                    for field in ("title", "message", "owner_reply", "category"):
+                        if isinstance(item.get(field), str):
+                            item[field] = item[field].replace("\u00e2\u20ac\u201d", "—").replace("\u00e2\u20ac\u201c", "–").replace("\u00e2\u20ac\u00a2", "•").replace("\u00e2\u20ac\u0153", "“").replace("\u00e2\u20ac", "—")
                     if not item.get("reference_code"):
                         item["reference_code"] = support_reference(item["id"], item.get("created_at", ""))
                     items.append(item)
@@ -4214,6 +4241,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 message = str(data.get("message", "")).strip()[:2000]
                 if len(message) < 5:
                     raise ApiError(400, "اكتب تفاصيل المشكلة")
+                attachment = app_features.clean_attachment(data.get("imageData"), ApiError)
                 created = now()
                 # Support requests can arrive before an administrator opens the
                 # dashboard. Ensure the isolated AI follow-up tables exist first.
@@ -4223,6 +4251,8 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 ticket_id = int(row["id"])
                 reference_code = support_reference(ticket_id, created)
                 title = str(data.get("title", "")).strip()[:160] or message.splitlines()[0][:160]
+                if attachment:
+                    connection.execute("UPDATE support_tickets SET attachment_data=? WHERE id=?", (attachment, ticket_id))
                 connection.execute("UPDATE support_tickets SET reference_code=?,title=?,scope='private',device_name=?,app_version=?,branch_id=? WHERE id=?", (reference_code,title,str(data.get('deviceName',''))[:120],str(data.get('appVersion',''))[:40],user.get('current_branch'),ticket_id))
                 add_support_event(connection, ticket_id=ticket_id, organization_id=organization_id, user_id=user["id"], actor_type="user", actor_name=str(user.get("name") or user.get("username") or "المستخدم"), event_type="created", body=message, to_status="in_progress")
                 # Route every new support request to the technical employee queue.
@@ -4251,7 +4281,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 # يُحفظ في سجل عمليات المؤسسة فقط؛ ليس تنبيهًا أمنيًا على جوال المشترك، وتنبيه الشكوى الجديدة يذهب لإدارة خدووم.
                 audit_log(connection, organization_id, user["id"], "support_ticket_sent", "تم إرسال طلب دعم فني " + reference_code + ": " + category, "support", str(row["id"]))
                 connection.commit()
-                self._send(201, {"saved": True, "id": ticket_id, "referenceCode": reference_code, "status": "in_progress"})
+                self._send(201, {"saved": True, "id": ticket_id, "referenceCode": reference_code, "status": "in_progress", "createdAt": created, "hasAttachment": bool(attachment)})
                 return
             if path == "/api/maintenance-status" and method == "GET":
                 self._send(200, {service: service_maintenance_status(connection, organization_id, service) for service in ('assistant', 'appointments', 'chat')})

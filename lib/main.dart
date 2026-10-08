@@ -1,6 +1,7 @@
 import 'vehicle_tracking_page.dart';
 import 'driver_link_page.dart';
 import 'whatsapp_workspace.dart';
+import 'app_features.dart';
 import 'reception_conversation_page.dart';
 
 import 'dart:async';
@@ -75,6 +76,28 @@ int _bannerRotationIndex(List<Map<String, String>> ads) =>
 
 /// Security choices belong to the signed-in account on this device. They are
 /// deliberately local; biometric data itself always stays with Android/iOS.
+const khdoomPrivacyPolicyUrl = 'https://khdoom-api.onrender.com/privacy';
+
+/// تفتح صفحة الشروط وسياسة الخصوصية المنشورة (نفس الرابط الموجود في Google Play).
+Future<void> openKhdoomPrivacyPolicy() async {
+  try {
+    await launchUrl(
+      Uri.parse(khdoomPrivacyPolicyUrl),
+      mode: LaunchMode.externalApplication,
+    );
+  } catch (_) {}
+}
+
+/// تاريخ ووقت بصيغة 12 ساعة (ص/م) لعرض مواعيد الشكاوى للمشترك.
+String khdoomDateTime12(Object? value) {
+  final date = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+  if (date == null) return '';
+  String two(int n) => n.toString().padLeft(2, '0');
+  final hour = date.hour % 12 == 0 ? 12 : date.hour % 12;
+  final period = date.hour < 12 ? 'ص' : 'م';
+  return '${two(date.day)}/${two(date.month)}/${date.year} — $hour:${two(date.minute)} $period';
+}
+
 String _securityUserScope(BranchPreferences prefs) {
   final username =
       (prefs.getString('remembered_login_username') ??
@@ -549,6 +572,7 @@ class KhdoomNotifications {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await KhdoomNotifications.initialize();
+  unawaited(KhdoomAppFeatures.refresh());
   runApp(const KhdoomApp());
 }
 
@@ -2264,9 +2288,18 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
                   checkColor: Colors.white,
                   contentPadding: EdgeInsets.zero,
                   controlAffinity: ListTileControlAffinity.leading,
-                  title: const Text(
-                    'أوافق على الشروط وسياسة الخصوصية',
-                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                  title: Wrap(
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Text(
+                        'أوافق على الشروط وسياسة الخصوصية',
+                        style: TextStyle(color: Colors.white70, fontSize: 14),
+                      ),
+                      TextButton(
+                        onPressed: openKhdoomPrivacyPolicy,
+                        child: const Text('(اقرأها)'),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -2409,7 +2442,11 @@ class _DashboardPageState extends State<DashboardPage> {
     _loadBusinessName();
     _requestRefreshTimer = Timer.periodic(
       const Duration(minutes: 1),
-      (_) => _loadBusinessName(),
+      (_) {
+        _loadBusinessName();
+        // إذا شغّلت الإدارة الواتساب أو المكالمات يظهران خلال دقيقة بدون إعادة تشغيل.
+        KhdoomAppFeatures.refresh();
+      },
     );
     _sessionValidationTimer = Timer.periodic(
       const Duration(minutes: 2),
@@ -5286,6 +5323,8 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     final controller = TextEditingController();
     var selectedSupportCategory = 'مشكلة في الحساب';
+    var supportImage = '';
+    String? supportImageError;
     const supportCategories = [
       'مشكلة في الحساب',
       'تسجيل الدخول',
@@ -5346,6 +5385,63 @@ class _SettingsPageState extends State<SettingsPage> {
                       fillColor: Color(0xFF0B1020),
                     ),
                   ),
+                  const SizedBox(height: 8),
+                  // صورة اختيارية للمشكلة (لقطة شاشة مثلًا) تظهر للإدارة مع الشكوى.
+                  Row(
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final image = await ImagePicker().pickImage(
+                            source: ImageSource.gallery,
+                            imageQuality: 60,
+                            maxWidth: 1280,
+                            maxHeight: 1280,
+                          );
+                          if (image == null) return;
+                          final bytes = await image.readAsBytes();
+                          if (bytes.length > 650000) {
+                            setDialogState(
+                              () => supportImageError =
+                                  'الصورة كبيرة؛ اختر صورة أصغر',
+                            );
+                            return;
+                          }
+                          setDialogState(() {
+                            supportImage =
+                                'data:image/jpeg;base64,${base64Encode(bytes)}';
+                            supportImageError = null;
+                          });
+                        },
+                        icon: Icon(
+                          supportImage.isEmpty
+                              ? Icons.add_photo_alternate_outlined
+                              : Icons.check_circle,
+                          color: Colors.white70,
+                        ),
+                        label: Text(
+                          supportImage.isEmpty
+                              ? 'إرفاق صورة'
+                              : 'تم إرفاق الصورة',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                      if (supportImage.isNotEmpty)
+                        IconButton(
+                          tooltip: 'إزالة الصورة',
+                          icon: const Icon(
+                            Icons.close,
+                            color: Colors.white70,
+                          ),
+                          onPressed: () =>
+                              setDialogState(() => supportImage = ''),
+                        ),
+                    ],
+                  ),
+                  if (supportImageError != null)
+                    Text(
+                      supportImageError!,
+                      style: const TextStyle(color: Colors.redAccent),
+                    ),
                   const SizedBox(height: 12),
                   ...tickets.map((item) {
                     final x = Map<String, dynamic>.from(item as Map);
@@ -5368,7 +5464,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         style: const TextStyle(color: Colors.white),
                       ),
                       subtitle: Text(
-                        '$status${(x['owner_reply'] ?? '').toString().isNotEmpty ? ' — ${x['owner_reply']}' : ''}',
+                        '${khdoomDateTime12(x['created_at']).isEmpty ? '' : 'أُرسلت: ${khdoomDateTime12(x['created_at'])}\n'}$status${(x['owner_reply'] ?? '').toString().isNotEmpty ? ' — ${x['owner_reply']}' : ''}',
                         style: const TextStyle(color: Colors.white70),
                       ),
                       trailing: x['status'] == 'resolved'
@@ -5446,19 +5542,29 @@ class _SettingsPageState extends State<SettingsPage> {
                   final saved = await api.createSupportTicket(
                     category: selectedSupportCategory,
                     message: controller.text.trim(),
+                    imageData: supportImage,
                   );
                   if (dialogContext.mounted) Navigator.pop(dialogContext);
                   if (mounted) {
                     final reference = (saved['referenceCode'] ?? '').toString();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
+                    final sentAt = khdoomDateTime12(
+                      saved['createdAt'] ?? DateTime.now().toIso8601String(),
+                    );
+                    // رقم الشكوى وتاريخها يبقيان ظاهرين حتى يغلقهما المشترك، لا يختفيان بعد ثوانٍ.
+                    await showDialog<void>(
+                      context: context,
+                      builder: (doneContext) => AlertDialog(
+                        title: const Text('تم استلام شكواك ✓'),
                         content: Text(
-                          reference.isEmpty
-                              ? 'تم إرسال طلب الدعم ✓'
-                              : 'تم استلام شكواك بنجاح. رقم الشكوى: ' +
-                                    reference,
+                          (reference.isEmpty ? '' : 'رقم الشكوى: $reference\n') +
+                              'التاريخ: $sentAt\n\nتقدر تتابعها من «الدعم الفني» في أي وقت.',
                         ),
-                        duration: const Duration(seconds: 6),
+                        actions: [
+                          FilledButton(
+                            onPressed: () => Navigator.pop(doneContext),
+                            child: const Text('تم'),
+                          ),
+                        ],
                       ),
                     );
                   }
@@ -6058,7 +6164,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     _settingsInfoTile(
                       icon: Icons.account_balance_wallet_outlined,
                       title: 'الرصيد والاستهلاك',
-                      subtitle: 'رصيد الذكاء الاصطناعي وواتساب والمكالمات وموعد التجديد',
+                      subtitle: 'رصيد الخدمات وموعد التجديد',
                       onTap: () {
                         Navigator.push(
                           context,
@@ -6098,6 +6204,13 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                     const SizedBox(height: 10),
                   ],
+                  _settingsInfoTile(
+                    icon: Icons.policy_outlined,
+                    title: 'الشروط وسياسة الخصوصية',
+                    subtitle: 'اقرأ شروط استخدام خدووم وكيف نحمي بياناتك',
+                    onTap: openKhdoomPrivacyPolicy,
+                  ),
+                  const SizedBox(height: 10),
                   _settingsInfoTile(
                     icon: Icons.security_outlined,
                     title: 'الخصوصية والأمان',
@@ -11930,53 +12043,66 @@ class AiEmployeesPage extends StatelessWidget {
                 },
               ),
               const SizedBox(height: 12),
-              AiEmployeeCard(
-                icon: Icons.chat,
-                title: 'موظف واتساب',
-                subtitle: includesAllEmployees
-                    ? 'الرد على الرسائل ومتابعة العملاء'
-                    : 'متاح في باقة VIP',
-                locked: !includesAllEmployees,
-                onTap: includesAllEmployees
-                    ? () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                const WhatsAppWorkspace(inbox: true),
-                          ),
-                        );
-                      }
-                    : () => _showUpgradeDialog(
-                        context,
-                        'موظف واتساب',
-                        'باقة VIP',
-                      ),
+              // الواتساب والمكالمات مخفيان حتى تشغّلهما الإدارة من لوحتها.
+              ValueListenableBuilder<Map<String, bool>>(
+                valueListenable: KhdoomAppFeatures.current,
+                builder: (context, features, _) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (features['whatsapp'] == true) ...[
+                    AiEmployeeCard(
+                      icon: Icons.chat,
+                      title: 'موظف واتساب',
+                      subtitle: includesAllEmployees
+                          ? 'الرد على الرسائل ومتابعة العملاء'
+                          : 'متاح في باقة VIP',
+                      locked: !includesAllEmployees,
+                      onTap: includesAllEmployees
+                          ? () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      const WhatsAppWorkspace(inbox: true),
+                                ),
+                              );
+                            }
+                          : () => _showUpgradeDialog(
+                              context,
+                              'موظف واتساب',
+                              'باقة VIP',
+                            ),
+                    ),
+                    const SizedBox(height: 12),
+                    ],
+                    if (features['calls'] == true) ...[
+                    AiEmployeeCard(
+                      icon: Icons.phone_in_talk,
+                      title: 'موظف الاتصالات',
+                      subtitle: includesAllEmployees
+                          ? 'استقبال المكالمات وجمع بيانات العميل'
+                          : 'متاح في باقة VIP',
+                      locked: !includesAllEmployees,
+                      onTap: includesAllEmployees
+                          ? () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const CallsEmployeePage(),
+                                ),
+                              );
+                            }
+                          : () => _showUpgradeDialog(
+                              context,
+                              'موظف الاتصالات',
+                              'باقة VIP',
+                            ),
+                    ),
+                    const SizedBox(height: 12),
+                    ],
+                  ],
+                ),
               ),
-              const SizedBox(height: 12),
-              AiEmployeeCard(
-                icon: Icons.phone_in_talk,
-                title: 'موظف الاتصالات',
-                subtitle: includesAllEmployees
-                    ? 'استقبال المكالمات وجمع بيانات العميل'
-                    : 'متاح في باقة VIP',
-                locked: !includesAllEmployees,
-                onTap: includesAllEmployees
-                    ? () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const CallsEmployeePage(),
-                          ),
-                        );
-                      }
-                    : () => _showUpgradeDialog(
-                        context,
-                        'موظف الاتصالات',
-                        'باقة VIP',
-                      ),
-              ),
-              const SizedBox(height: 12),
               AiEmployeeCard(
                 icon: Icons.search,
                 title: 'موظف البحث التجاري',
@@ -12597,6 +12723,11 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
     }
     if (_hasAny(text, ['موظف استقبال', 'استقبال العملاء'])) {
       return 'موظف الاستقبال موجود في الأساسية وVIP. تضبط له معلومات المؤسسة وساعات العمل وأسلوب الرد، وهو يجمع بيانات العملاء ويرد على الاستفسارات الأولية.';
+    }
+    if (_hasAny(text, ['واتس', 'واتساب', 'مكالم', 'اتصالات']) &&
+        !KhdoomAppFeatures.whatsapp &&
+        !KhdoomAppFeatures.calls) {
+      return 'موظف واتساب وموظف الاتصالات قيد التجهيز حاليًا، وبيظهرون في التطبيق أول ما يكونون جاهزين.';
     }
     if (_hasAny(text, ['واتس', 'واتساب', 'مكالم', 'اتصالات'])) {
       return 'موظف واتساب وموظف الاتصالات موجودين في باقة VIP. واتساب يحتاج حساب Meta Business وخادم عام، والاتصالات تحتاج مزوّد اتصال سحابي.';
