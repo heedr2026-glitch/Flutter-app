@@ -74,19 +74,38 @@ class AdminAgentTest(ServiceNumberClaimsTest):
         self.assertIn('error', self.tool('propose_subscription', {'organization_id': 2, 'package': 'gold'}))
 
     def test_offer_requires_prices_and_creates_bonus_offer(self):
-        self.assertIn('error', self.tool('propose_offer', {'package': 'basic', 'paid_months': 5, 'bonus_months': 1}))
+        self.assertIn('error', self.tool('propose_offer', {'package': 'basic', 'paid_months': 5, 'offer_type': 'bonus', 'bonus_months': 1}))
         with server.db() as c:
             c.execute("CREATE TABLE IF NOT EXISTS package_prices(package TEXT, duration_months INTEGER, price_sar REAL)")
             c.execute("DELETE FROM package_prices")
             c.execute("INSERT INTO package_prices(package,duration_months,price_sar,updated_at) VALUES('basic',6,300,?)", (server.now(),))
             c.commit()
-        self.assertIn('error', self.tool('propose_offer', {'package': 'vip', 'paid_months': 6, 'bonus_months': 1}))
-        proposal = self.tool('propose_offer', {'package': 'basic', 'paid_months': 6, 'bonus_months': 1})
+        self.assertIn('error', self.tool('propose_offer', {'package': 'vip', 'paid_months': 6, 'offer_type': 'bonus', 'bonus_months': 1}))
+        proposal = self.tool('propose_offer', {'package': 'basic', 'paid_months': 6, 'offer_type': 'bonus', 'bonus_months': 1})
         self.assertIn('6 شهر', proposal['summary'])
         self.assertTrue(self.tool('confirm_action', {'token': proposal['token']}, user_text='أكد')['done'])
         with server.db() as c:
             offer = c.execute('SELECT package,paid_months,bonus_months,price_sar,offer_type,active FROM package_offers ORDER BY id DESC LIMIT 1').fetchone()
         self.assertEqual(tuple(offer), ('basic', 6, 1, 300.0, 'bonus', 1))
+        percent = self.tool('propose_offer', {'package': 'basic', 'paid_months': 6, 'offer_type': 'percent', 'discount_percent': 20, 'days_valid': 7})
+        self.assertIn('من 300 إلى 240 ريال', percent['summary'])
+        self.assertTrue(self.tool('confirm_action', {'token': percent['token']}, user_text='أكد')['done'])
+        self.assertIn('error', self.tool('propose_offer', {'package': 'basic', 'paid_months': 6, 'offer_type': 'price', 'price_sar': 350}))
+        special = self.tool('propose_offer', {'package': 'basic', 'paid_months': 6, 'offer_type': 'price', 'price_sar': 199})
+        self.assertTrue(self.tool('confirm_action', {'token': special['token']}, user_text='أكد')['done'])
+        with server.db() as c:
+            rows = [tuple(r) for r in c.execute('SELECT offer_type,price_sar,discount_percent FROM package_offers ORDER BY id DESC LIMIT 2').fetchall()]
+        self.assertEqual(rows, [('price', 199.0, 0), ('percent', 240.0, 20.0)])
+        # كود خصم.
+        self.assertIn('error', self.tool('propose_discount_code', {'code': 'خصم', 'discount_percent': 10}))
+        self.assertIn('error', self.tool('propose_discount_code', {'code': 'KH10', 'discount_percent': 10, 'discount_amount': 5}))
+        code = self.tool('propose_discount_code', {'code': 'kh20', 'discount_percent': 20, 'packages': 'vip', 'max_uses': 50})
+        self.assertIn('KH20', code['summary'])
+        self.assertTrue(self.tool('confirm_action', {'token': code['token']}, user_text='أكد')['done'])
+        with server.db() as c:
+            saved = c.execute("SELECT discount_percent,eligible_packages,max_uses,code_kind FROM activation_codes WHERE code_prefix='KH20'").fetchone()
+        self.assertEqual(tuple(saved), (20.0, 'vip', 50, 'discount'))
+        self.assertIn('موجود', self.tool('propose_discount_code', {'code': 'KH20', 'discount_amount': 30})['error'])
 
     def test_ad_decision(self):
         with server.db() as c:

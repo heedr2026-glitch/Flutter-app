@@ -29,7 +29,7 @@ INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، 
 الأرقام: رقم الشكوى مثل KHD-2026-000022 أو 22، ورقم الإعلان، ورقم المؤسسة.
 إذا ذكر المدير مؤسسة بالاسم ابحث عنها بـ find_organization، وإذا طلع أكثر من نتيجة اسأله أي وحدة.
 
-التعديلات (بيانات مؤسسة، الباقة والاشتراك، العروض، قرار الإعلانات):
+التعديلات (بيانات مؤسسة، الباقة والاشتراك، العروض والخصومات، أكواد الخصم، قرار الإعلانات):
 1) جهّز الطلب بأداة propose_… المناسبة.
 2) اقرأ للمدير الملخص الراجع بالضبط واسأله: «أأكد؟».
 3) لا تستدعي confirm_action إلا إذا قال المدير صراحة «أكد» في رسالته الأخيرة. أي رد ثاني يعني لا تنفذ.
@@ -41,7 +41,7 @@ PERMISSION = {
     "find_organization": "organizations.view", "organization_status": "organizations.view",
     "complaint_details": "support", "recheck_complaint": "support", "platform_status": "security",
     "pending_ads": "ads", "propose_update_organization": "organizations.edit",
-    "propose_subscription": "packages", "propose_offer": "offers", "propose_ad_decision": "ads",
+    "propose_subscription": "packages", "propose_offer": "offers", "propose_ad_decision": "ads", "propose_discount_code": "codes",
 }
 
 _obj = lambda props, required=(): {"type": "object", "properties": props, "required": list(required), "additionalProperties": False}
@@ -62,8 +62,15 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": _obj({"organization_id": {"type": "integer"}, "name": {"type": "string"}, "activity": {"type": "string"}, "phone": {"type": "string"}}, ["organization_id"])},
     {"type": "function", "name": "propose_subscription", "description": "تجهيز تغيير باقة مؤسسة (free أو basic أو vip) و/أو إضافة أيام لاشتراكها. لا ينفذ قبل تأكيد المدير",
      "parameters": _obj({"organization_id": {"type": "integer"}, "package": {"type": "string", "enum": ["free", "basic", "vip"]}, "add_days": {"type": "integer"}}, ["organization_id"])},
-    {"type": "function", "name": "propose_offer", "description": "تجهيز عرض باقات: اشتراك عدد أشهر مدفوعة (1 أو 3 أو 6 أو 12) مع أشهر مجانية إضافية، للأساسية أو VIP أو الاثنين. لا ينفذ قبل تأكيد المدير",
-     "parameters": _obj({"package": {"type": "string", "enum": ["basic", "vip", "basic,vip"]}, "paid_months": {"type": "integer"}, "bonus_months": {"type": "integer"}, "days_valid": {"type": "integer"}, "label": {"type": "string"}}, ["package", "paid_months", "bonus_months"])},
+    {"type": "function", "name": "propose_offer", "description": "تجهيز عرض على باقة لمدة اشتراك (1 أو 3 أو 6 أو 12 شهر): bonus أشهر مجانية إضافية، أو percent نسبة خصم من السعر، أو price سعر خاص بالريال. لا ينفذ قبل تأكيد المدير",
+     "parameters": _obj({"package": {"type": "string", "enum": ["basic", "vip", "basic,vip"]}, "paid_months": {"type": "integer"},
+                         "offer_type": {"type": "string", "enum": ["bonus", "percent", "price"]}, "bonus_months": {"type": "integer"},
+                         "discount_percent": {"type": "number"}, "price_sar": {"type": "number"}, "days_valid": {"type": "integer"}, "label": {"type": "string"}},
+                        ["package", "paid_months", "offer_type"])},
+    {"type": "function", "name": "propose_discount_code", "description": "تجهيز كود خصم يكتبه المشترك وقت الاشتراك: نسبة مئوية أو مبلغ بالريال، للباقات والمدد المحددة، بعدد استخدامات ومدة صلاحية. لا ينفذ قبل تأكيد المدير",
+     "parameters": _obj({"code": {"type": "string"}, "discount_percent": {"type": "number"}, "discount_amount": {"type": "number"},
+                         "packages": {"type": "string", "enum": ["basic", "vip", "basic,vip"]}, "durations": {"type": "string"},
+                         "max_uses": {"type": "integer"}, "days_valid": {"type": "integer"}}, ["code"])},
     {"type": "function", "name": "propose_ad_decision", "description": "تجهيز الموافقة على طلب إعلان أو رفضه برقمه. لا ينفذ قبل تأكيد المدير",
      "parameters": _obj({"ad_id": {"type": "integer"}, "decision": {"type": "string", "enum": ["approve", "reject"]}, "note": {"type": "string"}}, ["ad_id", "decision"])},
     {"type": "function", "name": "confirm_action", "description": "تنفيذ طلب مجهز بعد أن قال المدير «أكد» صراحة",
@@ -232,28 +239,92 @@ class Agent:
                    else f"تمديد اشتراك «{org['name']}» (رقم {org['id']}) على {PACKAGE_NAMES[target]} بـ {days} يوم") + f"، ينتهي: {when}"
         return self._propose("subscription", {"organization_id": org["id"], "package": target, "expires_at": expires, "same": target == current}, summary)
 
-    def propose_offer(self, c, package: Any = None, paid_months: Any = None, bonus_months: Any = None, days_valid: Any = None, label: Any = None, **_):
+    def propose_offer(self, c, package: Any = None, paid_months: Any = None, offer_type: Any = "bonus", bonus_months: Any = None,
+                      discount_percent: Any = None, price_sar: Any = None, days_valid: Any = None, label: Any = None, **_):
         if package not in ("basic", "vip", "basic,vip"):
             raise ValueError("حدد الباقة: الأساسية أو VIP أو الاثنين")
+        kind = offer_type or "bonus"
+        if kind not in ("bonus", "percent", "price"):
+            raise ValueError("نوع العرض لازم يكون أشهر مجانية أو نسبة خصم أو سعر خاص")
         try:
-            months, bonus, valid = int(paid_months), int(bonus_months or 0), int(days_valid or 30)
+            months, valid = int(paid_months), int(days_valid or 30)
+            bonus = int(bonus_months or 0)
+            percent = float(discount_percent or 0)
+            price = float(price_sar or 0)
         except (TypeError, ValueError):
-            raise ValueError("المدد لازم تكون أرقام")
+            raise ValueError("الأرقام في العرض غير صحيحة")
         if months not in owner_admin.PACKAGE_DURATIONS:
-            raise ValueError("مدة الاشتراك المدفوعة لازم تكون شهر أو 3 أو 6 أو 12")
-        if not 0 < bonus <= 60:
-            raise ValueError("الأشهر المجانية لازم تكون من 1 إلى 60")
+            raise ValueError("مدة الاشتراك لازم تكون شهر أو 3 أو 6 أو 12")
         if not 1 <= valid <= 365:
             raise ValueError("مدة العرض لازم تكون من يوم إلى سنة")
-        for item in package.split(","):
-            if not owner_admin.package_price_map(c, item).get(months):
+        if not 0 <= bonus <= 60:
+            raise ValueError("الأشهر المجانية لازم تكون من 0 إلى 60")
+        if kind == "bonus" and bonus < 1:
+            raise ValueError("حدد كم شهر مجاني")
+        if kind == "percent" and not 1 <= percent <= 90:
+            raise ValueError("نسبة الخصم لازم تكون من 1% إلى 90%")
+        packages = package.split(",")
+        if kind == "price" and len(packages) > 1:
+            raise ValueError("السعر الخاص يكون لباقة وحدة؛ حدد الأساسية أو VIP")
+        bases = {}
+        for item in packages:
+            base = owner_admin.package_price_map(c, item).get(months)
+            if not base:
                 raise ValueError("السعر الأساسي لهذه المدة غير مهيأ في الباقات")
-        names = " و".join(PACKAGE_NAMES[p] for p in package.split(","))
-        text = str(label or "").strip()[:100] or f"اشتراك {months} أشهر + {bonus} مجانًا"
+            bases[item] = base
+        if kind == "price" and not 0 < price < bases[packages[0]]:
+            raise ValueError(f"السعر الخاص لازم يكون أقل من السعر الأصلي ({bases[packages[0]]:g} ريال)")
+        names = " و".join(PACKAGE_NAMES[p] for p in packages)
+        prices = "، ".join(f"{PACKAGE_NAMES[p]} من {bases[p]:g} إلى {round(bases[p] * (100 - percent) / 100, 2):g} ريال" for p in packages) if kind == "percent" else ""
+        detail = {"bonus": f"ادفع {months} شهر واحصل على {bonus} شهر مجاني",
+                  "percent": f"خصم {percent:g}% على اشتراك {months} شهر ({prices})",
+                  "price": f"اشتراك {months} شهر بـ {price:g} ريال بدل {bases[packages[0]]:g}"}[kind]
+        if kind != "bonus" and bonus:
+            detail += f" + {bonus} شهر مجاني"
+        text = str(label or "").strip()[:100] or detail[:100]
         start = _now()
-        summary = f"عرض جديد للباقة {names}: ادفع {months} شهر واحصل على {bonus} شهر مجاني، يبدأ اليوم ويستمر {valid} يوم، بعنوان «{text}»"
-        return self._propose("offer", {"package": package, "paid_months": months, "bonus_months": bonus, "starts_at": start.isoformat(),
-                                       "ends_at": (start + timedelta(days=valid)).isoformat(), "offer_type": "bonus", "label": text}, summary)
+        summary = f"عرض جديد للباقة {names}: {detail}، يبدأ اليوم ويستمر {valid} يوم، بعنوان «{text}»"
+        args = {"package": package, "paid_months": months, "bonus_months": bonus, "starts_at": start.isoformat(),
+                "ends_at": (start + timedelta(days=valid)).isoformat(), "offer_type": kind, "label": text}
+        if kind == "percent":
+            args["discount_percent"] = percent
+        if kind == "price":
+            args["price_sar"] = price
+        return self._propose("offer", args, summary)
+
+    def propose_discount_code(self, c, code: Any = None, discount_percent: Any = None, discount_amount: Any = None, packages: Any = None,
+                              durations: Any = None, max_uses: Any = None, days_valid: Any = None, **_):
+        clean = str(code or "").upper().strip()
+        if not re.fullmatch(r"[A-Z0-9_-]{2,40}", clean):
+            raise ValueError("الكود لازم يكون حروف إنجليزية أو أرقام، من حرفين إلى 40")
+        try:
+            percent, amount = float(discount_percent or 0), float(discount_amount or 0)
+            uses, valid = int(max_uses or 100), int(days_valid or 30)
+        except (TypeError, ValueError):
+            raise ValueError("الأرقام في الكود غير صحيحة")
+        if bool(percent) == bool(amount):
+            raise ValueError("حدد نسبة خصم أو مبلغ خصم، واحد منهم بس")
+        if percent and not 1 <= percent <= 90:
+            raise ValueError("نسبة الخصم لازم تكون من 1% إلى 90%")
+        if amount and amount <= 0:
+            raise ValueError("مبلغ الخصم غير صحيح")
+        if not 1 <= uses <= 100000 or not 1 <= valid <= 365:
+            raise ValueError("عدد الاستخدامات أو مدة الصلاحية غير صحيحة")
+        eligible = packages or "basic,vip"
+        if eligible not in ("basic", "vip", "basic,vip"):
+            raise ValueError("الباقات لازم تكون الأساسية أو VIP أو الاثنين")
+        months = str(durations or "1,3,6,12").replace(" ", "")
+        if not months or any(not x.isdigit() or int(x) not in owner_admin.PACKAGE_DURATIONS for x in months.split(",")):
+            raise ValueError("المدد لازم تكون من 1 و3 و6 و12")
+        if c.execute("SELECT 1 FROM activation_codes WHERE code_hash=?", (hashlib.sha256(clean.encode()).hexdigest(),)).fetchone():
+            raise ValueError("هذا الكود موجود من قبل؛ اختر كود ثاني")
+        start = _now()
+        names = " و".join(PACKAGE_NAMES[p] for p in eligible.split(","))
+        value = f"خصم {percent:g}%" if percent else f"خصم {amount:g} ريال"
+        summary = f"كود خصم «{clean}»: {value} على {names} لمدد {months} شهر، يستخدم {uses} مرة، صالح {valid} يوم"
+        return self._propose("code", {"code": clean, "discount_percent": percent, "discount_amount": amount, "eligible_packages": eligible,
+                                      "eligible_durations": months, "max_uses": uses, "starts_at": start.isoformat(),
+                                      "expires_at": (start + timedelta(days=valid)).isoformat(), "recipient_name": "عرض عام"}, summary)
 
     def propose_ad_decision(self, c, ad_id: Any = None, decision: Any = None, note: Any = None, **_):
         if decision not in ("approve", "reject"):
@@ -284,7 +355,7 @@ class Agent:
                 raise ValueError("هذا الطلب جهزه مدير آخر")
             _pending.pop(str(token), None)
         kind, args = item["kind"], item["args"]
-        if not self._allowed({"organization": "organizations.edit", "subscription": "packages", "offer": "offers", "ad": "ads"}[kind]):
+        if not self._allowed({"organization": "organizations.edit", "subscription": "packages", "offer": "offers", "ad": "ads", "code": "codes"}[kind]):
             raise PermissionError("ما عندك صلاحية لهذا التعديل")
         actor = self.actor.get("name") or "المدير"
         if kind == "organization":
@@ -300,6 +371,9 @@ class Agent:
         elif kind == "offer":
             self._dispatch(c, "offers", "POST", {k: v for k, v in args.items()})
             owner_admin.audit(c, actor, "agent_offer_created", json.dumps(args, ensure_ascii=False))
+        elif kind == "code":
+            self._dispatch(c, "codes", "POST", dict(args))
+            owner_admin.audit(c, actor, "agent_discount_code_created", json.dumps({k: v for k, v in args.items() if k != "code"} | {"code_prefix": args["code"][:3]}, ensure_ascii=False))
         elif kind == "ad":
             data = {k: v for k, v in args.items() if k != "ad_id"}
             self._dispatch(c, "ads/%d" % args["ad_id"], "PUT", data)
