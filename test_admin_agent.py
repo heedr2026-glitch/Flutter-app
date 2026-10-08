@@ -117,6 +117,15 @@ class AdminAgentTest(ServiceNumberClaimsTest):
         self.assertEqual((mine['status'], mine['owner_reply']), ('resolved', 'تم حل المشكلة، سجل دخول من جديد'))
         self.assertEqual(self.call('/owner/api/agent/brief')[1]['overdue_complaints_no_admin_reply_24h'], [])
         self.assertIn('error', self.tool('propose_complaint_reply', {'reference': saved['referenceCode'], 'reply': ''}))
+        for _ in range(3):
+            self.call('/api/support-tickets', 'POST', {'category': 'تسجيل الدخول', 'message': 'ما أقدر أدخل أبدًا'}, user=2)
+        outage = self.call('/owner/api/agent/brief')[1]['possible_outage']
+        self.assertEqual((outage[0]['category'], outage[0]['count'], outage[0]['organizations']), ('تسجيل الدخول', 3, 1))
+        with server.db() as c:
+            c.execute("UPDATE subscriptions SET package='basic' WHERE organization_id=1")
+            c.commit()
+        first = self.call('/owner/api/v2/support')[1]['items'][0]
+        self.assertEqual(first['package'], 'vip')
 
     def test_complaint_details_by_reference(self):
         status, saved = self.call('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'الصفحة ما تفتح عندي'}, user=1)

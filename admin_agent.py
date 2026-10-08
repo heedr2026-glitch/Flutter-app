@@ -34,7 +34,7 @@ INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، 
 أسئلة الأرقام العامة (كم مؤسسة، كم مشترك، كم VIP، كم جديد) جاوبها من platform_stats ولا تبحث عن مؤسسة.
 أسئلة مستخدمي مؤسسة من organization_users، وإعادة كلمة المرور من password_resets، والعروض والأكواد من current_offers.
 
-إذا فيه شكاوى بدون رد من الإدارة أكثر من 24 ساعة (overdue_complaints_no_admin_reply_24h في daily_brief) نبّه المدير عليها أول شي.
+إذا فيه شكاوى بدون رد من الإدارة أكثر من 24 ساعة (overdue_complaints_no_admin_reply_24h في daily_brief) نبّه المدير عليها أول شي، وابدأ بشكاوى VIP. وإذا فيه possible_outage قل له «فيه عطل عام محتمل» قبل أي شي.
 التعديلات (الرد على شكوى أو إقفالها، بيانات مؤسسة، الباقة والاشتراك، العروض والخصومات، أكواد الخصم، قرار الإعلانات):
 1) جهّز الطلب بأداة propose_… المناسبة.
 2) اقرأ للمدير الملخص الراجع بالضبط واسأله: «أأكد؟».
@@ -317,12 +317,16 @@ class Agent:
         if exists("support_tickets"):
             brief["open_complaints"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE status NOT IN ('resolved','closed')")
             brief["complaints_older_than_2_days"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE status NOT IN ('resolved','closed') AND created_at<?", ((now - timedelta(days=2)).isoformat(),))
-            overdue = owner_admin.rows(c, """SELECT t.id,t.reference_code,t.category,t.created_at,o.name organization FROM support_tickets t LEFT JOIN organizations o ON o.id=t.organization_id
-                WHERE t.status NOT IN ('resolved','closed') AND COALESCE(t.owner_reply_by,'')<>'admin' AND t.created_at<? ORDER BY t.id LIMIT 20""", ((now - timedelta(hours=24)).isoformat(),))
+            overdue = owner_admin.rows(c, """SELECT t.id,t.reference_code,t.category,t.created_at,o.name organization,COALESCE(s.package,'free')='vip' vip FROM support_tickets t
+                LEFT JOIN organizations o ON o.id=t.organization_id LEFT JOIN subscriptions s ON s.organization_id=t.organization_id
+                WHERE t.status NOT IN ('resolved','closed') AND COALESCE(t.owner_reply_by,'')<>'admin' AND t.created_at<? ORDER BY vip DESC,t.id LIMIT 20""", ((now - timedelta(hours=24)).isoformat(),))
             for item in overdue:
                 opened = _parse(item["created_at"])
                 item["hours_waiting"] = int((now - opened).total_seconds() // 3600) if opened else None
             brief["overdue_complaints_no_admin_reply_24h"] = overdue
+            # 3 شكاوى أو أكثر من نفس النوع خلال ساعة: غالبًا عطل عام عندنا لا مشكلة مشترك واحد.
+            brief["possible_outage"] = owner_admin.rows(c, """SELECT category,COUNT(*) count,COUNT(DISTINCT organization_id) organizations FROM support_tickets
+                WHERE created_at>=? GROUP BY category HAVING COUNT(*)>=3 ORDER BY COUNT(*) DESC""", ((now - timedelta(hours=1)).isoformat(),))
             brief["new_complaints_24h"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE created_at>=?", (day,))
         expiring = self.expiring_subscriptions(c, 7)
         brief["expiring_in_7_days"] = [{"organization": x["organization"], "package": x["package"], "days_left": x["days_left"]} for x in expiring["items"]]

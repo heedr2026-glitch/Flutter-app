@@ -1351,7 +1351,8 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    # شكاوى خلل في التطبيق محوّلة للتطوير: انتهى النقاش فيها مع المشترك وتنتظر صدور التحديث.
    where+=" AND t.status NOT IN ('resolved','closed') AND EXISTS (SELECT 1 FROM technical_tasks k WHERE k.support_ticket_id=t.id AND k.problem_type='app_bug')"
   elif q.get('status'): where+=' AND t.status=?'; args.append(q['status'])
-  out=paged(c,'SELECT t.*,o.name organization_name,s.package,pa.name assigned_admin_name',where,args,'t.id DESC',page)
+  # شكاوى VIP المفتوحة أولًا حتى لا يتأخر الرد عليها، ثم الأحدث.
+  out=paged(c,'SELECT t.*,o.name organization_name,s.package,pa.name assigned_admin_name',where,args,"CASE WHEN s.package='vip' AND t.status NOT IN ('resolved','closed') THEN 0 ELSE 1 END,t.id DESC",page)
   ids=[t['id'] for t in out['items']]; marks=','.join('?' for _ in ids)
   task_columns='id,support_ticket_id,status,diagnosis,proposal,action_taken,result,started_at,finished_at,knowledge,problem_type,needs_owner,suggested_action'
   # مهام ومتابعات وملاحظات كل الطلبات المعروضة تُجلب دفعة واحدة بدل استعلامات لكل طلب.
