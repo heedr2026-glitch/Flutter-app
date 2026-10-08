@@ -24,6 +24,29 @@ class AdminAgentTest(ServiceNumberClaimsTest):
         # المشترك ما يقدر يستخدم موظف الإدارة.
         self.assertEqual(self.call('/owner/api/agent/tool', 'POST', {'name': 'find_organization', 'arguments': '{}'}, user=1)[0], 401)
 
+    def test_counts_users_and_password_resets(self):
+        stats = self.tool('platform_stats')
+        self.assertEqual((stats['organizations'], stats['by_package']['VIP'], stats['users']), (2, 2, 2))
+        self.assertEqual(stats['new_last_7_days'], 2)
+        with server.db() as c:
+            c.execute("INSERT INTO users(id,organization_id,name,username,email,phone,password_hash,password_salt,role,created_at) VALUES(5,1,'سالم','salem','s@example.com','','x','x','employee',?)", (server.now(),))
+            server.audit_log(c, 1, 1, 'login', 'دخول', 'security', '1')
+            server.audit_log(c, 1, 5, 'failed_login', 'فشل', 'security', '5')
+            server.audit_log(c, 1, 1, 'password_reset', 'إعادة تعيين كلمة مرور الموظف سالم', 'security', 5)
+            server.audit_log(c, 1, 1, 'password_reset', 'إعادة تعيين كلمة مرور الموظف سالم', 'security', 5)
+            server.audit_log(c, 2, 2, 'password_reset', 'مؤسسة ثانية', 'security', 2)
+            c.commit()
+        users = self.tool('organization_users', {'organization_id': 1})
+        self.assertEqual(users['count'], 2)
+        by_name = {u['username']: u for u in users['users']}
+        self.assertTrue(by_name['user1']['last_login'])
+        self.assertEqual(by_name['salem']['failed_logins_30_days'], 1)
+        resets = self.tool('password_resets', {'organization_id': 1})
+        self.assertEqual((resets['count'], resets['recent'][0]['for']), (2, 'salem'))
+        self.assertEqual(self.tool('password_resets', {'organization_id': 1, 'username': 'user1'})['count'], 0)
+        self.assertEqual(self.tool('password_resets', {'organization_id': 1, 'username': 'salem'})['count'], 2)
+        self.assertIn('error', self.tool('password_resets', {'organization_id': 1, 'username': 'nobody'}))
+
     def test_complaint_details_by_reference(self):
         status, saved = self.call('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'الصفحة ما تفتح عندي'}, user=1)
         self.assertEqual(status, 201)

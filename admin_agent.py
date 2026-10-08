@@ -28,6 +28,8 @@ INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، 
 لا تذكر معلومة لم ترجع من أداة. إذا ما قدرت تعرف شي قل وش الناقص.
 الأرقام: رقم الشكوى مثل KHD-2026-000022 أو 22، ورقم الإعلان، ورقم المؤسسة.
 إذا ذكر المدير مؤسسة بالاسم ابحث عنها بـ find_organization، وإذا طلع أكثر من نتيجة اسأله أي وحدة.
+أسئلة الأرقام العامة (كم مؤسسة، كم مشترك، كم VIP، كم جديد) جاوبها من platform_stats ولا تبحث عن مؤسسة.
+أسئلة مستخدمي مؤسسة من organization_users، وإعادة كلمة المرور من password_resets، والعروض والأكواد من current_offers.
 
 التعديلات (بيانات مؤسسة، الباقة والاشتراك، العروض والخصومات، أكواد الخصم، قرار الإعلانات):
 1) جهّز الطلب بأداة propose_… المناسبة.
@@ -40,7 +42,8 @@ INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، 
 PERMISSION = {
     "find_organization": "organizations.view", "organization_status": "organizations.view",
     "complaint_details": "support", "recheck_complaint": "support", "platform_status": "security",
-    "pending_ads": "ads", "current_offers": "offers", "propose_update_organization": "organizations.edit",
+    "pending_ads": "ads", "current_offers": "offers", "platform_stats": "organizations.view",
+    "organization_users": "organizations.view", "password_resets": "organizations.view", "propose_update_organization": "organizations.edit",
     "propose_subscription": "packages", "propose_offer": "offers", "propose_ad_decision": "ads", "propose_discount_code": "codes",
 }
 
@@ -58,6 +61,12 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": _obj({})},
     {"type": "function", "name": "pending_ads", "description": "طلبات الإعلانات الجديدة التي تنتظر الموافقة",
      "parameters": _obj({})},
+    {"type": "function", "name": "platform_stats", "description": "أرقام المنصة: عدد المؤسسات كلها وحسب الباقة، الجديدة هالأسبوع وهالشهر، الموقوفة، وعدد المستخدمين",
+     "parameters": _obj({})},
+    {"type": "function", "name": "organization_users", "description": "مستخدمو مؤسسة: العدد والأسماء والأدوار وآخر دخول ومحاولات الدخول الفاشلة لكل واحد",
+     "parameters": _obj({"organization_id": {"type": "integer"}}, ["organization_id"])},
+    {"type": "function", "name": "password_resets", "description": "كم مرة انعادت كلمة المرور في مؤسسة (أو لمستخدم معين باسم المستخدم) ومتى آخر مرة، مع آخر العمليات",
+     "parameters": _obj({"organization_id": {"type": "integer"}, "username": {"type": "string"}}, ["organization_id"])},
     {"type": "function", "name": "current_offers", "description": "العروض الحالية على الباقات وأكواد الخصم وأسعار الباقات العادية، مع حالة كل وحدة",
      "parameters": _obj({})},
     {"type": "function", "name": "propose_update_organization", "description": "تجهيز تعديل بيانات مؤسسة (الاسم أو النشاط أو رقم التواصل). لا ينفذ قبل تأكيد المدير",
@@ -182,6 +191,57 @@ class Agent:
         items = [{"ad_id": ad.get("id"), "organization": ad.get("organization_name"), "title": ad.get("title"), "message": str(ad.get("message") or "")[:200],
                   "requested_days": ad.get("requested_days"), "created_at": ad.get("created_at")} for ad in (out.get("items") or [])]
         return {"items": items, "count": len(items)}
+
+    def platform_stats(self, c, **_):
+        now = _now()
+        week, month = (now - timedelta(days=7)).isoformat(), (now - timedelta(days=30)).isoformat()
+        by_package = {name: 0 for name in PACKAGE_NAMES.values()}
+        for row in c.execute("SELECT COALESCE(s.package,'free') package,COUNT(*) n FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id GROUP BY COALESCE(s.package,'free')").fetchall():
+            by_package[PACKAGE_NAMES.get(row["package"], row["package"])] = row["n"]
+        suspended = owner_admin.scalar(c, "SELECT COUNT(*) n FROM platform_org_state WHERE suspended=1") if owner_admin.table_exists(c, "platform_org_state", self.s) else 0
+        return {"organizations": owner_admin.scalar(c, "SELECT COUNT(*) n FROM organizations"), "by_package": by_package,
+                "new_last_7_days": owner_admin.scalar(c, "SELECT COUNT(*) n FROM organizations WHERE created_at>=?", (week,)),
+                "new_last_30_days": owner_admin.scalar(c, "SELECT COUNT(*) n FROM organizations WHERE created_at>=?", (month,)),
+                "suspended": suspended, "users": owner_admin.scalar(c, "SELECT COUNT(*) n FROM users WHERE archived_at IS NULL")}
+
+    def organization_users(self, c, organization_id: Any = None, **_):
+        org = _organization(c, organization_id)
+        month = (_now() - timedelta(days=30)).isoformat()
+        users = owner_admin.rows(c, """SELECT u.id,u.name,u.username,u.role,u.active,
+            (SELECT MAX(created_at) FROM audit_logs a WHERE a.actor_user_id=u.id AND a.action='login') last_login,
+            (SELECT COUNT(*) FROM audit_logs a WHERE a.actor_user_id=u.id AND a.action='failed_login' AND a.created_at>=?) failed_logins_30_days
+            FROM users u WHERE u.organization_id=? AND u.archived_at IS NULL ORDER BY u.id""", (month, org["id"]))
+        for user in users:
+            user["active"] = bool(user.get("active"))
+        return {"organization": org["name"], "count": len(users), "users": users}
+
+    def password_resets(self, c, organization_id: Any = None, username: Any = None, **_):
+        org = _organization(c, organization_id)
+        users = {row["id"]: row for row in owner_admin.rows(c, "SELECT id,name,username FROM users WHERE organization_id=?", (org["id"],))}
+        wanted = None
+        if username not in (None, ""):
+            wanted = next((u for u in users.values() if str(u["username"]).lower() == str(username).strip().lower() or u["name"] == str(username).strip()), None)
+            if wanted is None:
+                raise ValueError("ما لقيت مستخدم بهذا الاسم في المؤسسة")
+        events = []
+        for row in owner_admin.rows(c, "SELECT actor_user_id,target_id,summary,created_at FROM audit_logs WHERE organization_id=? AND action='password_reset' ORDER BY id DESC LIMIT 100", (org["id"],)):
+            target = users.get(int(row["target_id"])) if str(row.get("target_id") or "").isdigit() else None
+            events.append({"for": (target or {}).get("username"), "by": (users.get(row["actor_user_id"]) or {}).get("name") or "المؤسسة", "summary": row["summary"],
+                           "at": row["created_at"], "_target": target["id"] if target else None})
+        if owner_admin.table_exists(c, "platform_audit", self.s) and users:
+            for row in owner_admin.rows(c, "SELECT target,created_at,actor FROM platform_audit WHERE action='directory_password_reset' ORDER BY id DESC LIMIT 200"):
+                found = re.search(r"user=(\d+)", str(row["target"]))
+                if found and int(found.group(1)) in users:
+                    target = users[int(found.group(1))]
+                    events.append({"for": target["username"], "by": "إدارة خدووم: " + str(row["actor"]), "summary": "إعادة كلمة المرور من لوحة الإدارة",
+                                   "at": row["created_at"], "_target": target["id"]})
+        if wanted is not None:
+            events = [e for e in events if e["_target"] == wanted["id"]]
+        events.sort(key=lambda e: str(e["at"]), reverse=True)
+        for event in events:
+            event.pop("_target", None)
+        return {"organization": org["name"], "user": wanted["username"] if wanted else None, "count": len(events),
+                "last_at": events[0]["at"] if events else None, "recent": events[:10]}
 
     def current_offers(self, c, **_):
         now = _now().isoformat()
