@@ -23,11 +23,13 @@ MAX_TOOL_ROUNDS = 6
 PENDING_SECONDS = 600
 CONFIRM_WORDS = re.compile(r"(أ|ا|إ)?ك[ّ]?د|أؤكد|اوكد|أوكد|confirm", re.IGNORECASE)
 
-INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، تكلم مدير المنصة (المالك أو أحد موظفي الإدارة).
+INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، تكلم مدير المنصة.
+نادِ المدير دائمًا «يا خدوم»، ولا تقل «يا مالك» ولا تناديه باسمه أو لقبه.
 تكلم بلهجة سعودية واضحة ومهنية، وبجمل قصيرة: ابدأ بالخلاصة ثم التفاصيل المهمة فقط.
 لا تذكر معلومة لم ترجع من أداة. إذا ما قدرت تعرف شي قل وش الناقص.
 الأرقام: رقم الشكوى مثل KHD-2026-000022 أو 22، ورقم الإعلان، ورقم المؤسسة.
 إذا ذكر المدير مؤسسة بالاسم ابحث عنها بـ find_organization، وإذا طلع أكثر من نتيجة اسأله أي وحدة.
+لسؤال «وش الجديد؟» أو «وش عندنا اليوم؟» استخدم daily_brief، وللاشتراكات اللي قربت تنتهي expiring_subscriptions.
 أسئلة الأرقام العامة (كم مؤسسة، كم مشترك، كم VIP، كم جديد) جاوبها من platform_stats ولا تبحث عن مؤسسة.
 أسئلة مستخدمي مؤسسة من organization_users، وإعادة كلمة المرور من password_resets، والعروض والأكواد من current_offers.
 
@@ -43,6 +45,7 @@ PERMISSION = {
     "find_organization": "organizations.view", "organization_status": "organizations.view",
     "complaint_details": "support", "recheck_complaint": "support", "platform_status": "security",
     "pending_ads": "ads", "current_offers": "offers", "platform_stats": "organizations.view",
+    "daily_brief": "organizations.view", "expiring_subscriptions": "organizations.view",
     "organization_users": "organizations.view", "password_resets": "organizations.view", "propose_update_organization": "organizations.edit",
     "propose_subscription": "packages", "propose_offer": "offers", "propose_ad_decision": "ads", "propose_discount_code": "codes",
 }
@@ -61,6 +64,10 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": _obj({})},
     {"type": "function", "name": "pending_ads", "description": "طلبات الإعلانات الجديدة التي تنتظر الموافقة",
      "parameters": _obj({})},
+    {"type": "function", "name": "daily_brief", "description": "تقرير اليوم: مؤسسات جديدة، شكاوى مفتوحة ومتأخرة، اشتراكات تنتهي خلال 7 أيام، طلبات إعلانات وتحويلات تنتظر، وحالة الخدمات. استخدمه لسؤال «وش الجديد؟»",
+     "parameters": _obj({})},
+    {"type": "function", "name": "expiring_subscriptions", "description": "المؤسسات اللي اشتراكها المدفوع ينتهي خلال عدد أيام (افتراضي 14) مع رقم التواصل",
+     "parameters": _obj({"days": {"type": "integer"}})},
     {"type": "function", "name": "platform_stats", "description": "أرقام المنصة: عدد المؤسسات كلها وحسب الباقة، الجديدة هالأسبوع وهالشهر، الموقوفة، وعدد المستخدمين",
      "parameters": _obj({})},
     {"type": "function", "name": "organization_users", "description": "مستخدمو مؤسسة: العدد والأسماء والأدوار وآخر دخول ومحاولات الدخول الفاشلة لكل واحد",
@@ -191,6 +198,57 @@ class Agent:
         items = [{"ad_id": ad.get("id"), "organization": ad.get("organization_name"), "title": ad.get("title"), "message": str(ad.get("message") or "")[:200],
                   "requested_days": ad.get("requested_days"), "created_at": ad.get("created_at")} for ad in (out.get("items") or [])]
         return {"items": items, "count": len(items)}
+
+    def expiring_subscriptions(self, c, days: Any = 14, **_):
+        try:
+            span = max(1, min(int(days or 14), 90))
+        except (TypeError, ValueError):
+            span = 14
+        now = _now()
+        rows = owner_admin.rows(c, """SELECT o.id,o.name,o.phone,s.package,s.expires_at,
+            (SELECT u.phone FROM users u WHERE u.organization_id=o.id AND u.role='admin' AND u.archived_at IS NULL ORDER BY u.id LIMIT 1) owner_phone
+            FROM subscriptions s JOIN organizations o ON o.id=s.organization_id
+            WHERE s.package IN ('basic','vip') AND s.expires_at IS NOT NULL AND s.expires_at>=? AND s.expires_at<=? ORDER BY s.expires_at""",
+                                (now.isoformat(), (now + timedelta(days=span)).isoformat()))
+        items = []
+        for row in rows:
+            ends = _parse(row["expires_at"])
+            phone = str(row.get("phone") or row.get("owner_phone") or "").strip()
+            digits = "".join(ch for ch in phone if ch.isdigit())
+            if digits.startswith("05") and len(digits) == 10:
+                digits = "966" + digits[1:]
+            items.append({"organization_id": row["id"], "organization": row["name"], "package": PACKAGE_NAMES.get(row["package"], row["package"]),
+                          "expires_at": row["expires_at"], "days_left": max(0, (ends - now).days) if ends else None,
+                          "phone": phone, "whatsapp": digits if len(digits) >= 11 else ""})
+        return {"days": span, "count": len(items), "items": items}
+
+    def daily_brief(self, c, **_):
+        now = _now()
+        day = (now - timedelta(days=1)).isoformat()
+        exists = lambda table: owner_admin.table_exists(c, table, self.s)
+        brief: dict[str, Any] = {"generated_at": now.isoformat()}
+        brief["new_organizations_24h"] = owner_admin.rows(c, "SELECT id,name,created_at FROM organizations WHERE created_at>=? ORDER BY id DESC LIMIT 20", (day,))
+        brief["organizations_total"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM organizations")
+        if exists("support_tickets"):
+            brief["open_complaints"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE status NOT IN ('resolved','closed')")
+            brief["complaints_older_than_2_days"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE status NOT IN ('resolved','closed') AND created_at<?", ((now - timedelta(days=2)).isoformat(),))
+            brief["new_complaints_24h"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM support_tickets WHERE created_at>=?", (day,))
+        expiring = self.expiring_subscriptions(c, 7)
+        brief["expiring_in_7_days"] = [{"organization": x["organization"], "package": x["package"], "days_left": x["days_left"]} for x in expiring["items"]]
+        if exists("advertisements"):
+            brief["pending_ads"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM advertisements WHERE COALESCE(deleted,0)=0 AND approved=0 AND active=1")
+        if exists("subscription_requests"):
+            brief["pending_transfer_requests"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM subscription_requests WHERE status='pending'")
+        if exists("service_number_requests"):
+            brief["pending_calls_number_requests"] = owner_admin.scalar(c, "SELECT COUNT(*) n FROM service_number_requests WHERE status='pending'")
+        try:
+            import service_monitor
+            services = service_monitor.snapshot().get("services", [])
+            brief["services"] = [{"name": x.get("name"), "status": x.get("status")} for x in services]
+            brief["services_with_problems"] = [x.get("name") for x in services if x.get("status") not in ("ok", "unknown")]
+        except Exception:
+            brief["services"] = []
+        return brief
 
     def platform_stats(self, c, **_):
         now = _now()
@@ -508,7 +566,7 @@ class Agent:
         safety = hashlib.sha256(("khdoom-admin-agent:" + str(self.actor.get("name"))).encode()).hexdigest()[:64]
         actions: list[dict[str, Any]] = []
         for _ in range(MAX_TOOL_ROUNDS):
-            response = client.transport({"model": ai_core.PRIMARY_MODEL, "instructions": INSTRUCTIONS + "\nاسم المدير: " + str(self.actor.get("name")),
+            response = client.transport({"model": ai_core.PRIMARY_MODEL, "instructions": INSTRUCTIONS,
                                          "input": items, "tools": TOOLS, "parallel_tool_calls": False, "max_output_tokens": 1500, "store": False, "safety_identifier": safety})
             calls = [x for x in response.get("output", []) if isinstance(x, dict) and x.get("type") == "function_call"]
             if not calls:
@@ -532,5 +590,5 @@ class Agent:
 
 def voice_session(actor_name: str, voice: Any = "male") -> dict[str, Any]:
     """جلسة صوتية حية من المتصفح بنفس أدوات الكتابة؛ الأدوات تُنفذ عبر خادم خدووم لا من المتصفح."""
-    instructions = INSTRUCTIONS + "\nأنت في مكالمة صوتية: رد بجمل قصيرة جدًا، واقرأ الأرقام بوضوح.\nاسم المدير: " + str(actor_name)
+    instructions = INSTRUCTIONS + "\nأنت في مكالمة صوتية: رد بجمل قصيرة جدًا، واقرأ الأرقام بوضوح."
     return calls_trial.create_session(voice, instructions=instructions, tools=TOOLS)

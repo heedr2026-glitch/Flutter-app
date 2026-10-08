@@ -3187,6 +3187,17 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if method == 'GET' and path == '/owner/agent':
             self._send_html((ROOT / 'owner_agent.html').read_text(encoding='utf-8'))
             return
+        if path in ('/owner/api/agent/brief', '/owner/api/agent/expiring') and method == 'GET':
+            self._owner()
+            agent = admin_agent.Agent(db, __import__('sys').modules[__name__], self.platform_actor)
+            if path.endswith('brief'):
+                result = agent.call('daily_brief', {})
+            else:
+                result = agent.call('expiring_subscriptions', {'days': parse_qs(urlparse(self.path).query).get('days', ['14'])[0]})
+            if isinstance(result, dict) and result.get('error'):
+                raise ApiError(403, result['error'])
+            self._send(200, result)
+            return
         if path.startswith('/owner/api/agent/') and method == 'POST':
             self._owner()
             data = self._body()

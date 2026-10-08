@@ -832,3 +832,28 @@ const khdoomAppFeaturesRender=render;render=async function(){await khdoomAppFeat
 
 // رابط موظف الإدارة (كتابة أو صوت) أعلى الرئيسية.
 const khdoomAgentLinkRender=render;render=async function(){await khdoomAgentLinkRender();if(current==='home'&&!$('agentLink')){let box=document.createElement('div');box.id='agentLink';box.className='panel';box.innerHTML='<h3>موظف الإدارة</h3><p class="muted">اسأله أو أعطه أوامر بالكتابة أو بالصوت: الشكاوى، وضع المؤسسات، الاشتراكات، العروض، طلبات الإعلانات. التعديلات ما تتنفذ إلا بعد تأكيدك.</p><p><a href="/owner/agent" target="_blank" rel="noopener"><button type="button" class="primary">افتح موظف الإدارة</button></a></p>';$('content').prepend(box)}};
+
+// تقرير اليوم والاشتراكات اللي قربت تنتهي، أعلى الرئيسية.
+const khdoomBriefRender=render;render=async function(){await khdoomBriefRender();if(current!=='home'||$('dailyBrief'))return;try{
+ const headers={'X-Owner-Key':ownerKey,'X-Admin-Session':token};
+ const [b,e]=await Promise.all([fetch('/owner/api/agent/brief',{headers,cache:'no-store'}).then(r=>r.ok?r.json():null),fetch('/owner/api/agent/expiring?days=14',{headers,cache:'no-store'}).then(r=>r.ok?r.json():null)]);
+ if(current!=='home'||$('dailyBrief')||!b)return;
+ const line=(label,value,warn)=>'<li>'+(warn?'🟡 ':'')+esc(label)+': <b>'+esc(value)+'</b></li>';
+ let box=document.createElement('div');box.id='dailyBrief';box.className='panel';
+ const problems=(b.services_with_problems||[]);
+ box.innerHTML='<h3>تقرير اليوم</h3><ul style="margin:0;padding-inline-start:18px;line-height:2">'
+  +line('مؤسسات جديدة آخر 24 ساعة',(b.new_organizations_24h||[]).length+((b.new_organizations_24h||[]).length?' ('+(b.new_organizations_24h||[]).map(x=>x.name).join('، ')+')':''))
+  +line('كل المؤسسات',b.organizations_total??0)
+  +line('شكاوى مفتوحة',(b.open_complaints??0)+(b.complaints_older_than_2_days?' — منها '+b.complaints_older_than_2_days+' أقدم من يومين':''),b.complaints_older_than_2_days>0)
+  +line('اشتراكات تنتهي خلال 7 أيام',(b.expiring_in_7_days||[]).length,(b.expiring_in_7_days||[]).length>0)
+  +line('طلبات إعلانات تنتظر',b.pending_ads??0,b.pending_ads>0)
+  +line('طلبات تحويل اشتراك تنتظر',b.pending_transfer_requests??0,b.pending_transfer_requests>0)
+  +line('حالة الخدمات',problems.length?'فيها مشكلة: '+problems.join('، '):'سليمة',problems.length>0)
+  +'</ul>';
+ if(e&&e.items&&e.items.length){
+  box.innerHTML+='<h3 style="margin-top:14px">اشتراكات تنتهي خلال 14 يوم</h3>'+e.items.map(x=>{
+   const msg=encodeURIComponent('السلام عليكم، معك خدوم 👋\nاشتراك «'+x.organization+'» في باقة '+x.package+' ينتهي بعد '+x.days_left+' يوم. جدد الحين من التطبيق عشان ما تتوقف خدماتك.');
+   return '<p style="border-top:1px solid #33415588;padding-top:8px"><b>'+esc(x.organization)+'</b> — '+esc(x.package)+' — باقي <b>'+esc(x.days_left)+'</b> يوم'+(x.whatsapp?' <a href="https://wa.me/'+esc(x.whatsapp)+'?text='+msg+'" target="_blank" rel="noopener"><button type="button">تذكير واتساب</button></a>':(x.phone?' · '+esc(x.phone):' · <span class="muted">بدون رقم</span>'))+'</p>'}).join('');
+ }
+ $('content').prepend(box);
+}catch(_){}};

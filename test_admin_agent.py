@@ -47,6 +47,30 @@ class AdminAgentTest(ServiceNumberClaimsTest):
         self.assertEqual(self.tool('password_resets', {'organization_id': 1, 'username': 'salem'})['count'], 2)
         self.assertIn('error', self.tool('password_resets', {'organization_id': 1, 'username': 'nobody'}))
 
+    def test_daily_brief_and_expiring(self):
+        from datetime import datetime, timedelta, timezone
+        soon = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+        with server.db() as c:
+            c.execute('UPDATE subscriptions SET expires_at=? WHERE organization_id=1', (soon,))
+            c.execute("UPDATE organizations SET phone='0501234567' WHERE id=1")
+            c.commit()
+        expiring = self.call('/owner/api/agent/expiring?days=14')[1]
+        self.assertEqual([x['organization_id'] for x in expiring['items']], [1])
+        self.assertEqual((expiring['items'][0]['days_left'] in (4, 5), expiring['items'][0]['whatsapp']), (True, '966501234567'))
+        brief = self.call('/owner/api/agent/brief')[1]
+        self.assertEqual(brief['organizations_total'], 2)
+        self.assertEqual(len(brief['expiring_in_7_days']), 1)
+        self.assertIn('open_complaints', brief)
+        self.assertEqual(self.call('/owner/api/agent/brief', user=1)[0], 401)
+        self.assertNotIn('error', self.tool('daily_brief'))
+
+    def test_agent_addresses_admin_as_khadoum(self):
+        self.assertIn('يا خدوم', admin_agent.INSTRUCTIONS)
+        sent = []
+        with patch.object(ai_core.ResponsesClient, '_http', lambda self, payload: sent.append(payload) or {'output_text': 'هلا يا خدوم'}):
+            self.call('/owner/api/agent/chat', 'POST', {'message': 'هلا', 'history': []})
+        self.assertNotIn('المالك', sent[0]['instructions'])
+
     def test_complaint_details_by_reference(self):
         status, saved = self.call('/api/support-tickets', 'POST', {'category': 'أخرى', 'message': 'الصفحة ما تفتح عندي'}, user=1)
         self.assertEqual(status, 201)
