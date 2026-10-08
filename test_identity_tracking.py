@@ -196,15 +196,15 @@ class DirectoryTrackingHTTP(unittest.TestCase):
             day_start=datetime.now(vehicle_tracking.RIYADH).replace(hour=0,minute=0,second=1,microsecond=0).astimezone(timezone.utc)
             add(24.1,46.1,now-timedelta(days=40));add(24.2,46.2,now-timedelta(days=35))          # أقدم من مدة الاحتفاظ
             add(24.7000,46.7000,day_start);add(24.7001,46.7000,day_start+timedelta(seconds=1))   # اهتزاز 11م يُتجاهل
-            add(24.7090,46.7000,day_start+timedelta(seconds=2))                                  # ≈1000م
-            add(24.9,46.9,day_start+timedelta(seconds=3),acc=500)                                # دقة ضعيفة تُتجاهل في المسافة
+            add(24.7090,46.7000,day_start+timedelta(seconds=60))                                 # ≈1000م في دقيقة (حركة حقيقية)
+            add(24.9,46.9,day_start+timedelta(seconds=70),acc=500)                               # دقة ضعيفة تُشال من المسار
             add(24.5,46.5,day_start-timedelta(seconds=5))                                        # أمس
             add(21.0,39.0,day_start,org=2)                                                       # مؤسسة أخرى
             c.commit()
         path='/api/vehicle-tracking/route?vehicleKey=plate:9'
         self.fails(403,path,user=2)
         today=self.req(path)
-        self.assertEqual(today['count'],4);self.assertEqual(today['retentionDays'],30)
+        self.assertEqual((today['count'],today['filteredOut']),(3,1));self.assertEqual(today['retentionDays'],30)
         self.assertTrue(950<=today['distanceMeters']<=1050,today['distanceMeters'])
         self.assertEqual(today['points'][0]['latitude'],24.7);self.assertEqual(today['firstAt'],today['points'][0]['recordedAt'])
         yesterday=(datetime.now(vehicle_tracking.RIYADH)-timedelta(days=1)).strftime('%Y-%m-%d')
@@ -344,3 +344,16 @@ class DirectoryTrackingHTTP(unittest.TestCase):
         self.assertTrue(any(x['action']=='new_device' for x in admin['items']))
 
 if __name__=='__main__':unittest.main()
+
+
+class RouteCleaningTest(unittest.TestCase):
+    def test_jumps_and_weak_readings_are_left_out_of_the_route(self):
+        import vehicle_tracking
+        def point(lat, sec, acc=10):
+            return {'latitude': lat, 'longitude': 46.7, 'accuracyMeters': acc, 'recordedAt': f'2026-10-08T10:00:{sec:02d}+00:00'}
+        route = vehicle_tracking.clean_route([point(24.7, 0), point(24.7001, 10), point(24.75, 12), point(24.7002, 20), point(24.7003, 30, 500), point(24.7004, 40)])
+        self.assertEqual([p['recordedAt'][-8:-6] for p in route], ['00', '10', '20', '40'])
+        # أول قراءة خاطئة والبقية متفقة: تُحذف الأولى ويبقى المسار الصحيح كاملًا.
+        route = vehicle_tracking.clean_route([point(25.0, 0)] + [point(24.7 + i * 0.0001, 10 + i * 5) for i in range(5)])
+        self.assertEqual((len(route), route[0]['latitude']), (5, 24.7))
+        self.assertEqual(vehicle_tracking.clean_route([]), [])

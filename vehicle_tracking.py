@@ -186,6 +186,41 @@ def _meters(a,b):
     return 6371000*2*math.asin(min(1,math.sqrt(h)))
 
 
+MAX_SPEED_MPS=55  # نحو 200 كم/ساعة: أي انتقال أسرع منه قفزة قراءة وليس حركة حقيقية.
+WEAK_ACCURACY=150
+
+
+def _at(point):
+    try:
+        value=datetime.fromisoformat(str(point['recordedAt']).replace('Z','+00:00'))
+    except (ValueError,TypeError):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def clean_route(points):
+    """يشيل من المسار القفزات غير المنطقية والقراءات الضعيفة جدًا، بدون حذفها من قاعدة البيانات.
+
+    النقطة تُستبعد إذا كان الوصول لها من آخر نقطة مقبولة يحتاج سرعة أكبر من 200 كم/ساعة لمسافة
+    تتجاوز 100 متر، أو إذا كانت دقتها أسوأ من 150 مترًا. وإذا رُفضت ثلاث نقاط متتالية فالخطأ في
+    النقطة المرجعية نفسها، فيبدأ المسار من جديد من النقطة الحالية.
+    """
+    kept=[];anchor=None;anchor_at=None;held=[]
+    for point in points:
+        at=_at(point)
+        if at is None or (point.get('accuracyMeters') or 0)>WEAK_ACCURACY: continue
+        if anchor is not None:
+            step=_meters(anchor,point);seconds=max(1.0,(at-anchor_at).total_seconds())
+            if step>100 and step/seconds>MAX_SPEED_MPS:
+                if len(held)<2:
+                    held.append(point);continue
+                # ثلاث قراءات متتالية بعيدة عن المرجع: المرجع هو القفزة، فيُحذف وتُعتمد هذه القراءات.
+                if kept and kept[-1] is anchor: kept.pop()
+                kept.extend(held)
+        kept.append(point);anchor=point;anchor_at=at;held=[]
+    return kept
+
+
 def route(c,user,key,day,server):
     """مسار المركبة ليوم واحد بتوقيت السعودية؛ للمالك ولمن منحه صلاحية المشاهدة، وضمن مدة الاحتفاظ."""
     if not can_view(user): raise server.ApiError(403,'عرض مسار المركبة يحتاج صلاحية «تتبع المركبات» من صاحب المؤسسة')
@@ -206,7 +241,8 @@ def route(c,user,key,day,server):
     start=datetime(chosen.year,chosen.month,chosen.day,tzinfo=RIYADH)
     rows=c.execute('SELECT latitude,longitude,accuracy_meters,recorded_at FROM vehicle_location_events WHERE organization_id=? AND vehicle_key=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at,id LIMIT 6000',
         (org,key,start.astimezone(timezone.utc).isoformat(),(start+timedelta(days=1)).astimezone(timezone.utc).isoformat())).fetchall()
-    points=[{'latitude':r['latitude'],'longitude':r['longitude'],'accuracyMeters':r['accuracy_meters'],'recordedAt':r['recorded_at']} for r in rows]
+    raw=[{'latitude':r['latitude'],'longitude':r['longitude'],'accuracyMeters':r['accuracy_meters'],'recordedAt':r['recorded_at']} for r in rows]
+    points=clean_route(raw)
     # المسافة تقريبية: تتجاهل القراءات الضعيفة والاهتزاز الصغير والمركبة واقفة.
     distance=0.0;anchor=None
     for point in points:
@@ -214,7 +250,7 @@ def route(c,user,key,day,server):
         if anchor is None: anchor=point;continue
         step=_meters(anchor,point)
         if step>=25: distance+=step;anchor=point
-    return {'vehicleKey':key,'date':chosen.isoformat(),'timezone':'Asia/Riyadh','retentionDays':RETENTION_DAYS,'points':points,
+    return {'vehicleKey':key,'date':chosen.isoformat(),'timezone':'Asia/Riyadh','retentionDays':RETENTION_DAYS,'points':points,'filteredOut':len(raw)-len(points),
         'count':len(points),'firstAt':points[0]['recordedAt'] if points else None,'lastAt':points[-1]['recordedAt'] if points else None,
         'distanceMeters':round(distance),'driverName':(schedule['driver_name'] or '') if schedule and schedule['driver_user_id']==0 else ''}
 
