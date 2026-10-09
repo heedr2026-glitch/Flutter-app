@@ -881,3 +881,21 @@ function khdoomQuickReplies(){const box=$('fields');if(!box||box.querySelector('
  const title=document.createElement('div');title.textContent='ردود جاهزة:';title.style.cssText='width:100%;font-size:13px;opacity:.8';wrap.append(title);
  for(const [label,text,status] of KHDOOM_QUICK_REPLIES){const b=document.createElement('button');b.type='button';b.textContent=label;b.style.cssText='padding:6px 10px;font-size:13px';b.onclick=()=>{const t=box.querySelector('[name="owner_reply"]'),s=box.querySelector('[name="status"]');if(t)t.value=text;if(s)s.value=status};wrap.append(b)}
  box.prepend(wrap)}
+
+// أرقام النمو: قمع التسجيل، والإلغاء، واستخدام المزايا (تحت تقرير اليوم).
+const khdoomGrowthRender=render;render=async function(){await khdoomGrowthRender();if(current!=='home'||$('growthStats'))return;
+ const box=document.createElement('details');box.id='growthStats';box.className='panel';box.open=true;
+ box.innerHTML='<summary style="cursor:pointer;font-weight:bold;font-size:1.1em">📊 أرقام النمو</summary><div style="margin:8px 0"><label>الفترة: <select id="growthDays" style="width:auto;display:inline-block"><option value="30">آخر 30 يوم</option><option value="7">آخر 7 أيام</option><option value="90">آخر 90 يوم</option><option value="365">آخر سنة</option></select></label></div><div id="growthBody" class="muted">جاري التحميل…</div>';
+ const brief=$('dailyBrief');if(brief)brief.after(box);else $('content').prepend(box);
+ const load=async()=>{const body=$('growthBody');body.textContent='جاري التحميل…';try{
+  const r=await fetch('/owner/api/growth?days='+$('growthDays').value,{headers:{'X-Owner-Key':ownerKey,'X-Admin-Session':token},cache:'no-store'});const g=await r.json();if(!r.ok)throw new Error(g.error||'تعذر تحميل الأرقام');
+  const steps=g.funnel.steps,first=steps[0].count||0;
+  const pct=n=>first?' ('+Math.round(n*100/first)+'%)':'';
+  let html='<h3>قمع التسجيل</h3><div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">'+steps.map((s,i)=>(i?'<span>←</span>':'')+'<span style="background:#12295f;border:1px solid #285682;border-radius:10px;padding:8px 10px">'+esc(s.label)+'<br><b style="font-size:1.4em">'+esc(s.count)+'</b>'+(i?pct(s.count):'')+'</span>').join('')+'</div><p class="muted">'+esc(g.funnel.note)+'</p>';
+  html+='<h3>الإلغاء والرجوع للمجانية: '+esc(g.churn.count)+'</h3>'+(g.churn.items.length?g.churn.items.map(x=>'<p style="border-top:1px solid #33415588;padding-top:6px;margin:4px 0"><b>'+esc(x.organization)+'</b> — '+esc(x.kind)+' — '+esc(new Date(x.at).toLocaleDateString('ar-SA-u-ca-gregory-nu-latn'))+'</p>').join(''):'<p class="muted">ما فيه إلغاء في هالفترة 👍</p>')+'<p class="muted">'+esc(g.churn.note)+'</p>';
+  const max=Math.max(1,...g.features.items.map(x=>x.count));
+  html+='<h3>استخدام المزايا (من أصل '+esc(g.features.organizations)+' مؤسسة)</h3>'+g.features.items.map(x=>'<div style="display:flex;align-items:center;gap:8px;margin:5px 0"><span style="flex:0 0 140px">'+esc(x.label)+'</span><span style="flex:1;background:#0b1733;border-radius:6px;height:16px"><span style="display:block;height:16px;border-radius:6px;background:'+(x.count?'#0ea5e9':'#475569')+';width:'+Math.max(2,Math.round(x.count*100/max))+'%"></span></span><b style="flex:0 0 40px;text-align:left">'+esc(x.count)+'</b></div>').join('')+'<p class="muted">'+esc(g.features.note)+'</p>';
+  body.className='';body.innerHTML=html;
+ }catch(err){body.className='muted';body.textContent=err.message}};
+ $('growthDays').onchange=load;load();
+};

@@ -45,6 +45,7 @@ import app_features
 import admin_agent
 import platform_backup
 import legal_pages
+import growth_stats
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1887,6 +1888,16 @@ def purge_expired_ads(connection: Any) -> int:
 
 def downgrade_expired_subscriptions(connection: Any) -> int:
     """Return expired paid subscriptions to the free package."""
+    stamp = now()
+    # نسجل كل انتهاء بدون تجديد، عشان يظهر في أرقام النمو (الإلغاء) بلوحة الإدارة.
+    for row in connection.execute(
+        "SELECT organization_id,package FROM subscriptions WHERE package IN ('basic','vip') AND expires_at IS NOT NULL AND expires_at<=?",
+        (stamp,),
+    ).fetchall():
+        connection.execute(
+            "INSERT INTO audit_logs(organization_id,actor_user_id,action,target_type,target_id,summary,created_at) VALUES(?,NULL,'subscription_expired','subscription',?,?,?)",
+            (row["organization_id"], str(row["organization_id"]), "انتهت الباقة " + {"basic": "الأساسية", "vip": "VIP"}.get(row["package"], row["package"]) + " ورجعت للمجانية", stamp),
+        )
     cursor = connection.execute(
         """UPDATE subscriptions
            SET package='free', starts_at=?, expires_at=NULL
@@ -3245,6 +3256,12 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            return
+        if path == '/owner/api/growth' and method == 'GET':
+            self._owner()
+            with db() as connection:
+                result = growth_stats.summary(connection, __import__('sys').modules[__name__], parse_qs(urlparse(self.path).query).get('days', ['30'])[0])
+            self._send(200, result)
             return
         if path in ('/owner/api/agent/brief', '/owner/api/agent/expiring') and method == 'GET':
             self._owner()
