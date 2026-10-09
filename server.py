@@ -1886,6 +1886,25 @@ def purge_expired_ads(connection: Any) -> int:
     )
     return cursor.rowcount
 
+def _clean_number(value: Any) -> Any:
+    """110.0 تظهر في التطبيق «110» بدل «110.0»."""
+    number = float(value or 0)
+    return int(number) if number == int(number) else round(number, 2)
+
+
+def _display_date(value: Any) -> Any:
+    """تاريخ مقروء للمشترك بتوقيت السعودية: 11-10-2026."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone(timedelta(hours=3))).strftime("%d-%m-%Y")
+
+
 def downgrade_expired_subscriptions(connection: Any) -> int:
     """Return expired paid subscriptions to the free package."""
     stamp = now()
@@ -3506,7 +3525,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 price=float(offer['price_sar']) if offer else original
                 percent=float(offer.get('discount_percent') or 0) if offer else 0
                 if offer and not percent and original>0: percent=round((original-price)*100/original,2)
-                result.append({'id':offer['id'] if offer else None,'offer_id':offer['id'] if offer else None,'selection_id':f"offer-{offer['id']}" if offer else f"base-{package}-{months}",'package':package,'paid_months':months,'bonus_months':int(offer.get('bonus_months') or 0) if offer else 0,'price_sar':price,'original_price_sar':original,'discount_percent':percent,'label':offer.get('label','') if offer else '', 'starts_at':offer.get('starts_at') if offer else None,'ends_at':offer.get('ends_at') if offer else None,'has_offer':bool(offer)})
+                result.append({'id':offer['id'] if offer else None,'offer_id':offer['id'] if offer else None,'selection_id':f"offer-{offer['id']}" if offer else f"base-{package}-{months}",'package':package,'paid_months':months,'bonus_months':int(offer.get('bonus_months') or 0) if offer else 0,'price_sar':_clean_number(price),'original_price_sar':_clean_number(original),'discount_percent':_clean_number(percent),'label':offer.get('label','') if offer else '', 'starts_at':offer.get('starts_at') if offer else None,'ends_at':_display_date(offer.get('ends_at')) if offer else None,'ends_at_iso':offer.get('ends_at') if offer else None,'has_offer':bool(offer)})
             self._send(200, result)
             return
         if method == "GET" and path == "/api/package-catalog":
