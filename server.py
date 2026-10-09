@@ -1890,10 +1890,11 @@ def downgrade_expired_subscriptions(connection: Any) -> int:
     """Return expired paid subscriptions to the free package."""
     stamp = now()
     # نسجل كل انتهاء بدون تجديد، عشان يظهر في أرقام النمو (الإلغاء) بلوحة الإدارة.
-    for row in connection.execute(
+    expired = connection.execute(
         "SELECT organization_id,package FROM subscriptions WHERE package IN ('basic','vip') AND expires_at IS NOT NULL AND expires_at<=?",
         (stamp,),
-    ).fetchall():
+    ).fetchall() if owner_admin.table_exists(connection, "audit_logs", __import__("sys").modules[__name__]) else []
+    for row in expired:
         connection.execute(
             "INSERT INTO audit_logs(organization_id,actor_user_id,action,target_type,target_id,summary,created_at) VALUES(?,NULL,'subscription_expired','subscription',?,?,?)",
             (row["organization_id"], str(row["organization_id"]), "انتهت الباقة " + {"basic": "الأساسية", "vip": "VIP"}.get(row["package"], row["package"]) + " ورجعت للمجانية", stamp),
