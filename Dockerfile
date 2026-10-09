@@ -32,6 +32,7 @@ COPY call_gateway.py /app/call_gateway.py
 COPY app_features.py /app/app_features.py
 COPY admin_agent.py owner_agent.html /app/
 COPY platform_backup.py /app/platform_backup.py
+COPY legal_pages.py /app/legal_pages.py
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/
 COPY service_quota.py /app/service_quota.py
