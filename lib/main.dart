@@ -4169,6 +4169,8 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
           centerTitle: true,
           actions: [
+            // أيقونات أصغر درجة وحدة، عشان «خدووم» تطلع كاملة حتى مع الخط المكبّر.
+            for (final action in <Widget>[
             IconButton(
               tooltip: 'تتبع دوامي',
               icon: const Icon(Icons.route_outlined),
@@ -4230,6 +4232,19 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
             ),
+            ])
+              Theme(
+                data: Theme.of(context).copyWith(
+                  visualDensity: VisualDensity.compact,
+                  iconButtonTheme: IconButtonThemeData(
+                    style: IconButton.styleFrom(iconSize: 21),
+                  ),
+                ),
+                child: IconTheme.merge(
+                  data: const IconThemeData(size: 21),
+                  child: action,
+                ),
+              ),
           ],
         ),
         body: SafeArea(
