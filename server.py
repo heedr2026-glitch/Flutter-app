@@ -48,6 +48,8 @@ import legal_pages
 import growth_stats
 import agent_devices
 import app_notices
+import ai_questions
+import market_insights
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1404,6 +1406,7 @@ def init_db() -> None:
             platform_backup.migrate(connection, postgres=True)
             agent_devices.migrate(connection, postgres=True)
             app_notices.migrate(connection, postgres=True)
+            ai_questions.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1814,6 +1817,7 @@ def init_db() -> None:
         platform_backup.migrate(connection)
         agent_devices.migrate(connection)
         app_notices.migrate(connection)
+        ai_questions.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -4434,6 +4438,22 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 audit_log(connection, organization_id, user["id"], "support_ticket_rated", ("انحلت 👍" if solved else "ما انحلت 👎 — رجعت مفتوحة") + " — " + (ticket["reference_code"] or str(ticket["id"])), "support", str(ticket["id"]))
                 connection.commit()
                 self._send(200, {"saved": True, "reopened": not solved})
+                return
+            if path == "/api/market-insights" and method == "GET":
+                self._send(200, market_insights.insights(connection, organization_id))
+                return
+            if path == "/api/ai-questions" and method == "GET":
+                self._send(200, {"items": ai_questions.pending(connection, organization_id)})
+                return
+            answer_match = re.fullmatch(r"/api/ai-questions/(\d+)/answer", path)
+            if answer_match and method == "POST":
+                require_permission(user, "manageSettings")
+                data = self._body()
+                result = ai_questions.answer(connection, organization_id, int(answer_match.group(1)), data.get("answer"), data.get("saveFor"),
+                                             user["id"], now(), ApiError, insert_chat_message)
+                audit_log(connection, organization_id, user["id"], "ai_question_answered", "جاوب سؤال موظف AI وحفظه في التعليم", "ai_training", answer_match.group(1))
+                connection.commit()
+                self._send(200, result)
                 return
             if path == "/api/app-errors" and method == "POST":
                 saved = app_notices.record_error(connection, organization_id, user["id"], self._body())

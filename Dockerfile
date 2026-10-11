@@ -36,6 +36,8 @@ COPY legal_pages.py /app/legal_pages.py
 COPY growth_stats.py /app/growth_stats.py
 COPY agent_devices.py owner_agent_icon_192.png owner_agent_icon_512.png /app/
 COPY app_notices.py /app/app_notices.py
+COPY ai_questions.py /app/ai_questions.py
+COPY market_insights.py /app/market_insights.py
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/
 COPY service_quota.py /app/service_quota.py

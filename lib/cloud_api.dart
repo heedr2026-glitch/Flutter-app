@@ -71,6 +71,31 @@ class KhdoomCloudApi {
     return Map<String, dynamic>.from(result as Map);
   }
 
+  /// «وضعك في السوق»: مقارنة بدون أسماء ونصائح من بيانات المؤسسة.
+  Future<Map<String, dynamic>> marketInsights() async {
+    final result = await _request('GET', '/api/market-insights');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  /// أسئلة الموظفين الذكيين اللي تنتظر جواب صاحب المؤسسة.
+  Future<List<dynamic>> aiQuestions() async {
+    final result = await _request('GET', '/api/ai-questions');
+    return List<dynamic>.from((result as Map)['items'] as List? ?? []);
+  }
+
+  Future<Map<String, dynamic>> answerAiQuestion(
+    Object id,
+    String answer,
+    String saveFor,
+  ) async {
+    final result = await _request(
+      'POST',
+      '/api/ai-questions/$id/answer',
+      body: {'answer': answer, 'saveFor': saveFor},
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   /// تقرير خطأ في التطبيق يوصل لوحة الإدارة.
   Future<void> reportAppError(Map<String, dynamic> data) async {
     await _request('POST', '/api/app-errors', body: data);

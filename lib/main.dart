@@ -34,6 +34,7 @@ import 'question_answer_training.dart';
 import 'my_advertisements.dart';
 import 'page_refresh_button.dart';
 import 'ai_employee_training_page.dart';
+import 'employees_training_hub.dart';
 
 import 'package:url_launcher/url_launcher.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
@@ -261,6 +262,7 @@ class KhdoomNotifications {
       page = const CommunityPage();
     }
     if (action == 'vehicles') page = const VehiclesPage();
+    if (action == 'ai_questions') page = const EmployeesTrainingHubPage();
     if (page != null) {
       navigator.push(MaterialPageRoute(builder: (_) => page!));
     }
@@ -2635,6 +2637,125 @@ class _DashboardPageState extends State<DashboardPage> {
   final Future<BranchPreferences> _branchPrefs =
       BranchPreferences.getInstance();
   final TextEditingController _assistantController = TextEditingController();
+  String _homeTab = 'ask';
+  bool _marketLoading = false;
+  bool _marketNew = false;
+  List<Map<String, dynamic>> _marketItems = [];
+
+  Widget _homeTabButton(String id, String label) {
+    final selected = _homeTab == id;
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: () {
+        setState(() => _homeTab = id);
+        if (id == 'market') _loadMarketInsights(markSeen: true);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF0284C7) : const Color(0xFF0B1020),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF38BDF8)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            if (id == 'market' && _marketNew) ...[
+              const SizedBox(width: 6),
+              Container(
+                width: 9,
+                height: 9,
+                decoration: const BoxDecoration(
+                  color: Color(0xFFEF4444),
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// يجيب رسائل «وضعك في السوق»؛ النقطة الحمراء تطلع إذا تغيرت الرسائل من آخر مرة شافها.
+  Future<void> _loadMarketInsights({bool markSeen = false}) async {
+    if (_marketLoading) return;
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'cloud_session_token');
+    if (token == null || token.isEmpty) return;
+    final prefs = await BranchPreferences.getInstance();
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
+    if (mounted) setState(() => _marketLoading = true);
+    try {
+      final data = await api.marketInsights();
+      final items = List<dynamic>.from(data['items'] as List? ?? [])
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+      final signature = items.map((item) => item['text']).join('|');
+      final seen = prefs.getString('market_insights_seen') ?? '';
+      if (markSeen) await prefs.setString('market_insights_seen', signature);
+      if (!mounted) return;
+      setState(() {
+        _marketItems = items;
+        _marketNew = !markSeen && signature.isNotEmpty && signature != seen;
+      });
+    } catch (_) {
+      // بدون اتصال تبقى آخر رسائل معروضة.
+    } finally {
+      api.close();
+      if (mounted) setState(() => _marketLoading = false);
+    }
+  }
+
+  Widget _marketInsightsView() {
+    if (_marketLoading && _marketItems.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_marketItems.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: Text(
+          'ما فيه رسائل الحين.',
+          style: TextStyle(color: Colors.white70),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final item in _marketItems)
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0B1020),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Text(
+              '${item['icon'] ?? '💡'} ${item['text'] ?? ''}',
+              style: const TextStyle(color: Colors.white, height: 1.6),
+            ),
+          ),
+      ],
+    );
+  }
   String _assistantAnswer = '';
   List<Map<String, dynamic>> _assistantRecords = [];
   bool _assistantLoading = false;
@@ -2686,6 +2807,7 @@ class _DashboardPageState extends State<DashboardPage> {
       },
     );
     KhdoomNotices.poll();
+    _loadMarketInsights();
     _sessionValidationTimer = Timer.periodic(
       const Duration(minutes: 2),
       (_) => _validateCloudSession(),
@@ -4022,6 +4144,18 @@ class _DashboardPageState extends State<DashboardPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // تبويبين: «وضعك في السوق» (رسائل الموظف) و«اسألني» (المساعد).
+          Row(
+            children: [
+              Expanded(child: _homeTabButton('market', 'وضعك في السوق')),
+              const SizedBox(width: 8),
+              Expanded(child: _homeTabButton('ask', 'اسألني')),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_homeTab == 'market')
+            _marketInsightsView()
+          else ...[
           TextField(
             controller: _assistantController,
             textInputAction: TextInputAction.send,
@@ -4147,6 +4281,7 @@ class _DashboardPageState extends State<DashboardPage> {
               (_) => false,
             ),
           ),
+          ],
         ],
       ),
     );
@@ -12146,7 +12281,8 @@ class _OrganizationAlertsPageState extends State<OrganizationAlertsPage> {
 }
 
 class AiTrainingPage extends StatefulWidget {
-  const AiTrainingPage({super.key});
+  final String initialType;
+  const AiTrainingPage({super.key, this.initialType = 'shared'});
 
   @override
   State<AiTrainingPage> createState() => _AiTrainingPageState();
@@ -12167,8 +12303,8 @@ class _AiTrainingPageState extends State<AiTrainingPage> {
   static const _types = <String, String>{
     'shared': 'معلومات مشتركة لجميع الموظفين',
     'assistant': 'مساعد المؤسسة الرئيسي',
-    'chat': 'تعليم الدردشة السابق (أرشيف)',
-    'reception': 'موظف استقبال العملاء',
+    'chat': 'المحادثة الخارجية (أرشيف قديم)',
+    'reception': 'موظف المحادثة الخارجية',
     'whatsapp': 'موظف واتساب',
     'calls': 'موظف الاتصالات',
     'commercial_research': 'موظف البحث التجاري',
@@ -12177,6 +12313,7 @@ class _AiTrainingPageState extends State<AiTrainingPage> {
   @override
   void initState() {
     super.initState();
+    if (_types.containsKey(widget.initialType)) _type = widget.initialType;
     _load();
   }
 
@@ -12584,28 +12721,17 @@ class AiEmployeesPage extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           child: ListView(
             children: [
+              // صفحة تعليم وحدة لكل الموظفين، فيها أسئلة الموظفين اللي تنتظر جوابك.
               AiEmployeeCard(
-                icon: Icons.auto_awesome,
-                title: 'تدريب موظف خدووم',
-                subtitle: 'نشاط المؤسسة وخدماتها وسياسات الرد الخاصة بها',
+                icon: Icons.school_outlined,
+                title: 'تعليم الموظفين',
+                subtitle: 'علّم كل الموظفين مرة وحدة، وجاوب أسئلتهم',
                 onTap: () {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => const AiEmployeeTrainingPage(),
+                      builder: (_) => const EmployeesTrainingHubPage(),
                     ),
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              AiEmployeeCard(
-                icon: Icons.school_outlined,
-                title: 'تدريب موظفي AI',
-                subtitle: 'معلومات مشتركة وتدريب مستقل لكل موظف',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AiTrainingPage()),
                   );
                 },
               ),

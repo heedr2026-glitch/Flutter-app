@@ -91,11 +91,11 @@ def activity_playbook(activity: str) -> str:
 ROLES: dict[str, AgentRole] = {
     "reception": AgentRole(
         "موظف الاستقبال",
-        BASE_INSTRUCTIONS + "\nاجمع عند الحاجة الاسم ورقم التواصل ونوع الطلب. أعط تسعيرا مبدئيا فقط من أداة السعر/العرض، ووضح أنه مبدئي. لا تؤكد موعدا دون أداة الحجز.",
+        BASE_INSTRUCTIONS + "\nإذا سأل العميل عن معلومة عن المؤسسة (خدمة، سعر، ضمان، سياسة) وما لقيتها في بيانات المؤسسة أو التعليم، لا تخمن: استدعِ ask_owner بالسؤال، وقل للعميل بلطف إنك بتتأكد من الإدارة وترد عليه هنا قريب.\nاجمع عند الحاجة الاسم ورقم التواصل ونوع الطلب. أعط تسعيرا مبدئيا فقط من أداة السعر/العرض، ووضح أنه مبدئي. لا تؤكد موعدا دون أداة الحجز.",
         (
             "get_company_info", "get_company_services", "get_price", "calculate_quote",
             "create_customer", "create_lead", "get_available_appointments",
-            "create_appointment", "save_conversation_summary", "handoff_to_human",
+            "create_appointment", "save_conversation_summary", "handoff_to_human", "ask_owner",
         ),
     ),
     "commercial_research": AgentRole(
@@ -132,6 +132,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "get_available_appointments": {"type": "function", "name": "get_available_appointments", "description": "قراءة المواعيد المتاحة الفعلية للفرع", "parameters": {"type": "object", "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}}, "required": ["date"], "additionalProperties": False}},
     "create_appointment": {"type": "function", "name": "create_appointment", "description": "إنشاء طلب موعد بعد تأكيد العميل الصريح", "parameters": {"type": "object", "properties": {"customer_name": {"type": "string"}, "phone": {"type": "string"}, "service": {"type": "string"}, "scheduled_at": {"type": "string"}, "confirmed_by_customer": {"type": "boolean"}}, "required": ["customer_name", "phone", "service", "scheduled_at", "confirmed_by_customer"], "additionalProperties": False}},
     "save_conversation_summary": {"type": "function", "name": "save_conversation_summary", "description": "حفظ ملخص واقعي للمحادثة الحالية", "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"], "additionalProperties": False}},
+    "ask_owner": {"type": "function", "name": "ask_owner", "description": "اسأل صاحب المؤسسة عن معلومة ما لقيتها في بيانات المؤسسة أو التعليم بدل ما تخمن. جوابه يوصل العميل ويتحفظ في التعليم", "parameters": {"type": "object", "properties": {"question": {"type": "string", "description": "السؤال لصاحب المؤسسة بصيغة واضحة"}, "customer_question": {"type": "string", "description": "كلام العميل كما قاله"}}, "required": ["question", "customer_question"], "additionalProperties": False}},
     "handoff_to_human": {"type": "function", "name": "handoff_to_human", "description": "تسجيل طلب تحويل لموظف بشري بعد طلب العميل", "parameters": {"type": "object", "properties": {"reason": {"type": "string"}, "confirmed_by_customer": {"type": "boolean"}}, "required": ["reason", "confirmed_by_customer"], "additionalProperties": False}},
 }
 
@@ -279,6 +280,15 @@ class CompanyTools:
             return {"ok": False, "error": "الملخص فارغ"}
         cursor = self.connection.execute("INSERT INTO ai_conversation_summaries(organization_id,session_id,employee_type,summary,created_at) VALUES(?,?,?,?,?)", (self.context.company_id, self.context.session_id, self.context.role, summary.strip()[:3000], self.now()))
         return {"ok": True, "summary_id": cursor.lastrowid}
+
+    def ask_owner(self, question: str, customer_question: str = "") -> dict[str, Any]:
+        """الموظف ما يعرف الجواب: يسأل صاحب المؤسسة، وجوابه يوصل العميل ويتحفظ في التعليم."""
+        import ai_questions
+        text = " ".join(str(question or "").split())[:500]
+        if len(text) < 3:
+            return {"ok": False, "error": "اكتب السؤال"}
+        ident = ai_questions.ask(self.connection, self.context.company_id, self.context.role, self.context.session_id, text, customer_question, self.now())
+        return {"ok": True, "question_id": ident, "tell_customer": "قل للعميل إنك بتتأكد من الإدارة وترد عليه هنا قريب"}
 
     def handoff_to_human(self, reason: str, confirmed_by_customer: bool) -> dict[str, Any]:
         if not confirmed_by_customer or self.context.session_id is None:
