@@ -63,7 +63,7 @@ function showAuth(){const saved=!!deviceToken()&&!$('key').value.trim();$('keyBo
 function authReady(){return !!($('key').value.trim()||deviceToken())}
 const hdr=()=>{const key=$('key').value.trim(),h={'Content-Type':'application/json'};if(key)h['X-Owner-Key']=key;else if(deviceToken())h['X-Agent-Device']=deviceToken();return h};
 async function api(url,opts){const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(r.status===401&&!$('key').value.trim()&&deviceToken()){setDevice('');throw new Error('انتهى حفظ هذا الجوال، أدخل مفتاح المالك من جديد.')}return {r,d}}
-async function remember(){if(!$('remember').checked)return;const key=$('key').value.trim();if(!key){$('remember').checked=false;say('اكتب مفتاح المالك أول، بعدها اختر «تذكّر هذا الجوال».');return}
+async function rememberDevice(){if(!$('remember').checked)return;const key=$('key').value.trim();if(!key){say('اكتب مفتاح المالك، وبينحفظ الجوال أول ما تخلص الكتابة.');return}
  try{const {r,d}=await api('/owner/api/agent/device',{method:'POST',headers:{'Content-Type':'application/json','X-Owner-Key':key},body:JSON.stringify({label:navigator.userAgent.slice(0,80)})});if(!r.ok)throw new Error(d.error||'تعذر حفظ الجوال');
   try{localStorage.setItem(DEVICE_KEY,d.token)}catch(e){throw new Error('المتصفح ما يسمح بالحفظ، جرّب كروم بدون التصفح الخفي')}
   $('key').value='';$('remember').checked=false;showAuth();say('تم حفظ هذا الجوال 30 يوم ✓')}catch(e){$('remember').checked=false;say(e.message)}}
@@ -158,5 +158,5 @@ function stopCall(text){
   $('start').disabled=false;$('stop').disabled=true;say(text||'انتهت المكالمة.');
 }
 $('start').onclick=startCall;$('stop').onclick=()=>stopCall();
-$('remember').onchange=remember;$('forget').onclick=()=>{setDevice('');say('تم الخروج من هذا الجوال.')};$('key').addEventListener('input',showAuth);showAuth();
+$('remember').onchange=rememberDevice;$('forget').onclick=()=>{setDevice('');say('تم الخروج من هذا الجوال.')};$('key').addEventListener('input',showAuth);$('key').addEventListener('change',()=>{if($('remember').checked)rememberDevice()});showAuth();
 </script></body></html>
