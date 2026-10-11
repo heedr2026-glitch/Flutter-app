@@ -21,6 +21,11 @@ def migrate(c, postgres: bool = False) -> None:
         c.execute("ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS attachment_data TEXT NOT NULL DEFAULT ''")
     elif "attachment_data" not in {row[1] for row in c.execute("PRAGMA table_info(support_tickets)").fetchall()}:
         c.execute("ALTER TABLE support_tickets ADD COLUMN attachment_data TEXT NOT NULL DEFAULT ''")
+    # تقييم المشترك للحل: up = انحلت، down = ما انحلت (وترجع الشكوى مفتوحة).
+    if postgres:
+        c.execute("ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS user_rating TEXT NOT NULL DEFAULT ''")
+    elif "user_rating" not in {row[1] for row in c.execute("PRAGMA table_info(support_tickets)").fetchall()}:
+        c.execute("ALTER TABLE support_tickets ADD COLUMN user_rating TEXT NOT NULL DEFAULT ''")
 
 
 def flags(c) -> dict[str, bool]:

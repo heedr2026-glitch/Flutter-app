@@ -247,7 +247,7 @@ def permission(path,method):
  if p.startswith('security/accounts/') and method != 'GET': return 'suspend'
  if p.startswith('security/devices/') and method != 'GET': return 'organizations.edit'
  if p=='security/emergency' and method != 'GET': return 'settings'
- for prefix,perm in [('package-limits','packages'),('package-offers','offers'),('signup-offer','offers'),('codes','codes'),('subscription-requests','packages'),('platform-ads','ads'),('ads','ads'),('support-tickets','support'),('security','security'),('services','settings'),('payment','packages')]:
+ for prefix,perm in [('package-limits','packages'),('package-offers','offers'),('signup-offer','offers'),('codes','codes'),('subscription-requests','packages'),('platform-ads','ads'),('ads','ads'),('support-tickets','support'),('security','security'),('services','settings'),('payment','packages'),('notices','packages'),('app-errors','security')]:
   if p.startswith(prefix): return perm
  if p.startswith('organizations'): return 'organizations.view' if method=='GET' else 'packages' if p.endswith('/package') else 'organizations.edit'
  return 'admins'
@@ -1458,6 +1458,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
   if scope not in ('private','global'): raise ValueError('نطاق المشكلة غير صحيح')
   assigned=d.get('assigned_admin_id') or a['id']
   c.execute('UPDATE support_tickets SET status=?,scope=?,last_error=?,owner_reply=?,owner_reply_by=?,assigned_admin_id=COALESCE(?,assigned_admin_id),updated_at=? WHERE id=?',(status,scope,last_error,reply,'admin' if reply.strip() else '',assigned,stamp(),ident))
+  # حل جديد بعد ما قال المشترك «ما انحلت»: يرجع له سؤال «انحلت مشكلتك؟» من جديد.
+  if status in ('resolved','closed') and ticket['status'] not in ('resolved','closed'):
+   c.execute("UPDATE support_tickets SET user_rating='' WHERE id=?",(ident,))
   event_type='scope_changed' if scope!=ticket['scope'] else 'status_changed' if status!=ticket['status'] else 'reply_updated'
   support_event(c,dict(ticket),actor_type='admin',actor_name=a['name'],event_type=event_type,body=note or reply or last_error,from_status=ticket['status'],to_status=status)
   # رد جديد من الإدارة يظهر للمشترك تنبيهًا في جرس التطبيق.

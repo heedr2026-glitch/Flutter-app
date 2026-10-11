@@ -47,6 +47,7 @@ import platform_backup
 import legal_pages
 import growth_stats
 import agent_devices
+import app_notices
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1402,6 +1403,7 @@ def init_db() -> None:
             app_features.migrate(connection, postgres=True)
             platform_backup.migrate(connection, postgres=True)
             agent_devices.migrate(connection, postgres=True)
+            app_notices.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1811,6 +1813,7 @@ def init_db() -> None:
         app_features.migrate(connection)
         platform_backup.migrate(connection)
         agent_devices.migrate(connection)
+        app_notices.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -1957,6 +1960,13 @@ def sweep_subscriptions_if_due(force: bool = False) -> None:
         owner_admin.restore_gift_fallbacks(sweep_connection, now(), __import__('sys').modules[__name__])
         downgrade_expired_subscriptions(sweep_connection)
         sweep_connection.commit()
+    # تذكير التجديد، الملخص اليومي، وصمت جوال السائق: ما يوقف الطلب لو تعثر.
+    try:
+        with db() as notice_connection:
+            app_notices.sweep(notice_connection, vehicle_tracking.in_schedule)
+            notice_connection.commit()
+    except Exception as error:
+        print(f"APP NOTICES SWEEP ERROR: {type(error).__name__} {str(error)[:200]}")
 
 
 def package_resource_limit(package: str, resource: str, connection=None) -> int | None:
@@ -3348,6 +3358,26 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self.end_headers()
             self.wfile.write(data)
             return
+        if path == '/owner/api/app-errors' and method == 'GET':
+            self._owner()
+            with db() as connection:
+                result = app_notices.recent_errors(connection)
+            self._send(200, result)
+            return
+        if path.startswith('/owner/api/notices/renew/') and method == 'POST':
+            self._owner()
+            try:
+                organization_ref = int(path.rsplit('/', 1)[1])
+            except ValueError:
+                raise ApiError(404, 'المؤسسة غير موجودة')
+            with db() as connection:
+                if not connection.execute('SELECT 1 FROM organizations WHERE id=?', (organization_ref,)).fetchone():
+                    raise ApiError(404, 'المؤسسة غير موجودة')
+                result = app_notices.manual_renew_reminder(connection, organization_ref)
+                owner_admin.audit(connection, self.platform_actor['name'], 'renew_reminder_sent', str(organization_ref))
+                connection.commit()
+            self._send(200, result)
+            return
         if path == '/owner/api/growth' and method == 'GET':
             self._owner()
             with db() as connection:
@@ -4384,8 +4414,38 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
                 self._send(202, {"saved": True})
                 return
+            rating_match = re.fullmatch(r"/api/support-tickets/(\d+)/rating", path)
+            if rating_match and method == "POST":
+                ticket = connection.execute("SELECT id,organization_id,user_id,status,reference_code FROM support_tickets WHERE id=? AND organization_id=?", (int(rating_match.group(1)), organization_id)).fetchone()
+                if ticket is None:
+                    raise ApiError(404, "الطلب غير موجود")
+                if ticket["status"] not in ("resolved", "closed"):
+                    raise ApiError(400, "التقييم بعد حل الشكوى فقط")
+                solved = self._body().get("solved") is True
+                if solved:
+                    connection.execute("UPDATE support_tickets SET user_rating='up',updated_at=? WHERE id=?", (now(), ticket["id"]))
+                else:
+                    # 👎: الشكوى ترجع مفتوحة للإدارة مع ملاحظة إن المشترك يقول ما انحلت.
+                    connection.execute("UPDATE support_tickets SET user_rating='down',status='open',updated_at=? WHERE id=?", (now(), ticket["id"]))
+                    if owner_admin.table_exists(connection, "support_ticket_events", __import__("sys").modules[__name__]):
+                        owner_admin.support_event(connection, dict(ticket), actor_type="user", actor_name=str(user.get("name") or "المشترك"),
+                                                  event_type="status_changed", from_status=ticket["status"], to_status="open",
+                                                  body="المشترك قيّم الحل 👎: ما انحلت المشكلة، فرجعت الشكوى مفتوحة")
+                audit_log(connection, organization_id, user["id"], "support_ticket_rated", ("انحلت 👍" if solved else "ما انحلت 👎 — رجعت مفتوحة") + " — " + (ticket["reference_code"] or str(ticket["id"])), "support", str(ticket["id"]))
+                connection.commit()
+                self._send(200, {"saved": True, "reopened": not solved})
+                return
+            if path == "/api/app-errors" and method == "POST":
+                saved = app_notices.record_error(connection, organization_id, user["id"], self._body())
+                connection.commit()
+                self._send(202, {"saved": saved})
+                return
+            if path == "/api/notices" and method == "GET":
+                result = app_notices.for_organization(connection, organization_id, parse_qs(urlparse(self.path).query).get("after", ["0"])[0])
+                self._send(200, result)
+                return
             if path == "/api/support-tickets" and method == "GET":
-                rows = connection.execute("SELECT id,reference_code,title,category,message,status,owner_reply,created_at,updated_at,CASE WHEN attachment_data<>'' THEN 1 ELSE 0 END AS has_attachment FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
+                rows = connection.execute("SELECT id,reference_code,title,category,message,status,owner_reply,user_rating,created_at,updated_at,CASE WHEN attachment_data<>'' THEN 1 ELSE 0 END AS has_attachment FROM support_tickets WHERE organization_id=? ORDER BY id DESC LIMIT 100", (organization_id,)).fetchall()
                 items = []
                 for row in rows:
                     item = dict(row)

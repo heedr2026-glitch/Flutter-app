@@ -228,6 +228,9 @@ Future<Map<String, String>> khdoomDeviceIdentity() async {
   return {'id': id, 'name': platform};
 }
 
+/// يسمح بفتح صفحة من الإشعار (جدد الحين، المجتمع، المركبات) حتى لو كنا خارج شاشة معينة.
+final GlobalKey<NavigatorState> khdoomNavigatorKey = GlobalKey<NavigatorState>();
+
 class KhdoomNotifications {
   static final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
@@ -239,6 +242,63 @@ class KhdoomNotifications {
       settings: const InitializationSettings(
         android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       ),
+      onDidReceiveNotificationResponse: (response) =>
+          openNotice(response.payload, response.actionId),
+    );
+  }
+
+  /// فتح الصفحة المناسبة عند الضغط على تنبيه من خدوم.
+  static void openNotice(String? payload, [String? actionId]) {
+    final value = payload ?? '';
+    if (!value.startsWith('notice:')) return;
+    final action = actionId == 'renew' ? 'renew' : value.substring(7);
+    final navigator = khdoomNavigatorKey.currentState;
+    if (navigator == null) return;
+    Widget? page;
+    if (action == 'renew') page = const SubscriptionPackagesPage();
+    if (action == 'community') {
+      KhdoomNotices.markCommunitySeen();
+      page = const CommunityPage();
+    }
+    if (action == 'vehicles') page = const VehiclesPage();
+    if (page != null) {
+      navigator.push(MaterialPageRoute(builder: (_) => page!));
+    }
+  }
+
+  static Future<void> showNotice(Map<String, dynamic> item) async {
+    final prefs = await BranchPreferences.getInstance();
+    if (!(prefs.getBool('settings_notifications') ?? true)) return;
+    await requestPermission();
+    final action = item['action']?.toString() ?? '';
+    final body = item['body']?.toString() ?? '';
+    await _plugin.show(
+      id: idFor('notice_${item['id']}'),
+      title: item['title']?.toString() ?? 'تنبيه من خدووم',
+      body: body,
+      notificationDetails: NotificationDetails(
+        android: AndroidNotificationDetails(
+          'khdoom_notices_v1',
+          'تنبيهات خدووم',
+          channelDescription:
+              'منشورات الإدارة المهمة، تذكير التجديد، ملخص اليوم، وتنبيهات تتبع المركبات',
+          importance: Importance.high,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+          styleInformation: BigTextStyleInformation(body),
+          actions: action == 'renew'
+              ? const [
+                  AndroidNotificationAction(
+                    'renew',
+                    'جدد الحين',
+                    showsUserInterface: true,
+                  ),
+                ]
+              : null,
+        ),
+      ),
+      payload: 'notice:$action',
     );
   }
 
@@ -569,8 +629,181 @@ class KhdoomNotifications {
   }
 }
 
+/// «حل قبل الإرسال»: خطوات تحل أغلب مشاكل كل نوع قبل ما يرسل المشترك شكوى.
+const Map<String, List<String>> khdoomSupportTips = {
+  'مشكلة في الحساب': [
+    'اسحب الصفحة لتحت أو اضغط زر التحديث فوق.',
+    'سكّر التطبيق تمامًا وافتحه من جديد.',
+    'تأكد إن الإنترنت شغال في جوالك.',
+  ],
+  'تسجيل الدخول': [
+    'تأكد من اسم المستخدم بدون مسافة في البداية أو النهاية.',
+    'إذا نسيت كلمة المرور اضغط «نسيت كلمة المرور؟» في صفحة الدخول.',
+    'إذا كنت موظف، اطلب من مدير المؤسسة يتأكد إن حسابك مفعّل.',
+  ],
+  'حظر الحساب أو الجهاز': [
+    'إذا كنت موظف، مدير المؤسسة يقدر يفك الحظر من «إدارة الموظفين».',
+    'إذا الاشتراك منتهي، جدده من «الإعدادات ← الباقات والاشتراك».',
+  ],
+  'الاشتراك والباقة': [
+    'بعد التحويل، الإدارة تعتمد الاشتراك عادة خلال ساعات.',
+    'تأكد إن اسم المحوّل مكتوب نفس اللي في الحوالة.',
+    'اسحب صفحة الباقات لتحت عشان تتحدث الحالة.',
+  ],
+  'الشات': [
+    'تأكد إن رابط الشات منسوخ كامل بدون نقص.',
+    'جرّب تفتح الرابط من متصفح ثاني.',
+  ],
+  'المواعيد': [
+    'اسحب صفحة المواعيد لتحت عشان تتحدث.',
+    'تأكد إنك في الفرع الصحيح من «إدارة الفروع».',
+  ],
+  'الأجهزة': [
+    'تأكد إن التطبيق محدّث لآخر نسخة.',
+    'سكّر التطبيق تمامًا وافتحه من جديد.',
+  ],
+};
+
+/// يسأل الخادم كل دقيقة عن تنبيهات خدووم الجديدة ويعرضها كإشعار على الجوال.
+class KhdoomNotices {
+  static final ValueNotifier<bool> communityBadge = ValueNotifier(false);
+  static bool _busy = false;
+
+  static Future<void> poll() async {
+    if (_busy) return;
+    _busy = true;
+    KhdoomCloudApi? api;
+    try {
+      const storage = FlutterSecureStorage();
+      final token = await storage.read(key: 'cloud_session_token');
+      if (token == null || token.isEmpty) return;
+      final prefs = await BranchPreferences.getInstance();
+      api = KhdoomCloudApi(
+        scope: prefs,
+        baseUrl:
+            prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+      )..token = token;
+      final last = prefs.getInt('app_notice_last_id');
+      final data = await api.notices(last ?? 0);
+      final latestId = (data['latestId'] as num?)?.toInt() ?? 0;
+      if (last == null) {
+        // أول مرة: لا نعرض تنبيهات قديمة، نبدأ من الآن.
+        await prefs.setInt('app_notice_last_id', latestId);
+      } else {
+        var newest = last;
+        for (final raw in List<dynamic>.from(data['items'] as List? ?? [])) {
+          final item = Map<String, dynamic>.from(raw as Map);
+          final id = (item['id'] as num?)?.toInt() ?? 0;
+          if (id <= newest) continue;
+          await KhdoomNotifications.showNotice(item);
+          newest = id;
+        }
+        if (newest > last) await prefs.setInt('app_notice_last_id', newest);
+      }
+      final community = (data['latestCommunity'] as num?)?.toInt() ?? 0;
+      final seen = prefs.getInt('community_notice_seen_id');
+      if (seen == null) {
+        await prefs.setInt('community_notice_seen_id', community);
+        communityBadge.value = false;
+      } else {
+        communityBadge.value = community > seen;
+      }
+    } catch (_) {
+      // بدون اتصال نحاول في الدقيقة الجاية.
+    } finally {
+      api?.close();
+      _busy = false;
+    }
+  }
+
+  static Future<void> markCommunitySeen() async {
+    communityBadge.value = false;
+    try {
+      const storage = FlutterSecureStorage();
+      final token = await storage.read(key: 'cloud_session_token');
+      if (token == null || token.isEmpty) return;
+      final prefs = await BranchPreferences.getInstance();
+      final api = KhdoomCloudApi(
+        scope: prefs,
+        baseUrl:
+            prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+      )..token = token;
+      try {
+        final data = await api.notices(prefs.getInt('app_notice_last_id') ?? 0);
+        await prefs.setInt(
+          'community_notice_seen_id',
+          (data['latestCommunity'] as num?)?.toInt() ?? 0,
+        );
+      } finally {
+        api.close();
+      }
+    } catch (_) {}
+  }
+}
+
+/// يرسل أعطال التطبيق تلقائيًا للوحة إدارة خدووم، حتى لو المشترك ما اشتكى.
+class KhdoomCrashReporter {
+  static const appVersion = '1.0.0+4';
+  static final Set<String> _sent = {};
+
+  static void install() {
+    final previous = FlutterError.onError;
+    FlutterError.onError = (details) {
+      if (previous != null) {
+        previous(details);
+      } else {
+        FlutterError.presentError(details);
+      }
+      report(
+        details.exceptionAsString(),
+        details.stack,
+        details.context?.toDescription() ?? '',
+      );
+    };
+    WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+      report(error.toString(), stack, 'async');
+      return false;
+    };
+  }
+
+  static Future<void> report(
+    String message,
+    StackTrace? stack,
+    String where,
+  ) async {
+    final text = message.trim();
+    // نفس الخطأ ما ينرسل مرتين في نفس التشغيل، وبحد أقصى 20 خطأ.
+    if (text.isEmpty || _sent.length >= 20 || !_sent.add(text)) return;
+    try {
+      const storage = FlutterSecureStorage();
+      final token = await storage.read(key: 'cloud_session_token');
+      if (token == null || token.isEmpty) return;
+      final prefs = await BranchPreferences.getInstance();
+      final api = KhdoomCloudApi(
+        scope: prefs,
+        baseUrl:
+            prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+      )..token = token;
+      try {
+        await api.reportAppError({
+          'message': text.length > 900 ? text.substring(0, 900) : text,
+          'stack': (stack?.toString() ?? '').split('\n').take(25).join('\n'),
+          'where': where.length > 200 ? where.substring(0, 200) : where,
+          'appVersion': appVersion,
+          'device': Platform.operatingSystemVersion,
+        });
+      } finally {
+        api.close();
+      }
+    } catch (_) {
+      // تقرير الخطأ ما يسبب خطأ ثاني.
+    }
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  KhdoomCrashReporter.install();
   await KhdoomNotifications.initialize();
   unawaited(KhdoomAppFeatures.refresh());
   runApp(const KhdoomApp());
@@ -582,6 +815,7 @@ class KhdoomApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: khdoomNavigatorKey,
       debugShowCheckedModeBanner: false,
       title: 'خدووم',
       // اترك Flutter يختار خط النظام حتى يعمل تشكيل العربية بشكل صحيح على Android.
@@ -2118,10 +2352,12 @@ class _CreateAccountPageState extends State<CreateAccountPage> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
               children: [
-                const Icon(
-                  Icons.hub_outlined,
-                  color: Color(0xFF38BDF8),
-                  size: 58,
+                Center(
+                  child: Image.asset(
+                    'assets/images/khdoom_logo.png',
+                    width: 110,
+                    height: 110,
+                  ),
                 ),
                 const SizedBox(height: 10),
                 const Text(
@@ -2446,8 +2682,10 @@ class _DashboardPageState extends State<DashboardPage> {
         _loadBusinessName();
         // إذا شغّلت الإدارة الواتساب أو المكالمات يظهران خلال دقيقة بدون إعادة تشغيل.
         KhdoomAppFeatures.refresh();
+        KhdoomNotices.poll();
       },
     );
+    KhdoomNotices.poll();
     _sessionValidationTimer = Timer.periodic(
       const Duration(minutes: 2),
       (_) => _validateCloudSession(),
@@ -3648,13 +3886,20 @@ class _DashboardPageState extends State<DashboardPage> {
               await _loadBusinessName();
             },
           ),
-        DashboardCard(
-          icon: Icons.forum_outlined,
-          title: 'مجتمع خدوم',
-          subtitle: 'تواصل مع المؤسسات داخل التطبيق',
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const CommunityPage()),
+        ValueListenableBuilder<bool>(
+          valueListenable: KhdoomNotices.communityBadge,
+          builder: (context, unread, _) => DashboardCard(
+            icon: Icons.forum_outlined,
+            title: 'مجتمع خدوم',
+            subtitle: 'تواصل مع المؤسسات داخل التطبيق',
+            badge: unread,
+            onTap: () {
+              KhdoomNotices.markCommunitySeen();
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CommunityPage()),
+              );
+            },
           ),
         ),
         if (_can('appointments'))
@@ -5373,6 +5618,47 @@ class _SettingsPageState extends State<SettingsPage> {
                         setDialogState(() => selectedSupportCategory = value);
                     },
                   ),
+                  // «حل قبل الإرسال»: خطوات سريعة تحل أغلب المشاكل بدون انتظار الدعم.
+                  if (khdoomSupportTips[selectedSupportCategory] != null)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(top: 10),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0B1020),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFF38BDF8)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            '💡 جرّب هذا أول، ممكن تنحل بدون انتظار:',
+                            style: TextStyle(
+                              color: Color(0xFF7DD3FC),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          ...khdoomSupportTips[selectedSupportCategory]!.map(
+                            (tip) => Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Text(
+                                '• $tip',
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  height: 1.5,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const Text(
+                            'إذا ما انحلت، اكتب المشكلة تحت وأرسلها.',
+                            style: TextStyle(color: Colors.white54),
+                          ),
+                        ],
+                      ),
+                    ),
                   const SizedBox(height: 12),
                   TextField(
                     controller: controller,
@@ -5463,9 +5749,61 @@ class _SettingsPageState extends State<SettingsPage> {
                                 .toString(),
                         style: const TextStyle(color: Colors.white),
                       ),
-                      subtitle: Text(
-                        '${khdoomDateTime12(x['created_at']).isEmpty ? '' : 'أُرسلت: ${khdoomDateTime12(x['created_at'])}\n'}$status${(x['owner_reply'] ?? '').toString().isNotEmpty ? ' — ${x['owner_reply']}' : ''}',
-                        style: const TextStyle(color: Colors.white70),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${khdoomDateTime12(x['created_at']).isEmpty ? '' : 'أُرسلت: ${khdoomDateTime12(x['created_at'])}\n'}$status${(x['owner_reply'] ?? '').toString().isNotEmpty ? ' — ${x['owner_reply']}' : ''}',
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                          // بعد الحل: «انحلت مشكلتك؟» 👍 يقفلها، 👎 يرجعها للدعم.
+                          if (x['status'] == 'resolved' &&
+                              (x['user_rating'] ?? '').toString().isEmpty)
+                            Row(
+                              children: [
+                                const Text(
+                                  'انحلت مشكلتك؟',
+                                  style: TextStyle(color: Colors.white),
+                                ),
+                                TextButton(
+                                  onPressed: () async {
+                                    try {
+                                      await api.rateSupportTicket(x['id'], true);
+                                      setDialogState(
+                                        () => (item as Map)['user_rating'] = 'up',
+                                      );
+                                    } catch (_) {}
+                                  },
+                                  child: const Text('👍 نعم'),
+                                ),
+                                TextButton(
+                                  onPressed: () async {
+                                    try {
+                                      await api.rateSupportTicket(x['id'], false);
+                                      setDialogState(() {
+                                        (item as Map)['user_rating'] = 'down';
+                                        item['status'] = 'open';
+                                      });
+                                      if (mounted)
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'رجّعنا الشكوى للدعم، وبنتابعها معك ✓',
+                                            ),
+                                          ),
+                                        );
+                                    } catch (_) {}
+                                  },
+                                  child: const Text('👎 لا'),
+                                ),
+                              ],
+                            ),
+                          if ((x['user_rating'] ?? '').toString() == 'up')
+                            const Text(
+                              'شكرًا على تقييمك 👍',
+                              style: TextStyle(color: Color(0xFF86EFAC)),
+                            ),
+                        ],
                       ),
                       trailing: x['status'] == 'resolved'
                           ? IconButton(
@@ -6400,6 +6738,134 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
   Map<String, dynamic> _paymentSettings = {};
   PackageResourceLimits _resourceLimits = PackageResourceLimits.defaults;
 
+  // ---- عرض العروض: أرقام بدون .0، ومدة بالعربي، وتاريخ 2026/10/12 ----
+  static String _offerNumber(dynamic value) {
+    final number = value is num ? value : num.tryParse('$value') ?? 0;
+    return number == number.roundToDouble()
+        ? number.round().toString()
+        : number.toStringAsFixed(2);
+  }
+
+  static String _offerMonths(dynamic value) {
+    final months = value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+    if (months == 1) return 'شهر';
+    if (months == 2) return 'شهرين';
+    if (months >= 3 && months <= 10) return '$months شهور';
+    return '$months شهر';
+  }
+
+  static String _offerDate(dynamic value) {
+    final text = '${value ?? ''}'.trim();
+    if (text.isEmpty) return '';
+    final parts = text.split('-');
+    if (parts.length == 3 && parts[0].length == 2) {
+      return '${parts[2]}/${parts[1]}/${parts[0]}';
+    }
+    return text.length >= 10 ? text.substring(0, 10).replaceAll('-', '/') : text;
+  }
+
+  static bool _offerHasDiscount(Map<String, dynamic> offer) {
+    final price = num.tryParse('${offer['price_sar']}') ?? 0;
+    final original = num.tryParse('${offer['original_price_sar']}') ?? 0;
+    return original > price;
+  }
+
+  static int _offerBonus(Map<String, dynamic> offer) =>
+      int.tryParse('${offer['bonus_months'] ?? 0}') ?? 0;
+
+  Map<String, dynamic>? _packageOffer(String packageId) {
+    for (final offer in _packageOffers) {
+      if (offer['package']?.toString() == packageId &&
+          offer['has_offer'] == true) {
+        return offer;
+      }
+    }
+    return null;
+  }
+
+  String _offerBadge(Map<String, dynamic> offer) {
+    final months = _offerMonths(offer['paid_months']);
+    final parts = <String>[];
+    if (_offerHasDiscount(offer)) {
+      parts.add('خصم ${_offerNumber(offer['discount_percent'])}%');
+    }
+    if (_offerBonus(offer) > 0) {
+      parts.add('+ ${_offerMonths(_offerBonus(offer))} مجانًا');
+    }
+    return '🎉 عرض: $months ${parts.join(' ')}';
+  }
+
+  String _offerOptionLabel(Map<String, dynamic> offer) {
+    final months = _offerMonths(offer['paid_months']);
+    final price = _offerNumber(offer['price_sar']);
+    if (offer['has_offer'] != true) return '$months — $price ريال';
+    final bonus = _offerBonus(offer);
+    final discount = _offerHasDiscount(offer)
+        ? ' بدل ${_offerNumber(offer['original_price_sar'])}'
+        : '';
+    final extra = bonus > 0 ? ' + ${_offerMonths(bonus)} مجانًا' : '';
+    return '$months — $price ريال$discount$extra 🎉';
+  }
+
+  Widget _offerDetails(Map<String, dynamic> offer) {
+    final months = _offerMonths(offer['paid_months']);
+    final price = _offerNumber(offer['price_sar']);
+    if (offer['has_offer'] != true) {
+      return Text('$months — السعر: $price ريال', textAlign: TextAlign.right);
+    }
+    const style = TextStyle(color: Colors.black, height: 1.7);
+    final bonus = _offerBonus(offer);
+    final lines = <Widget>[
+      Text(
+        months,
+        textAlign: TextAlign.right,
+        style: style.copyWith(fontWeight: FontWeight.bold, fontSize: 16),
+      ),
+    ];
+    if (_offerHasDiscount(offer)) {
+      lines.add(
+        Text(
+          'السعر السابق: ${_offerNumber(offer['original_price_sar'])} ريال   خصم ${_offerNumber(offer['discount_percent'])}%',
+          textAlign: TextAlign.right,
+          style: style,
+        ),
+      );
+      lines.add(
+        Text(
+          'السعر بعد الخصم: $price ريال${bonus > 0 ? ' + ${_offerMonths(bonus)} مجانًا' : ''}',
+          textAlign: TextAlign.right,
+          style: style.copyWith(fontWeight: FontWeight.bold),
+        ),
+      );
+    } else {
+      lines.add(
+        Text(
+          'السعر: $price ريال${bonus > 0 ? ' + ${_offerMonths(bonus)} مجانًا' : ''}',
+          textAlign: TextAlign.right,
+          style: style.copyWith(fontWeight: FontWeight.bold),
+        ),
+      );
+    }
+    final ends = _offerDate(offer['ends_at']);
+    if (ends.isNotEmpty) {
+      lines.add(
+        Text('ينتهي العرض: $ends', textAlign: TextAlign.right, style: style),
+      );
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF16A34A), width: 2),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: lines,
+      ),
+    );
+  }
+
   final List<Map<String, Object>> _packages = [
     {
       'id': 'free',
@@ -6619,9 +7085,13 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
     final availableOffers = _packageOffers
         .where((offer) => offer['package']?.toString() == id)
         .toList();
+    // إذا فيه عرض على هذه الباقة نختار مدته تلقائيًا بدل الشهر الأول.
     Map<String, dynamic>? selectedOffer = availableOffers.isEmpty
         ? null
-        : availableOffers.first;
+        : availableOffers.firstWhere(
+            (offer) => offer['has_offer'] == true,
+            orElse: () => availableOffers.first,
+          );
 
     if (_paymentSettings.isEmpty) {
       try {
@@ -6663,11 +7133,11 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                           value: offer['selection_id']?.toString(),
                           alignment: Alignment.centerRight,
                           child: Text(
-                            '${offer['paid_months']} شهر — ${offer['has_offer'] == true ? 'عرض: ' : ''}${offer['price_sar']} ريال',
+                            _offerOptionLabel(offer),
                             textDirection: TextDirection.rtl,
                             textAlign: TextAlign.right,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                            maxLines: 2,
+                            softWrap: true,
                           ),
                         );
                       }).toList(),
@@ -6681,9 +7151,7 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                   if (selectedOffer != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Text(
-                        '${selectedOffer!['paid_months']} شهر${selectedOffer!['has_offer'] == true ? '\nالسعر السابق: ${selectedOffer!['original_price_sar']} ريال\nخصم ${selectedOffer!['discount_percent']}%\nالسعر الآن: ${selectedOffer!['price_sar']} ريال' : ' — السعر: ${selectedOffer!['price_sar']} ريال'}${selectedOffer!['bonus_months'] == 0 ? '' : ' + ${selectedOffer!['bonus_months']} شهر مجانًا'}${selectedOffer!['ends_at'] == null ? '' : '\nينتهي العرض: ${selectedOffer!['ends_at']}'}',
-                      ),
+                      child: _offerDetails(selectedOffer!),
                     ),
                   const SizedBox(height: 14),
                   Container(
@@ -7084,6 +7552,28 @@ class _SubscriptionPackagesPageState extends State<SubscriptionPackagesPage> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
+                      if (_packageOffer(packageId) != null)
+                        Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(top: 10),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF14532D),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFF22C55E)),
+                          ),
+                          child: Text(
+                            _offerBadge(_packageOffer(packageId)!),
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
                       const SizedBox(height: 12),
                       ...features.map(
                         (feature) => Padding(
@@ -8225,6 +8715,7 @@ class DashboardCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback? onTap;
+  final bool badge;
 
   const DashboardCard({
     super.key,
@@ -8232,10 +8723,35 @@ class DashboardCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     this.onTap,
+    this.badge = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final card = _card(context);
+    if (!badge) return card;
+    // علامة حمراء: فيه منشور مهم من إدارة خدوم ما انفتح للحين.
+    return Stack(
+      children: [
+        Positioned.fill(child: card),
+        Positioned(
+          top: 10,
+          left: 10,
+          child: Container(
+            width: 14,
+            height: 14,
+            decoration: BoxDecoration(
+              color: const Color(0xFFEF4444),
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _card(BuildContext context) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),

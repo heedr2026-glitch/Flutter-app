@@ -65,6 +65,27 @@ class KhdoomCloudApi {
     return Map<String, dynamic>.from(result as Map);
   }
 
+  /// تنبيهات التطبيق الجديدة بعد رقم معيّن (مجتمع مهم، تجديد، ملخص يومي، تتبع).
+  Future<Map<String, dynamic>> notices(int after) async {
+    final result = await _request('GET', '/api/notices?after=$after');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  /// تقرير خطأ في التطبيق يوصل لوحة الإدارة.
+  Future<void> reportAppError(Map<String, dynamic> data) async {
+    await _request('POST', '/api/app-errors', body: data);
+  }
+
+  /// تقييم حل الشكوى: 👍 أو 👎 (👎 يعيد فتحها).
+  Future<Map<String, dynamic>> rateSupportTicket(Object id, bool solved) async {
+    final result = await _request(
+      'POST',
+      '/api/support-tickets/$id/rating',
+      body: {'solved': solved},
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   Future<List<dynamic>> auditLogs() async {
     final result = await _request('GET', '/api/audit-logs');
     return List<dynamic>.from(result as List);

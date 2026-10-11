@@ -152,8 +152,14 @@ class DriverTrackingService : Service(), LocationListener {
     }
     private fun state(value: String, text: String) {
         if (TrackingStore.status(this) != value || lastText != text) {
+            val changed = TrackingStore.status(this) != value
             TrackingStore.status(this, value); lastText = text
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7302, notification(text))
+            // قفل الموقع أو سحب الإذن أو رجوع التتبع: نبلّغ الخادم فورًا ليوصل التنبيه لصاحب المؤسسة.
+            if (changed && value in listOf("location_disabled", "permission_denied", "tracking")) {
+                lastRefresh = 0
+                network.execute { refresh() }
+            }
         }
     }
     private fun request(cfg: JSONObject, path: String, body: JSONObject? = null): JSONObject {
@@ -260,9 +266,9 @@ class DriverTrackingService : Service(), LocationListener {
         if (providers.isEmpty()) { stopLocation();state("location_disabled", "التتبع متوقف؛ فعّل الموقع");return }
         if (!listening) {
             try {
-                // GPS كل 10 ثوانٍ ليتبع المسار الشوارع؛ موقع الشبكة الأضعف كل دقيقة كبديل فقط.
+                // GPS كل 5 ثوانٍ ليتبع المسار الشوارع بدقة؛ موقع الشبكة الأضعف كل دقيقة كبديل فقط.
                 // بدون شرط مسافة: المركبة الواقفة تبقى «متصلة» ويظهر آخر موقع لها كل دقيقة.
-                providers.forEach { locations.requestLocationUpdates(it, if (it == LocationManager.GPS_PROVIDER) 10000L else 60000L, 0f, this, Looper.getMainLooper()) }
+                providers.forEach { locations.requestLocationUpdates(it, if (it == LocationManager.GPS_PROVIDER) 5000L else 60000L, 0f, this, Looper.getMainLooper()) }
                 listening = true
             } catch (_: SecurityException) { stopLocation();state("permission_denied", "التتبع متوقف؛ تحقق من الصلاحيات");return }
         }
@@ -277,11 +283,12 @@ class DriverTrackingService : Service(), LocationListener {
         val sinceLast = SystemClock.elapsedRealtime() - lastStoredAt
         // القراءة الدقيقة (GPS) هي الأساس. القراءة الضعيفة تُقبل فقط إن لم تُحفظ قراءة منذ نحو دقيقة،
         // حتى تبقى المركبة «متصلة» داخل المباني دون أن تشوّه المسار ما دام GPS يعمل.
-        if (location.accuracy > 60 && (location.accuracy > 250 || (lastStoredAt > 0 && sinceLast < 55000L))) return
-        // نقطة كل 10 ثوانٍ تقريبًا والمركبة تتحرك (GPS يصل كل 10 ثوانٍ)، وكل دقيقة وهي واقفة.
+        // القراءة الأضعف من 30 متر تُرفض ما دام GPS يرسل قراءات حديثة.
+        if (location.accuracy > 30 && (location.accuracy > 250 || (lastStoredAt > 0 && sinceLast < 55000L))) return
+        // نقطة كل 15 متر والمركبة تتحرك (GPS يصل كل 5 ثوانٍ)، وكل دقيقة وهي واقفة.
         val previous = lastStored
-        val moved = previous == null || previous.distanceTo(location) >= 30f
-        if (lastStoredAt > 0 && (sinceLast < 8000L || (!moved && sinceLast < 55000L))) return
+        val moved = previous == null || previous.distanceTo(location) >= 15f
+        if (lastStoredAt > 0 && (sinceLast < 4000L || (!moved && sinceLast < 55000L))) return
         val s = schedule ?: return
         if (!inShift(s, location.time)) return
         lastStored = location;lastStoredAt = SystemClock.elapsedRealtime()

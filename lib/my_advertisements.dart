@@ -174,19 +174,23 @@ class AdvertisementFilters extends StatelessWidget {
     required this.onSelected,
   });
   @override
-  Widget build(BuildContext context) => Wrap(
-    spacing: 6,
-    runSpacing: 4,
-    children: [
-      for (final group in advertisementGroups.entries)
-        ChoiceChip(
-          label: Text(
-            '${group.value} (${filterAdvertisements(ads, group.key).length})',
+  // ChoiceChip يحتاج Material فوقه؛ صفحة غير VIP تعرض الأزرار بدونه فيطلع مربع أحمر.
+  Widget build(BuildContext context) => Material(
+    type: MaterialType.transparency,
+    child: Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      children: [
+        for (final group in advertisementGroups.entries)
+          ChoiceChip(
+            label: Text(
+              '${group.value} (${filterAdvertisements(ads, group.key).length})',
+            ),
+            selected: selected == group.key,
+            onSelected: (_) => onSelected(group.key),
           ),
-          selected: selected == group.key,
-          onSelected: (_) => onSelected(group.key),
-        ),
-    ],
+      ],
+    ),
   );
 }
 

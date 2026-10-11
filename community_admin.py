@@ -48,7 +48,11 @@ def moderation(c,route,method,data,q,page,error,actor=None,postgres=False):
    body=str(data.get('body','')).strip()
    if not 1<=len(body)<=3000: raise error(400,'اكتب منشورًا من 1 إلى 3000 حرف')
    c.execute('INSERT INTO community_admin_posts(admin_name,body,created_at) VALUES(?,?,?)',('إدارة خدوم',body,admin.stamp()))
-   return {'saved':True}
+   # «مهم، نبّه المشتركين»: إشعار على جوال كل المشتركين وعلامة حمراء على المجتمع لين يفتحونه.
+   if data.get('important') is True:
+    import app_notices
+    app_notices.add(c,None,'community','📢 من إدارة خدوم',body[:300],'community')
+   return {'saved':True,'notified':data.get('important') is True}
   raise error(405,'الإجراء غير متاح')
  if kind=='likes' and len(part)==2 and method=='POST':
   post_id=int(part[1]); name=str((actor or {}).get('name','إدارة خدوم'))[:120]

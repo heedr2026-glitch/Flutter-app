@@ -327,6 +327,9 @@ def device_request(c, path, method, data, headers, server):
             server.audit_log(c,org,None,'driver_tracking_stopped','أوقف السائق «'+(row['driver_name'] or '')+'» تتبع جواله','vehicle',key)
             c.execute("UPDATE vehicle_tracking_schedules SET device_hash='' WHERE organization_id=? AND vehicle_key=?",(org,key))
         c.execute('UPDATE vehicle_tracking_schedules SET phone_status=?,last_heartbeat=? WHERE organization_id=? AND vehicle_key=?',(state,server.now(),org,key))
+        # تنبيه صاحب المؤسسة: قفل الموقع، سحب الإذن، إيقاف التتبع خلال الدوام، أو رجوعه.
+        if state=='tracking' or in_schedule(row):
+            server.app_notices.tracking_status_changed(c,org,key,row['vehicle_name'],row['driver_name'] or '',row['phone_status'],state)
         return 200,{'saved':True}
     if path=='/api/vehicle-tracking' and method=='POST':
         if str(data.get('vehicleKey','')).strip()[:160]!=key: raise server.ApiError(403,'هذا الجوال مرتبط بمركبة أخرى')
