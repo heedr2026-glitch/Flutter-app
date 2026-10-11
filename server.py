@@ -4028,7 +4028,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                     )
                     package = code["package"] if code else "free"
                     package_expires = (datetime.now(timezone.utc) + timedelta(days=code["duration_days"])).isoformat() if code else None
-                    gift = signup_offer.claim(connection, organization_id, now()) if code is None else None
+                    gift = signup_offer.claim(connection, organization_id, now(), (data.get("phone"), data.get("organizationPhone")), data.get("commercialRegistration", "")) if code is None else None
                     if gift:
                         package, package_expires = gift['package'], gift['expires_at']
                     connection.execute(

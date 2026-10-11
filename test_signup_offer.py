@@ -90,3 +90,38 @@ class RegistrationOfferTest(unittest.TestCase):
                 self.assertEqual(req('/owner/api/signup-offer')['claimed'],2)
             finally:
                 httpd.shutdown(); httpd.server_close(); thread.join()
+
+
+class OfferEndDateAndRepeatTest(unittest.TestCase):
+    def test_end_date_stops_offer_and_same_phone_or_registry_gets_it_once(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(server,'DB_PATH',Path(temp)/'test.db'), patch.object(server,'DATABASE_URL',''), patch.object(server,'db',test_db), patch.dict(os.environ,{'KHDOOM_OWNER_KEY':'test-only'}):
+            server.init_db()
+            httpd=server.ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
+            thread=threading.Thread(target=httpd.serve_forever,daemon=True); thread.start()
+            def req(path, method='GET', data=None, owner=True):
+                headers={'Content-Type':'application/json'}
+                if owner: headers['X-Owner-Key']='test-only'
+                with urlopen(Request('http://127.0.0.1:'+str(httpd.server_port)+path,method=method,headers=headers,data=None if data is None else json.dumps(data).encode()),timeout=10) as r:
+                    return json.load(r)
+            def register(name, phone, cr=''):
+                return req('/api/register','POST',{'name':name,'username':name,'phone':phone,'password':'test-only-password','organizationName':name,'commercialRegistration':cr},owner=False)
+            try:
+                state=req('/owner/api/signup-offer')
+                with self.assertRaises(HTTPError) as error: req('/owner/api/signup-offer','PUT',{**state,'enabled':True,'ends_on':'2020-01-01'})
+                self.assertEqual(error.exception.code,400); error.exception.close()
+                state=req('/owner/api/signup-offer','PUT',{**state,'enabled':True,'max_claims':10,'months':6,'package':'vip','ends_on':'2099-12-31'})
+                self.assertEqual(state['ends_on'],'2099-12-31')
+                self.assertEqual(register('one','0551234567','1010101010')['package'],'vip')
+                # نفس الجوال بصيغة ثانية: يسجل لكن بدون العرض.
+                self.assertEqual(register('two','+966551234567')['package'],'free')
+                # نفس السجل التجاري برقم جوال مختلف.
+                self.assertEqual(register('three','0559999999','1010101010')['package'],'free')
+                self.assertEqual(register('four','0558888888','2020202020')['package'],'vip')
+                # بعد تاريخ النهاية يتوقف العرض حتى لو باقي عدد.
+                with server.db() as c:
+                    c.execute("UPDATE signup_offer SET ends_on='2020-01-01' WHERE id=1")
+                self.assertTrue(req('/owner/api/signup-offer')['expired'])
+                self.assertEqual(register('five','0557777777')['package'],'free')
+                self.assertEqual(req('/owner/api/signup-offer')['claimed'],2)
+            finally:
+                httpd.shutdown(); httpd.server_close(); thread.join()

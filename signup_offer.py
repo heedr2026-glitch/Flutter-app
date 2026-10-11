@@ -1,6 +1,9 @@
 """Owner-configured first-signup gift. Caller owns the registration transaction."""
 import calendar
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
+
+RIYADH = timezone(timedelta(hours=3))
 
 
 def migrate(c):
@@ -13,13 +16,54 @@ def migrate(c):
     c.execute('''CREATE TABLE IF NOT EXISTS signup_offer_claims (
         organization_id BIGINT PRIMARY KEY, package TEXT NOT NULL,
         months INTEGER NOT NULL, starts_at TEXT NOT NULL, expires_at TEXT NOT NULL)''')
+    # تاريخ نهاية العرض (اختياري): بعده يتوقف العرض حتى لو ما اكتمل العدد.
+    if hasattr(c, '_connection'):  # PostgreSQL
+        c.execute("ALTER TABLE signup_offer ADD COLUMN IF NOT EXISTS ends_on TEXT NOT NULL DEFAULT ''")
+    elif 'ends_on' not in {row[1] for row in c.execute('PRAGMA table_info(signup_offer)').fetchall()}:
+        c.execute("ALTER TABLE signup_offer ADD COLUMN ends_on TEXT NOT NULL DEFAULT ''")
 
 
 def overview(c):
     result = dict(c.execute('SELECT * FROM signup_offer WHERE id=1').fetchone())
     result['enabled'] = bool(result['enabled'])
     result['remaining'] = max(0, result['max_claims'] - result['claimed'])
+    result['ends_on'] = result.get('ends_on') or ''
+    result['expired'] = bool(result['ends_on'] and _today() > result['ends_on'])
     return result
+
+
+def _today(started=None):
+    moment = datetime.fromisoformat(started) if started else datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(RIYADH).strftime('%Y-%m-%d')
+
+
+def _phone_key(value):
+    digits = re.sub(r'\D', '', str(value or ''))
+    return digits[-9:] if len(digits) >= 9 else ''
+
+
+def _cr_key(value):
+    digits = re.sub(r'\D', '', str(value or ''))
+    return digits if len(digits) >= 5 else ''
+
+
+def already_claimed(c, phones=(), registration=''):
+    """هل سبق استفاد نفس الجوال أو نفس السجل التجاري من العرض بمؤسسة ثانية؟"""
+    wanted_phones = {k for k in (_phone_key(p) for p in phones) if k}
+    wanted_cr = _cr_key(registration)
+    if not wanted_phones and not wanted_cr:
+        return False
+    rows = c.execute('''SELECT o.phone org_phone, o.commercial_registration cr,
+        (SELECT u.phone FROM users u WHERE u.organization_id=o.id AND u.role='admin' ORDER BY u.id LIMIT 1) admin_phone
+        FROM signup_offer_claims s JOIN organizations o ON o.id=s.organization_id''').fetchall()
+    for row in rows:
+        if wanted_cr and _cr_key(row['cr']) == wanted_cr:
+            return True
+        if wanted_phones & {_phone_key(row['org_phone']), _phone_key(row['admin_phone'])}:
+            return True
+    return False
 
 
 def configure(c, data, error):
@@ -30,19 +74,29 @@ def configure(c, data, error):
             raise error(400, 'تحقق من العدد والمدة ثم أعد تحميل الإعدادات')
     if data.get('package') not in ('basic', 'vip'):
         raise error(400, 'اختر الأساسية أو VIP')
-    updated = c.execute('''UPDATE signup_offer SET enabled=?,max_claims=?,package=?,months=?,revision=revision+1
-        WHERE id=1 AND revision=?''', (int(data['enabled']), data['max_claims'], data['package'], data['months'], data['revision']))
+    ends_on = str(data.get('ends_on') or '').strip()
+    if ends_on:
+        try:
+            datetime.strptime(ends_on, '%Y-%m-%d')
+        except ValueError:
+            raise error(400, 'تاريخ نهاية العرض غير صحيح')
+        if ends_on < _today():
+            raise error(400, 'تاريخ نهاية العرض لازم يكون اليوم أو بعده')
+    updated = c.execute('''UPDATE signup_offer SET enabled=?,max_claims=?,package=?,months=?,ends_on=?,revision=revision+1
+        WHERE id=1 AND revision=?''', (int(data['enabled']), data['max_claims'], data['package'], data['months'], ends_on, data['revision']))
     if updated.rowcount != 1:
         raise error(409, 'تغير العرض أو عدد المستفيدين؛ حدّث الصفحة قبل الحفظ')
     return overview(c)
 
 
-def claim(c, organization_id, started):
+def claim(c, organization_id, started, phones=(), registration=''):
     existing = c.execute('SELECT * FROM signup_offer_claims WHERE organization_id=?', (organization_id,)).fetchone()
     if existing:
         return dict(existing)
+    if already_claimed(c, phones, registration):
+        return None
     row = c.execute('''UPDATE signup_offer SET claimed=claimed+1,revision=revision+1
-        WHERE id=1 AND enabled=1 AND claimed<max_claims RETURNING package,months''').fetchone()
+        WHERE id=1 AND enabled=1 AND claimed<max_claims AND (ends_on='' OR ends_on>=?) RETURNING package,months''', (_today(started),)).fetchone()
     if row is None:
         return None
     start = datetime.fromisoformat(started)
