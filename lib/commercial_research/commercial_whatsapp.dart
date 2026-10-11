@@ -25,11 +25,16 @@ Future<void> showCommercialWhatsApp(
   BuildContext context, {
   required String projectName,
   String phone = '',
+  String? message,
   Future<bool> Function(Uri)? openUrl,
 }) async {
   final uri = await showDialog<Uri>(
     context: context,
-    builder: (_) => _WhatsAppDraft(projectName: projectName, phone: phone),
+    builder: (_) => _WhatsAppDraft(
+      projectName: projectName,
+      phone: phone,
+      message: message,
+    ),
   );
   if (uri == null || !context.mounted) return;
   try {
@@ -48,9 +53,14 @@ Future<void> showCommercialWhatsApp(
 }
 
 class _WhatsAppDraft extends StatefulWidget {
-  const _WhatsAppDraft({required this.projectName, required this.phone});
+  const _WhatsAppDraft({
+    required this.projectName,
+    required this.phone,
+    this.message,
+  });
   final String projectName;
   final String phone;
+  final String? message;
   @override
   State<_WhatsAppDraft> createState() => _WhatsAppDraftState();
 }
@@ -60,6 +70,7 @@ class _WhatsAppDraftState extends State<_WhatsAppDraft> {
   late final _phone = TextEditingController(text: widget.phone);
   late final _message = TextEditingController(
     text:
+        widget.message ??
         'السلام عليكم، معكم فريق متخصص في توريد وتركيب الزجاج والواجهات. '
         'اطلعنا على مشروع ${widget.projectName} ويسعدنا خدمتكم. '
         'نرجو تزويدنا بالمخططات أو المقاسات والتفاصيل لإعداد العرض المناسب.',

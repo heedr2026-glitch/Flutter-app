@@ -49,6 +49,7 @@ import 'usage_balance_page.dart';
 import 'commercial_research/commercial_research_models.dart';
 import 'commercial_research/commercial_whatsapp.dart';
 import 'commercial_research/commercial_research_report.dart';
+import 'commercial_research/leads_notebook_page.dart';
 
 const accountDeletionUrl = 'https://khdoom-api.onrender.com/delete-account';
 
@@ -263,6 +264,7 @@ class KhdoomNotifications {
     }
     if (action == 'vehicles') page = const VehiclesPage();
     if (action == 'ai_questions') page = const EmployeesTrainingHubPage();
+    if (action == 'leads') page = const LeadsNotebookPage();
     if (page != null) {
       navigator.push(MaterialPageRoute(builder: (_) => page!));
     }
@@ -13980,6 +13982,57 @@ class _CommercialResearchEmployeePageState
     );
   }
 
+  /// «احفظ كفرصة» من تقرير البحث: تنحفظ في دفتر الفرص على الخادم.
+  Future<void> _saveReportLead(
+    String title,
+    String section,
+    String phone,
+  ) async {
+    const storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'cloud_session_token');
+    if (token == null || token.isEmpty) return;
+    final prefs = await BranchPreferences.getInstance();
+    final api = KhdoomCloudApi(
+      scope: prefs,
+      baseUrl:
+          prefs.getString('cloud_api_url') ?? 'https://khdoom-api.onrender.com',
+    )..token = token;
+    try {
+      final result = await api.createLead({
+        'name': title.isEmpty ? 'جهة من البحث التجاري' : title,
+        'phone': phone.startsWith('966') ? '0${phone.substring(3)}' : phone,
+        'location': _cityController.text.trim(),
+        'details': section.length > 2500 ? section.substring(0, 2500) : section,
+        'source': 'موظف البحث التجاري',
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result['duplicate'] == true
+                ? 'هذي الجهة موجودة أصلًا في دفتر الفرص'
+                : 'انحفظت في دفتر الفرص ✓',
+          ),
+          action: SnackBarAction(
+            label: 'افتح الدفتر',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const LeadsNotebookPage()),
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(e.toString())));
+      }
+    } finally {
+      api.close();
+    }
+  }
+
   Future<void> _deleteCommercialLead(CommercialLead lead) async {
     setState(() => _savedLeads.removeWhere((item) => item.id == lead.id));
     await _persistCommercialLeads();
@@ -14929,6 +14982,22 @@ $details
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
                     ),
+                    const SizedBox(height: 10),
+                    // دفتر الفرص: الحالات والمتابعة والبحث الأسبوعي ورابط عرض السعر.
+                    FilledButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const LeadsNotebookPage(),
+                        ),
+                      ),
+                      icon: const Icon(Icons.menu_book_outlined),
+                      label: const Text('📒 دفتر الفرص والبحث الأسبوعي'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF0369A1),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
                     const SizedBox(height: 24),
                     Row(
                       children: [
@@ -14968,7 +15037,10 @@ $details
                     ),
                     const SizedBox(height: 10),
                     if (_aiResearchText != null) ...[
-                      CommercialResearchReport(text: _aiResearchText!),
+                      CommercialResearchReport(
+                        text: _aiResearchText!,
+                        onSave: _saveReportLead,
+                      ),
                       const SizedBox(height: 12),
                     ],
                     if (_researchError != null)

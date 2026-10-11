@@ -32,8 +32,12 @@ String commercialReportPhone(String section) {
 }
 
 class CommercialResearchReport extends StatelessWidget {
-  const CommercialResearchReport({super.key, required this.text});
+  const CommercialResearchReport({super.key, required this.text, this.onSave});
   final String text;
+
+  /// «احفظ كفرصة»: يضيف الجهة لدفتر الفرص (الاسم، القسم كامل، الرقم).
+  final Future<void> Function(String title, String section, String phone)?
+  onSave;
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -72,6 +76,13 @@ class CommercialResearchReport extends StatelessWidget {
                   backgroundColor: const Color(0xFF15803D),
                 ),
               ),
+              if (onSave != null)
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      onSave!(title, section, commercialReportPhone(section)),
+                  icon: const Icon(Icons.bookmark_add_outlined),
+                  label: const Text('احفظ كفرصة'),
+                ),
             ],
           ],
         ),

@@ -71,6 +71,51 @@ class KhdoomCloudApi {
     return Map<String, dynamic>.from(result as Map);
   }
 
+  // ---- دفتر فرص البيع ----
+  Future<Map<String, dynamic>> leads() async {
+    final result = await _request('GET', '/api/leads');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<Map<String, dynamic>> createLead(Map<String, dynamic> data) async {
+    final result = await _request('POST', '/api/leads', body: data);
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<Map<String, dynamic>> updateLead(
+    Object id,
+    Map<String, dynamic> data,
+  ) async {
+    final result = await _request('PUT', '/api/leads/$id', body: data);
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<void> deleteLead(Object id) async {
+    await _request('DELETE', '/api/leads/$id');
+  }
+
+  Future<String> leadProfile(Object id) async {
+    final result = await _request('POST', '/api/leads/$id/profile', body: {});
+    return (result as Map)['profile']?.toString() ?? '';
+  }
+
+  Future<Map<String, dynamic>> commercialWatch() async {
+    final result = await _request('GET', '/api/commercial-watch');
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<Map<String, dynamic>> saveCommercialWatch(
+    Map<String, dynamic> data,
+  ) async {
+    final result = await _request('PUT', '/api/commercial-watch', body: data);
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<Map<String, dynamic>> createQuote(Map<String, dynamic> data) async {
+    final result = await _request('POST', '/api/quotes', body: data);
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   /// «وضعك في السوق»: مقارنة بدون أسماء ونصائح من بيانات المؤسسة.
   Future<Map<String, dynamic>> marketInsights() async {
     final result = await _request('GET', '/api/market-insights');

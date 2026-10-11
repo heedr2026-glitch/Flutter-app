@@ -50,6 +50,7 @@ import agent_devices
 import app_notices
 import ai_questions
 import market_insights
+import commercial_leads
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1407,6 +1408,7 @@ def init_db() -> None:
             agent_devices.migrate(connection, postgres=True)
             app_notices.migrate(connection, postgres=True)
             ai_questions.migrate(connection, postgres=True)
+            commercial_leads.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1818,6 +1820,7 @@ def init_db() -> None:
         agent_devices.migrate(connection)
         app_notices.migrate(connection)
         ai_questions.migrate(connection)
+        commercial_leads.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -1968,6 +1971,7 @@ def sweep_subscriptions_if_due(force: bool = False) -> None:
     try:
         with db() as notice_connection:
             app_notices.sweep(notice_connection, vehicle_tracking.in_schedule)
+            commercial_leads.sweep(notice_connection)
             notice_connection.commit()
     except Exception as error:
         print(f"APP NOTICES SWEEP ERROR: {type(error).__name__} {str(error)[:200]}")
@@ -2686,6 +2690,26 @@ a{color:#38bdf8}code{color:#fbbf24}</style></head><body><div class="wrap">
 </div></body></html>"""
             )
             return
+        quote_match = re.fullmatch(r"/q/([A-Za-z0-9_-]{10,60})(/respond)?", path)
+        if quote_match:
+            with db() as connection:
+                if quote_match.group(2) and method == "POST":
+                    try:
+                        body = self._body()
+                        result = commercial_leads.respond_quote(connection, quote_match.group(1), body.get("action"), body.get("text"))
+                    except LookupError as error:
+                        raise ApiError(404, str(error))
+                    except ValueError as error:
+                        raise ApiError(400, str(error))
+                    connection.commit()
+                    self._send(200, result)
+                    return
+                if not quote_match.group(2) and method == "GET":
+                    quote = commercial_leads.open_quote(connection, quote_match.group(1))
+                    connection.commit()
+                    self._send_html(commercial_leads.quote_page(quote), status=200 if quote else 404)
+                    return
+            raise ApiError(405, "طريقة غير مسموحة")
         if method == "GET" and path in ("/privacy", "/privacy-policy", "/terms", "/terms-of-use"):
             self._send_html(legal_pages.terms_html() if path.startswith("/terms") else legal_pages.privacy_html())
             return
@@ -4439,6 +4463,79 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
                 self._send(200, {"saved": True, "reopened": not solved})
                 return
+            if path == "/api/leads" and method in ("GET", "POST"):
+                if method == "GET":
+                    self._send(200, {"items": commercial_leads.list_leads(connection, organization_id), "statuses": commercial_leads.STATUSES})
+                    return
+                try:
+                    result = commercial_leads.create_lead(connection, organization_id, self._body())
+                except ValueError as error:
+                    raise ApiError(400, str(error))
+                connection.commit()
+                self._send(201, result)
+                return
+            lead_match = re.fullmatch(r"/api/leads/(\d+)(/profile)?", path)
+            if lead_match:
+                lead_id = int(lead_match.group(1))
+                if lead_match.group(2) and method == "POST":
+                    lead = connection.execute("SELECT * FROM commercial_leads WHERE id=? AND organization_id=?", (lead_id, organization_id)).fetchone()
+                    if lead is None:
+                        raise ApiError(404, "الفرصة غير موجودة")
+                    package, daily_limit, used = ai_allowance(connection, organization_id)
+                    if package != "vip":
+                        raise ApiError(403, "ملف الجهة من موظف البحث التجاري متاح في باقة VIP")
+                    text = ai_agent_reply(connection, organization_id, "commercial_research", commercial_leads.profile_prompt(lead), user_id=user["id"])
+                    connection.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
+                                       (organization_id, user["id"], "commercial_research", now(), user.get("current_branch")))
+                    commercial_leads.save_profile(connection, organization_id, lead_id, text)
+                    connection.commit()
+                    self._send(200, {"profile": text})
+                    return
+                if not lead_match.group(2) and method == "PUT":
+                    try:
+                        result = commercial_leads.update_lead(connection, organization_id, lead_id, self._body())
+                    except LookupError as error:
+                        raise ApiError(404, str(error))
+                    except ValueError as error:
+                        raise ApiError(400, str(error))
+                    connection.commit()
+                    self._send(200, result)
+                    return
+                if not lead_match.group(2) and method == "DELETE":
+                    if not commercial_leads.delete_lead(connection, organization_id, lead_id):
+                        raise ApiError(404, "الفرصة غير موجودة")
+                    connection.commit()
+                    self._send(200, {"deleted": True})
+                    return
+            if path == "/api/commercial-watch" and method in ("GET", "PUT"):
+                if method == "PUT":
+                    data = self._body()
+                    if data.get("enabled") is True:
+                        package, _, _ = ai_allowance(connection, organization_id)
+                        if package != "vip":
+                            raise ApiError(403, "البحث التلقائي الأسبوعي متاح في باقة VIP")
+                    try:
+                        result = commercial_leads.save_watch(connection, organization_id, data)
+                    except ValueError as error:
+                        raise ApiError(400, str(error))
+                    connection.commit()
+                else:
+                    result = commercial_leads.get_watch(connection, organization_id)
+                self._send(200, result)
+                return
+            if path == "/api/quotes" and method in ("GET", "POST"):
+                if method == "GET":
+                    self._send(200, {"items": commercial_leads.list_quotes(connection, organization_id)})
+                    return
+                try:
+                    result = commercial_leads.create_quote(connection, organization_id, self._body(), PUBLIC_BASE_URL)
+                except LookupError as error:
+                    raise ApiError(404, str(error))
+                except ValueError as error:
+                    raise ApiError(400, str(error))
+                connection.commit()
+                self._send(201, result)
+                return
             if path == "/api/market-insights" and method == "GET":
                 self._send(200, market_insights.insights(connection, organization_id))
                 return
@@ -5615,6 +5712,38 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 pass
 
 
+PUBLIC_BASE_URL = os.environ.get("KHDOOM_PUBLIC_URL", "https://khdoom-api.onrender.com")
+
+
+def commercial_watch_search(prompt: str) -> str:
+    """بحث أسبوعي حقيقي في المصادر العلنية (نفس خدمة موظف البحث التجاري)."""
+    client = ai_core.ResponsesClient()
+    response = client.transport({
+        "model": ai_core.PRIMARY_MODEL,
+        "instructions": "أنت موظف بحث تجاري لمؤسسة سعودية. ابحث بحثًا حقيقيًا في المصادر العلنية ورجّع JSON فقط كما يُطلب منك.",
+        "input": prompt, "tools": [{"type": "web_search"}], "max_output_tokens": 2500, "store": False,
+    })
+    return client.output_text(response)
+
+
+def commercial_watch_loop() -> None:
+    """البحث التجاري التلقائي الأسبوعي: يمر كل نصف ساعة على المؤسسات اللي حان بحثها."""
+    time.sleep(120)
+    while True:
+        try:
+            with db() as connection:
+                for watch in commercial_leads.due_watches(connection):
+                    commercial_leads.run_watch(connection, watch, commercial_watch_search)
+                    owner = connection.execute("SELECT id FROM users WHERE organization_id=? AND role='admin' ORDER BY id LIMIT 1", (watch["organization_id"],)).fetchone()
+                    if owner:
+                        connection.execute("INSERT INTO ai_usage(organization_id,user_id,employee_type,created_at,branch_id) VALUES(?,?,?,?,?)",
+                                           (watch["organization_id"], owner["id"], "commercial_research", now(), "main"))
+                    connection.commit()
+        except Exception as error:
+            print(f"COMMERCIAL WATCH ERROR: {type(error).__name__} {str(error)[:200]}", flush=True)
+        time.sleep(1800)
+
+
 if __name__ == "__main__":
     http_server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Khdoom API: http://{HOST}:{PORT}")
@@ -5626,6 +5755,7 @@ if __name__ == "__main__":
     STARTUP_READY = True
     print(f"Database: {DB_PATH}")
     threading.Thread(target=technical_auto_monitor, daemon=True, name="technical-auto-monitor").start()
+    threading.Thread(target=commercial_watch_loop, daemon=True, name="commercial-watch").start()
     service_monitor.start(db, DB_PATH, bool(DATABASE_URL), PORT)
     threading.Event().wait()
 
