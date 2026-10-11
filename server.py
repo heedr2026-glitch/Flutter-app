@@ -46,6 +46,7 @@ import admin_agent
 import platform_backup
 import legal_pages
 import growth_stats
+import agent_devices
 import ai_core
 import service_monitor
 import whatsapp_bridge
@@ -1400,6 +1401,7 @@ def init_db() -> None:
             call_gateway.migrate(connection, postgres=True)
             app_features.migrate(connection, postgres=True)
             platform_backup.migrate(connection, postgres=True)
+            agent_devices.migrate(connection, postgres=True)
             customer_push.migrate(connection, postgres=True)
             appointment_followups.migrate(connection)
             reception_conversations.migrate(connection)
@@ -1808,6 +1810,7 @@ def init_db() -> None:
         call_gateway.migrate(connection)
         app_features.migrate(connection)
         platform_backup.migrate(connection)
+        agent_devices.migrate(connection)
         appointment_followups.migrate(connection)
         reception_conversations.migrate(connection)
         customer_push.migrate(connection)
@@ -2424,6 +2427,28 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
         # تُستخدم فقط لتسجيل رسالة الخطأ باسم المؤسسة إن رُفض الطلب لاحقًا.
         self._actor = (row["organization_id"], row["id"])
         return row
+
+    def _agent_actor(self) -> None:
+        """موظف الإدارة: يقبل رمز «تذكّر هذا الجوال» بدل مفتاح المالك، لصفحات الموظف فقط."""
+        device = self.headers.get("X-Agent-Device", "").strip()
+        if device:
+            with db() as connection:
+                ok = agent_devices.valid(connection, device)
+                connection.commit()
+            if not ok:
+                raise ApiError(401, "انتهت صلاحية حفظ هذا الجوال، أدخل مفتاح المالك من جديد")
+            self.platform_actor = {"id": None, "name": "المالك", "role": "owner", "permissions": owner_admin.PERMISSIONS, "device": True}
+            return
+        self._owner()
+
+    def _send_bytes(self, data: bytes, content_type: str, cache: str = "public, max-age=86400") -> None:
+        self._last_status = 200
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", cache)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _owner(self) -> None:
         owner_admin.authorize(self, __import__('sys').modules[__name__])
@@ -3258,6 +3283,35 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if method == 'GET' and path == '/owner/agent':
             self._send_html((ROOT / 'owner_agent.html').read_text(encoding='utf-8'))
             return
+        if method == 'GET' and path == '/owner/agent/manifest.json':
+            manifest = {"name": "موظف خدوم", "short_name": "موظف خدوم", "start_url": "/owner/agent", "scope": "/owner/agent",
+                        "display": "standalone", "dir": "rtl", "lang": "ar", "background_color": "#0b1020", "theme_color": "#0b1020",
+                        "icons": [{"src": "/owner/agent/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                                  {"src": "/owner/agent/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}]}
+            self._send_bytes(json.dumps(manifest, ensure_ascii=False).encode('utf-8'), 'application/manifest+json; charset=utf-8')
+            return
+        if method == 'GET' and path in ('/owner/agent/icon-192.png', '/owner/agent/icon-512.png'):
+            self._send_bytes((ROOT / ('owner_agent_icon_' + path[-7:-4] + '.png')).read_bytes(), 'image/png')
+            return
+        # «تذكّر هذا الجوال»: يصدر بمفتاح المالك فقط، ويُلغى من لوحة الإدارة.
+        if path in ('/owner/api/agent/device', '/owner/api/agent/devices', '/owner/api/agent/devices/revoke'):
+            self._owner()
+            if (self.platform_actor or {}).get('role') != 'owner' or self.platform_actor.get('id') is not None:
+                raise ApiError(403, 'حفظ الأجهزة لموظف الإدارة متاح للمالك فقط')
+            with db() as connection:
+                if path == '/owner/api/agent/device' and method == 'POST':
+                    result = agent_devices.issue(connection, self._body().get('label', ''))
+                    owner_admin.audit(connection, 'المالك', 'agent_device_remembered', 'جهاز جديد لموظف الإدارة')
+                elif path == '/owner/api/agent/devices' and method == 'GET':
+                    result = {'active': agent_devices.active_count(connection)}
+                elif path == '/owner/api/agent/devices/revoke' and method == 'POST':
+                    result = {'revoked': agent_devices.revoke_all(connection)}
+                    owner_admin.audit(connection, 'المالك', 'agent_devices_revoked', str(result['revoked']))
+                else:
+                    raise ApiError(405, 'طريقة غير مسموحة')
+                connection.commit()
+            self._send(200, result)
+            return
         # نسخة احتياطية يدوية: للمالك فقط (مفتاح المالك)، وكل تنزيل يُسجل.
         if path == '/owner/api/backup' and method == 'GET':
             self._owner()
@@ -3284,7 +3338,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, result)
             return
         if path in ('/owner/api/agent/brief', '/owner/api/agent/expiring') and method == 'GET':
-            self._owner()
+            self._agent_actor()
             agent = admin_agent.Agent(db, __import__('sys').modules[__name__], self.platform_actor)
             if path.endswith('brief'):
                 result = agent.call('daily_brief', {})
@@ -3295,7 +3349,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             self._send(200, result)
             return
         if path.startswith('/owner/api/agent/') and method == 'POST':
-            self._owner()
+            self._agent_actor()
             data = self._body()
             agent = admin_agent.Agent(db, __import__('sys').modules[__name__], self.platform_actor)
             action = path.rsplit('/', 1)[1]

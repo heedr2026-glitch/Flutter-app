@@ -32,6 +32,8 @@ INSTRUCTIONS = """أنت «موظف الإدارة» في منصة خدووم، 
 للمؤسسات النايمة sleeping_organizations، ولطلبات التحويل transfer_requests، وللدخل income_summary.
 لسؤال «وش الجديد؟» أو «وش عندنا اليوم؟» استخدم daily_brief، وللاشتراكات اللي قربت تنتهي expiring_subscriptions.
 أسئلة الأرقام العامة (كم مؤسسة، كم مشترك، كم VIP، كم جديد) جاوبها من platform_stats ولا تبحث عن مؤسسة.
+الفحص التقني: حالة الخدمات وسرعتها service_health، فحص مؤسسة scan_organization، مشكلة عامة بدون رقم شكوى diagnose_problem، وإعادة فحص شكوى recheck_complaint.
+إذا فحصت شكوى وطلعت كل الفحوصات سليمة، اقترح على المدير ترد على المشترك وتقفلها كمحلولة بـ propose_complaint_reply.
 أسئلة مستخدمي مؤسسة من organization_users، وإعادة كلمة المرور من password_resets، والعروض والأكواد من current_offers.
 
 إذا فيه شكاوى بدون رد من الإدارة أكثر من 24 ساعة (overdue_complaints_no_admin_reply_24h في daily_brief) نبّه المدير عليها أول شي، وابدأ بشكاوى VIP. وإذا فيه possible_outage قل له «فيه عطل عام محتمل» قبل أي شي.
@@ -52,6 +54,7 @@ PERMISSION = {
     "propose_transfer_decision": "packages", "propose_complaint_reply": "support",
     "organization_users": "organizations.view", "password_resets": "organizations.view", "propose_update_organization": "organizations.edit",
     "propose_subscription": "packages", "propose_offer": "offers", "propose_ad_decision": "ads", "propose_discount_code": "codes",
+    "service_health": "security", "scan_organization": "support", "diagnose_problem": "support",
 }
 
 _obj = lambda props, required=(): {"type": "object", "properties": props, "required": list(required), "additionalProperties": False}
@@ -66,6 +69,12 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": _obj({"reference": {"type": "string"}}, ["reference"])},
     {"type": "function", "name": "platform_status", "description": "وضع المنصة الحالي: الخدمات والشكاوى المفتوحة والمتأخرة",
      "parameters": _obj({})},
+    {"type": "function", "name": "service_health", "description": "آخر نتائج المراقب التلقائي للخدمات (السيرفر، قاعدة البيانات، الإشعارات، الذكاء) وسرعتها",
+     "parameters": _obj({})},
+    {"type": "function", "name": "scan_organization", "description": "فحص تقني فعلي لمؤسسة: الحساب، الدخول، الباقة، الرصيد، المستخدمون، الربط",
+     "parameters": _obj({"organization_id": {"type": "integer"}}, ["organization_id"])},
+    {"type": "function", "name": "diagnose_problem", "description": "تشخيص تقني لمشكلة يوصفها المدير (مثل بطء الصفحات أو خدمة ما تشتغل) حتى لو ما لها رقم شكوى",
+     "parameters": _obj({"question": {"type": "string"}}, ["question"])},
     {"type": "function", "name": "pending_ads", "description": "طلبات الإعلانات الجديدة التي تنتظر الموافقة",
      "parameters": _obj({})},
     {"type": "function", "name": "daily_brief", "description": "تقرير اليوم: مؤسسات جديدة، شكاوى مفتوحة ومتأخرة، اشتراكات تنتهي خلال 7 أيام، طلبات إعلانات وتحويلات تنتظر، وحالة الخدمات. استخدمه لسؤال «وش الجديد؟»",
@@ -206,6 +215,22 @@ class Agent:
     def platform_status(self, c, **_):
         report = self._dispatch(c, "technical-ai/daily-report", "GET")
         return {k: report.get(k) for k in ("checkedAt", "summary", "serviceChecks", "counts", "overdueTickets", "recommendations") if isinstance(report, dict)}
+
+    def service_health(self, c, **_):
+        import service_monitor
+        return service_monitor.snapshot()
+
+    def scan_organization(self, c, organization_id: Any = None, **_):
+        org = _organization(c, organization_id)
+        return self._dispatch(c, "technical-ai/organization/%d/scan" % org["id"], "POST")
+
+    def diagnose_problem(self, c, question: Any = None, **_):
+        text = " ".join(str(question or "").split())[:1000]
+        if len(text) < 3:
+            raise ValueError("وش المشكلة اللي تبيني أفحصها؟")
+        result = self._dispatch(c, "technical-ai/ask", "POST", {"question": text, "_rule": True})
+        keep = ("answer", "diagnosis", "proposal", "problemType", "suggestedAction", "limitations", "checks")
+        return {k: result.get(k) for k in keep if isinstance(result, dict) and k in result} or {"result": result}
 
     def pending_ads(self, c, **_):
         out = self._dispatch(c, "ads", "GET", query={"status": "pending"})

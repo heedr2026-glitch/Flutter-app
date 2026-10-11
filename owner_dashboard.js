@@ -899,3 +899,24 @@ const khdoomGrowthRender=render;render=async function(){await khdoomGrowthRender
  }catch(err){body.className='muted';body.textContent=err.message}};
  $('growthDays').onchange=load;load();
 };
+
+// موظف واحد: الموظف التقني صار ضمن «موظف الإدارة» (يفحص ويشخّص ويرد ويقفل بعد «أكد»).
+// صفحة الموظف التقني القديمة تبقى سجلًا للمهام فقط، والمحادثة تنتقل لموظف الإدارة.
+const khdoomUnifiedAgentRender=render;render=async function(){await khdoomUnifiedAgentRender();
+ const old=$('technicalAiLink');if(old){old.textContent='🤖 فتح موظف الإدارة (الفحص التقني والتنفيذ)';old.onclick=()=>{location.href='/owner/agent'}}
+ if(current==='technical-ai'||current==='ai-admin'){
+  ['technicalAsk','technicalAskResult'].forEach(id=>{const n=$(id);if(n)n.remove()});
+  const chat=document.getElementById('khdoomAiChat');if(chat){const box=chat.closest('.panel')||chat.parentElement;if(box)box.remove()}
+  if(!$('unifiedAgentNote')){const p=document.createElement('div');p.id='unifiedAgentNote';p.className='panel';p.style.borderRight='5px solid #0ea5e9';
+   p.innerHTML='<h3>الموظف التقني صار داخل «موظف الإدارة»</h3><p class="muted">اسأله عن أي مشكلة أو شكوى: يفحص الخدمات والمؤسسة ويشخّص، ويقدر يرد على المشترك ويقفل الشكوى بعد ما تقول «أكد». هذي الصفحة صارت سجل المهام السابقة فقط.</p><button type="button" class="primary">فتح موظف الإدارة</button>';
+   p.querySelector('button').onclick=()=>{location.href='/owner/agent'};$('content').prepend(p)}
+ }
+};
+
+// الأجهزة المحفوظة لموظف الإدارة («تذكّر هذا الجوال»): عددها وزر إلغائها، للمالك فقط.
+const khdoomAgentDevicesRender=render;render=async function(){await khdoomAgentDevicesRender();if(current!=='home'||$('agentDevices')||!ownerKey||token)return;
+ try{const r=await fetch('/owner/api/agent/devices',{headers:{'X-Owner-Key':ownerKey},cache:'no-store'});if(!r.ok)return;const d=await r.json();if(current!=='home'||$('agentDevices'))return;
+  const p=document.createElement('p');p.id='agentDevices';p.className='muted';
+  p.innerHTML='📱 أجوال محفوظة لموظف الإدارة: <b>'+esc(d.active)+'</b>'+(d.active?' <button type="button">إلغاء كل الأجهزة المحفوظة</button>':'');
+  const b=p.querySelector('button');if(b)b.onclick=async()=>{if(!confirm('إلغاء كل الأجوال المحفوظة؟ بيطلب منها مفتاح المالك من جديد.'))return;const x=await fetch('/owner/api/agent/devices/revoke',{method:'POST',headers:{'X-Owner-Key':ownerKey,'Content-Type':'application/json'},body:'{}'});flash(x.ok?'تم إلغاء الأجهزة المحفوظة ✓':'تعذر الإلغاء');p.remove();render()};
+  const anchor=$('agentLink')||$('dailyBrief');if(anchor)anchor.after(p);else $('content').prepend(p)}catch(_){}};

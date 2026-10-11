@@ -1,4 +1,4 @@
-<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف الإدارة</title>
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>موظف الإدارة</title><link rel="manifest" href="/owner/agent/manifest.json"><meta name="theme-color" content="#0b1020"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><link rel="apple-touch-icon" href="/owner/agent/icon-192.png"><link rel="icon" href="/owner/agent/icon-192.png">
 <style>
 body{background:#0b1020;color:#fff;font-family:Tahoma,sans-serif;margin:0;padding:24px;line-height:1.8}
 main{max-width:760px;margin:auto}
@@ -20,13 +20,19 @@ button.ok{background:#15803d;border-color:#86efac}
 .turn b{display:block;font-size:.85em;color:#bae6fd}
 .pending{border:2px solid #fbbf24;border-radius:14px;padding:12px;margin:10px 0;background:#1c1917}
 .muted{color:#cbd5e1;font-size:.92em}
+label.check{display:flex;align-items:center;gap:10px}label.check input{width:auto;margin:0}
+.saved{color:#86efac}
 </style></head><body><main>
 <a href="/owner">لوحة المالك</a>
 <h1>موظف الإدارة</h1>
 <p class="muted">اسأله أو أعطه أمر بالكتابة أو بالصوت: «شيك الشكوى 22»، «وش وضع مؤسسة مراتك؟»، «مدد اشتراكهم 30 يوم»، «سو عرض 6 شهور ويضاف شهر للأساسية»، «وش طلبات الإعلانات الجديدة؟». أي تعديل ما يتنفذ إلا بعد ما تقول «أكد» أو تضغط زر التأكيد.</p>
 
 <section class="card">
-<label for="key">مفتاح المالك</label><input id="key" type="password" autocomplete="off">
+<div id="keyBox"><label for="key">مفتاح المالك</label><input id="key" type="password" autocomplete="off">
+<label class="check"><input id="remember" type="checkbox"> تذكّر هذا الجوال 30 يوم (بدون ما تكتب المفتاح كل مرة)</label>
+<p class="muted">الجوال ما يحفظ المفتاح نفسه، يحفظ رمز دخول خاص تقدر تلغيه من لوحة الإدارة. خل قفل الشاشة شغال في جوالك.</p></div>
+<div id="savedBox" hidden><p class="saved">✓ هذا الجوال محفوظ، تقدر تستخدم الموظف بدون مفتاح.</p><button id="forget" type="button" class="stop">خروج من هذا الجوال</button></div>
+<p class="muted" id="installHint">💡 تبيه مثل التطبيق؟ من قائمة المتصفح ⋮ اختر «إضافة إلى الشاشة الرئيسية».</p>
 <div id="pendingBox"></div>
 </section>
 
@@ -50,7 +56,17 @@ button.ok{background:#15803d;border-color:#86efac}
 </main>
 <script>
 const $=id=>document.getElementById(id);
-const hdr=()=>({'Content-Type':'application/json','X-Owner-Key':$('key').value.trim()});
+const DEVICE_KEY='khadoum_agent_device';
+function deviceToken(){try{return localStorage.getItem(DEVICE_KEY)||''}catch(e){return ''}}
+function setDevice(token){try{token?localStorage.setItem(DEVICE_KEY,token):localStorage.removeItem(DEVICE_KEY)}catch(e){}showAuth()}
+function showAuth(){const saved=!!deviceToken()&&!$('key').value.trim();$('keyBox').hidden=saved;$('savedBox').hidden=!saved;if(window.matchMedia&&matchMedia('(display-mode: standalone)').matches)$('installHint').hidden=true}
+function authReady(){return !!($('key').value.trim()||deviceToken())}
+const hdr=()=>{const key=$('key').value.trim(),h={'Content-Type':'application/json'};if(key)h['X-Owner-Key']=key;else if(deviceToken())h['X-Agent-Device']=deviceToken();return h};
+async function api(url,opts){const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(r.status===401&&!$('key').value.trim()&&deviceToken()){setDevice('');throw new Error('انتهى حفظ هذا الجوال، أدخل مفتاح المالك من جديد.')}return {r,d}}
+async function remember(){if(!$('remember').checked)return;const key=$('key').value.trim();if(!key){$('remember').checked=false;say('اكتب مفتاح المالك أول، بعدها اختر «تذكّر هذا الجوال».');return}
+ try{const {r,d}=await api('/owner/api/agent/device',{method:'POST',headers:{'Content-Type':'application/json','X-Owner-Key':key},body:JSON.stringify({label:navigator.userAgent.slice(0,80)})});if(!r.ok)throw new Error(d.error||'تعذر حفظ الجوال');
+  try{localStorage.setItem(DEVICE_KEY,d.token)}catch(e){throw new Error('المتصفح ما يسمح بالحفظ، جرّب كروم بدون التصفح الخفي')}
+  $('key').value='';$('remember').checked=false;showAuth();say('تم حفظ هذا الجوال 30 يوم ✓')}catch(e){$('remember').checked=false;say(e.message)}}
 function esc(t){const d=document.createElement('div');d.textContent=String(t??'');return d.innerHTML}
 function say(t){$('status').textContent=t}
 let chatHistory=[],order=[],turns={},pc=null,dc=null,mic=null,lastUserText='',lastUserAt=0,lastSpeechStop=0;
@@ -73,11 +89,11 @@ function settle(token,text){const box=$('p-'+token);if(box)box.innerHTML=text}
 
 async function send(){
   const text=$('message').value.trim();if(!text)return;
-  if(!$('key').value.trim()){say('أدخل مفتاح المالك أولًا.');return}
+  if(!authReady()){say('أدخل مفتاح المالك أولًا.');return}
   $('message').value='';const past=chatHistory.slice(-10);add('user',text);$('send').disabled=true;
   try{
-    const r=await fetch('/owner/api/agent/chat',{method:'POST',headers:hdr(),body:JSON.stringify({message:text,history:past})});
-    const d=await r.json();if(!r.ok)throw new Error(d.error||'تعذر الرد');
+    const {r,d}=await api('/owner/api/agent/chat',{method:'POST',headers:hdr(),body:JSON.stringify({message:text,history:past})});
+    if(!r.ok)throw new Error(d.error||'تعذر الرد');
     add('agent',d.answer);(d.pending||[]).forEach(showPending);
   }catch(e){add('agent','⚠️ '+e.message)}finally{$('send').disabled=false}
 }
@@ -116,15 +132,15 @@ function onEvent(message){
   else if(type==='error')say('تنبيه من خدمة الصوت: '+((ev.error&&ev.error.message)||'خطأ غير معروف'));
 }
 async function startCall(){
-  if(!$('key').value.trim()){say('أدخل مفتاح المالك أولًا.');return}
+  if(!authReady()){say('أدخل مفتاح المالك أولًا.');return}
   if(!navigator.mediaDevices||!window.RTCPeerConnection){say('هذا المتصفح لا يدعم المكالمة. جرّب Chrome أو Edge.');return}
   $('start').disabled=true;$('stop').disabled=false;
   try{
     say('نطلب إذن المايك…');
     mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
     say('نجهّز الموظف…');
-    const r=await fetch('/owner/api/agent/voice-session',{method:'POST',headers:hdr(),body:JSON.stringify({voice:$('voice').value})});
-    const session=await r.json();if(!r.ok)throw new Error(session.error||'تعذر بدء المكالمة');
+    const {r,d:session}=await api('/owner/api/agent/voice-session',{method:'POST',headers:hdr(),body:JSON.stringify({voice:$('voice').value})});
+    if(!r.ok)throw new Error(session.error||'تعذر بدء المكالمة');
     pc=new RTCPeerConnection();pc.ontrack=e=>{$('voiceOut').srcObject=e.streams[0]};
     pc.addTrack(mic.getTracks()[0],mic);
     dc=pc.createDataChannel('oai-events');dc.onmessage=onEvent;dc.onopen=()=>say('المكالمة شغالة. تكلم.');
@@ -142,4 +158,5 @@ function stopCall(text){
   $('start').disabled=false;$('stop').disabled=true;say(text||'انتهت المكالمة.');
 }
 $('start').onclick=startCall;$('stop').onclick=()=>stopCall();
+$('remember').onchange=remember;$('forget').onclick=()=>{setDevice('');say('تم الخروج من هذا الجوال.')};$('key').addEventListener('input',showAuth);showAuth();
 </script></body></html>
