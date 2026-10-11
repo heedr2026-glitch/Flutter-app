@@ -59,3 +59,30 @@ class AgentDevicesTest(AdminAgentTest):
 
 for name in [n for n in dir(AgentDevicesTest) if n.startswith('test_') and n not in ('test_remember_device_then_revoke', 'test_home_screen_manifest_and_icon', 'test_technical_tools_inside_admin_agent')]:
     setattr(AgentDevicesTest, name, None)
+
+
+class DashboardDeviceTest(AgentDevicesTest):
+    def test_dashboard_device_works_but_sensitive_actions_need_key(self):
+        self.assertEqual(self.call('/owner/api/dashboard-device', 'POST', {}, user=1)[0], 401)
+        status, issued = self.call('/owner/api/dashboard-device', 'POST', {})
+        self.assertEqual((status, issued['days']), (200, 7))
+        dev = {'X-Owner-Device': issued['token']}
+        self.assertEqual(self.raw('/owner/api/v2/me', headers=dev)[0], 200)
+        self.assertEqual(self.raw('/owner/api/v2/support', headers=dev)[0], 200)
+        self.assertEqual(self.raw('/owner/api/growth', headers=dev)[0], 200)
+        self.assertEqual(self.raw('/owner/api/agent/brief', headers=dev)[0], 200)
+        # الخطير يطلب المفتاح.
+        self.assertEqual(self.raw('/owner/api/backup', headers=dev)[0], 401)
+        self.assertEqual(self.raw('/owner/api/dashboard-device', 'POST', {}, dev)[0], 401)
+        self.assertEqual(self.raw('/owner/api/agent/device', 'POST', {}, dev)[0], 401)
+        self.assertEqual(self.raw('/owner/api/v2/support/1', 'DELETE', None, dev)[0], 401)
+        # رمز موظف الإدارة ما يفتح لوحة الإدارة.
+        agent = self.call('/owner/api/agent/device', 'POST', {})[1]['token']
+        self.assertEqual(self.raw('/owner/api/v2/me', headers={'X-Owner-Device': agent})[0], 401)
+        self.assertEqual(self.raw('/owner/manifest.json')[0], 200)
+        self.call('/owner/api/agent/devices/revoke', 'POST', {})
+        self.assertEqual(self.raw('/owner/api/v2/me', headers=dev)[0], 401)
+
+
+for name in [n for n in dir(DashboardDeviceTest) if n.startswith('test_') and n != 'test_dashboard_device_works_but_sensitive_actions_need_key']:
+    setattr(DashboardDeviceTest, name, None)

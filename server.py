@@ -2430,7 +2430,7 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
 
     def _agent_actor(self) -> None:
         """موظف الإدارة: يقبل رمز «تذكّر هذا الجوال» بدل مفتاح المالك، لصفحات الموظف فقط."""
-        device = self.headers.get("X-Agent-Device", "").strip()
+        device = self.headers.get("X-Agent-Device", "").strip() or self.headers.get("X-Owner-Device", "").strip()
         if device:
             with db() as connection:
                 ok = agent_devices.valid(connection, device)
@@ -3283,6 +3283,23 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         if method == 'GET' and path == '/owner/agent':
             self._send_html((ROOT / 'owner_agent.html').read_text(encoding='utf-8'))
             return
+        if method == 'GET' and path == '/owner/manifest.json':
+            manifest = {"name": "إدارة خدوم", "short_name": "إدارة خدوم", "start_url": "/owner", "scope": "/owner",
+                        "display": "standalone", "dir": "rtl", "lang": "ar", "background_color": "#0b1020", "theme_color": "#0b1020",
+                        "icons": [{"src": "/owner/agent/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                                  {"src": "/owner/agent/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}]}
+            self._send_bytes(json.dumps(manifest, ensure_ascii=False).encode('utf-8'), 'application/manifest+json; charset=utf-8')
+            return
+        if path == '/owner/api/dashboard-device' and method == 'POST':
+            self._owner()
+            if (self.platform_actor or {}).get('role') != 'owner' or self.platform_actor.get('id') is not None or self.platform_actor.get('device'):
+                raise ApiError(403, 'حفظ الجهاز متاح للمالك فقط')
+            with db() as connection:
+                result = agent_devices.issue(connection, self._body().get('label', ''), 'dashboard')
+                owner_admin.audit(connection, 'المالك', 'dashboard_device_remembered', 'جهاز جديد للوحة الإدارة')
+                connection.commit()
+            self._send(200, result)
+            return
         if method == 'GET' and path == '/owner/agent/manifest.json':
             manifest = {"name": "موظف خدوم", "short_name": "موظف خدوم", "start_url": "/owner/agent", "scope": "/owner/agent",
                         "display": "standalone", "dir": "rtl", "lang": "ar", "background_color": "#0b1020", "theme_color": "#0b1020",
@@ -3296,7 +3313,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         # «تذكّر هذا الجوال»: يصدر بمفتاح المالك فقط، ويُلغى من لوحة الإدارة.
         if path in ('/owner/api/agent/device', '/owner/api/agent/devices', '/owner/api/agent/devices/revoke'):
             self._owner()
-            if (self.platform_actor or {}).get('role') != 'owner' or self.platform_actor.get('id') is not None:
+            if (self.platform_actor or {}).get('role') != 'owner' or self.platform_actor.get('id') is not None or self.platform_actor.get('device'):
                 raise ApiError(403, 'حفظ الأجهزة لموظف الإدارة متاح للمالك فقط')
             with db() as connection:
                 if path == '/owner/api/agent/device' and method == 'POST':
@@ -3315,7 +3332,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
         # نسخة احتياطية يدوية: للمالك فقط (مفتاح المالك)، وكل تنزيل يُسجل.
         if path == '/owner/api/backup' and method == 'GET':
             self._owner()
-            if (self.platform_actor or {}).get('role') != 'owner' or self.platform_actor.get('id') is not None:
+            if (self.platform_actor or {}).get('role') != 'owner' or self.platform_actor.get('id') is not None or self.platform_actor.get('device'):
                 raise ApiError(403, 'النسخة الاحتياطية متاحة للمالك فقط')
             with db() as connection:
                 data, summary = platform_backup.export(connection, bool(DATABASE_URL), self.platform_actor['name'])

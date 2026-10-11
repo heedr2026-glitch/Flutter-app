@@ -252,11 +252,23 @@ def permission(path,method):
  if p.startswith('organizations'): return 'organizations.view' if method=='GET' else 'packages' if p.endswith('/package') else 'organizations.edit'
  return 'admins'
 
+# مع «تذكّر هذا الجهاز» في لوحة الإدارة: هذي الأشياء الخطيرة تطلب مفتاح المالك دائمًا.
+DEVICE_BLOCKED=('/owner/api/backup','/owner/api/agent/device','/owner/api/v2/admins','/owner/api/v2/settings','/owner/api/v2/export','/owner/api/v2/me/2fa','/owner/api/payment','/owner/api/security/emergency','/owner/api/services','/owner/api/dashboard-device')
+def device_blocked(path,method):
+ return method=='DELETE' or path.startswith(DEVICE_BLOCKED) or (path.startswith('/owner/api/v2/directory') and method!='GET')
 def authorize(h,s):
  expected=s.os.environ.get('KHDOOM_OWNER_KEY','').strip()
  if not expected and s.OWNER_KEY_PATH.exists(): expected=s.OWNER_KEY_PATH.read_text(encoding='utf-8').strip()
  supplied=h.headers.get('X-Owner-Key','')
+ device=h.headers.get('X-Owner-Device','').strip()
  if supplied and expected and hmac.compare_digest(supplied,expected): actor={'id':None,'name':'المالك','role':'owner','permissions':PERMISSIONS}
+ elif device and not supplied and not h.headers.get('X-Admin-Session',''):
+  import agent_devices
+  with s.db() as c:
+   ok=agent_devices.valid(c,device,('dashboard',)); c.commit()
+  if not ok: raise s.ApiError(401,'انتهى حفظ هذا الجهاز، ادخل بمفتاح المالك من جديد')
+  if device_blocked(urlparse(h.path).path.rstrip('/'),h.command): raise s.ApiError(401,'هذا الإجراء حساس ويحتاج مفتاح المالك. اطلع وادخل بالمفتاح ثم أعد المحاولة')
+  actor={'id':None,'name':'المالك','role':'owner','permissions':PERMISSIONS,'device':True}
  else:
   token=h.headers.get('X-Admin-Session','')
   with s.db() as c:
