@@ -4463,6 +4463,11 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 connection.commit()
                 self._send(200, {"saved": True, "reopened": not solved})
                 return
+            # البحث التجاري كله (الدفتر وروابط عرض السعر والبحث الأسبوعي) لباقة VIP فقط.
+            if path == "/api/leads" or path.startswith("/api/leads/") or path in ("/api/quotes", "/api/commercial-watch"):
+                vip_package, _, _ = ai_allowance(connection, organization_id)
+                if vip_package != "vip":
+                    raise ApiError(403, "موظف البحث التجاري ودفتر الفرص متاحة في باقة VIP")
             if path == "/api/leads" and method in ("GET", "POST"):
                 if method == "GET":
                     self._send(200, {"items": commercial_leads.list_leads(connection, organization_id), "statuses": commercial_leads.STATUSES})

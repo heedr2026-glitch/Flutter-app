@@ -25,8 +25,12 @@ class CommercialLeadsTest(ServiceNumberClaimsTest):
         self.assertEqual((status, lead['duplicate']), (201, False))
         self.assertTrue(self.call('/api/leads', 'POST', {'name': 'مؤسسة البناء الحديث'}, user=1)[1]['duplicate'])
         self.assertEqual(self.call('/api/leads', 'POST', {'name': 'x'}, user=1)[0], 400)
-        self.assertEqual(self.call('/api/leads', user=2)[1]['items'], [])
-        self.assertEqual(self.call(f"/api/leads/{lead['id']}", 'PUT', {'status': 'contacted'}, user=2)[0], 404)
+        # المؤسسة 2 مو VIP: الدفتر مقفول عليها.
+        with server.db() as c:
+            c.execute("UPDATE subscriptions SET package='basic' WHERE organization_id=2"); c.commit()
+        self.assertEqual(self.call('/api/leads', user=2)[0], 403)
+        self.assertEqual(self.call('/api/quotes', 'POST', {'items': [{'title': 'x', 'price': 1}]}, user=2)[0], 403)
+        self.assertEqual(self.call(f"/api/leads/{lead['id']}", 'PUT', {'status': 'contacted'}, user=2)[0], 403)
         out = self.call(f"/api/leads/{lead['id']}", 'PUT', {'status': 'contacted'}, user=1)[1]
         self.assertTrue(out['next_follow_up'])
         self.assertEqual(self.call(f"/api/leads/{lead['id']}", 'PUT', {'status': 'bogus'}, user=1)[0], 400)
