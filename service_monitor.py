@@ -158,7 +158,7 @@ def snapshot():
             row = rows.get(key, {'service': key, 'status': 'unknown', 'detail': 'بانتظار أول فحص.', 'metrics': '{}', 'checked': None})
             row['name'] = name
             row['metrics'] = json.loads(row['metrics'])
-            stale_after = max(120, (_number('KHDOOM_AI_PROBE_INTERVAL_SECONDS') or 3600)*2) if key == 'openai' else max(120, (_number('KHDOOM_MONITOR_INTERVAL_SECONDS') or 300)*2)
+            stale_after = max(120, (_number('KHDOOM_AI_PROBE_INTERVAL_SECONDS') or 3600)*2) if key == 'openai' else max(120, (_number('KHDOOM_MONITOR_INTERVAL_SECONDS') or 1800)*2)
             row['stale'] = row['checked'] is None or now-row['checked'] > stale_after
             if row['stale']:
                 row['status'] = 'unknown'
@@ -179,7 +179,7 @@ def start(db_factory, db_path, postgres=False, port=None):
         return
     configure(os.environ.get('KHDOOM_MONITOR_DB', str(Path(db_path).with_name('service-monitor.db'))))
     def loop():
-        while not _stop.wait(2 if not _worker_ready[0] else max(60, _number('KHDOOM_MONITOR_INTERVAL_SECONDS') or 300)):
+        while not _stop.wait(2 if not _worker_ready[0] else max(60, _number('KHDOOM_MONITOR_INTERVAL_SECONDS') or 1800)):
             _worker_ready[0] = True
             try:
                 run_checks(db_factory, db_path, postgres, port)

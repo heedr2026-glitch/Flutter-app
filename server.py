@@ -350,6 +350,13 @@ def record_organization_error(handler, method: str, status: int, message: str) -
         pass
 
 
+def _technical_monitor_seconds() -> float:
+    try:
+        return max(60.0, float(os.environ.get("KHDOOM_TECH_MONITOR_SECONDS", "900")))
+    except ValueError:
+        return 900.0
+
+
 def technical_auto_monitor() -> None:
     """Create a bounded diagnostic task when a login outage pattern appears."""
     while True:
@@ -403,7 +410,8 @@ def technical_auto_monitor() -> None:
             technical_support.interpret_pending(__import__('sys').modules[__name__], owner_admin)
         except Exception as error:
             print(f"TECHNICAL MONITOR ERROR: {type(error).__name__}", flush=True)
-        time.sleep(60)
+        # كل 15 دقيقة افتراضيًا (بدل كل دقيقة) حتى تقدر قاعدة البيانات تنام وتوفّر التكلفة.
+        time.sleep(_technical_monitor_seconds())
 
 
 def insert_chat_message(connection: Any, organization_id: int, session_id: int,
@@ -469,11 +477,12 @@ def postgres_pool():
             if _postgres_pool is None:
                 size = max(2, min(16, int(os.environ.get("KHDOOM_DB_POOL_SIZE", "8"))))
                 # فتح اتصال جديد يكلف عدة رحلات لقاعدة البيانات؛ نبقي عددًا جاهزًا للطلبات المتزامنة.
-                ready = max(1, min(size, int(os.environ.get("KHDOOM_DB_POOL_MIN", "4"))))
+                # صفر اتصالات جاهزة افتراضيًا: الاتصالات الخاملة تتسكر فتقدر قاعدة البيانات تنام.
+                ready = max(0, min(size, int(os.environ.get("KHDOOM_DB_POOL_MIN", "0"))))
                 pool = ConnectionPool(
                     conninfo=DATABASE_URL, min_size=ready, max_size=size,
                     kwargs={"row_factory": dict_row, "connect_timeout": 10},
-                    timeout=20, max_idle=300, max_lifetime=1800, open=True,
+                    timeout=20, max_idle=120, max_lifetime=1800, open=True,
                 )
                 atexit.register(pool.close)
                 _postgres_pool = pool
@@ -2488,11 +2497,13 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
             # zero-downtime handover; normal endpoints remain on the existing
             # startup path until initialization has completed.
             database_status = "ok"
-            try:
-                with db() as health_connection:
-                    health_connection.execute("SELECT 1").fetchone()
-            except Exception:
-                database_status = "degraded"
+            # فحص Render المتكرر ما يلمس قاعدة البيانات حتى لا يصحّيها؛ الفحص العميق فقط مع ?deep=1
+            if "deep=1" in (urlparse(self.path).query or ""):
+                try:
+                    with db() as health_connection:
+                        health_connection.execute("SELECT 1").fetchone()
+                except Exception:
+                    database_status = "degraded"
             self._send(200, {"status": "ok" if STARTUP_READY and database_status == "ok" else "degraded", "databasePooling": bool(DATABASE_URL and ConnectionPool is not None and _postgres_pool is not None), "service": "khdoom-api", "services": {"api": "ok", "database": database_status, "whatsapp": "configured" if whatsapp_is_configured() else "not_configured", "ai": "configured" if (os.environ.get("KHDOOM_AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()) else "not_configured", "calls": "configured" if os.environ.get("KHDOOM_CALLS_WEBHOOK_SECRET", "").strip() else "not_configured"}})
             return
         # ما يظهر من خدمات في التطبيق (الواتساب والمكالمات)؛ تتحكم به الإدارة. لا يحوي أي بيانات خاصة.
