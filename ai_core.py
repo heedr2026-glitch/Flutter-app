@@ -15,6 +15,15 @@ from urllib.request import Request, urlopen
 
 
 PRIMARY_MODEL = "gpt-5.6-sol"
+# «اسألني» يستخدم نموذجًا أسرع؛ يمكن تغييره من Render عبر KHDOOM_ASSISTANT_MODEL
+ASSISTANT_MODEL = "gpt-5-mini"
+FAST_ROLES = ("assistant",)
+
+
+def model_for_role(role: str) -> str:
+    if role in FAST_ROLES:
+        return os.environ.get("KHDOOM_ASSISTANT_MODEL", "").strip() or ASSISTANT_MODEL
+    return PRIMARY_MODEL
 RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 
@@ -409,6 +418,7 @@ class AgentService:
         ]
         if role.web_search:
             tools.append({"type": "web_search"})
+        model = model_for_role(context.role)
         safety_id = hashlib.sha256(f"khdoom:{context.company_id}:{context.user_id or context.session_id or 0}".encode()).hexdigest()[:64]
         for _ in range(5):
             activity = str(snapshot.get("activity_profile", {}).get("activity") or snapshot.get("company", {}).get("activity") or "").strip()
@@ -416,8 +426,16 @@ class AgentService:
             instructions = role.instructions + "\n\nملف تشغيل المؤسسة الحالي (بيانات موثوقة خاصة بهذه المؤسسة فقط):\n" + profile_text
             instructions += "\nنشاط المؤسسة: " + (activity or "غير محدد") + "\nدليل جمع المعلومات حسب النشاط: " + activity_playbook(activity)
             instructions += "\nاستخدم هذه التعليمات لتغيير أسئلتك وسياقك، ولا تنشئ نموذجًا مختلفًا. إذا تعارضت معلومة عامة مع ملف المؤسسة، التزم بملف المؤسسة ولا تخترع."
-            payload = {"model": PRIMARY_MODEL, "instructions": instructions, "input": input_items, "tools": tools, "parallel_tool_calls": False, "max_output_tokens": 1800, "store": False, "safety_identifier": safety_id}
-            response = self.client.transport(payload)
+            payload = {"model": model, "instructions": instructions, "input": input_items, "tools": tools, "parallel_tool_calls": False, "max_output_tokens": 1800, "store": False, "safety_identifier": safety_id}
+            try:
+                response = self.client.transport(payload)
+            except AIServiceError as error:
+                # إذا رفض النموذج السريع، نرجع تلقائيًا للنموذج الأساسي حتى لا يتوقف «اسألني»
+                if model == PRIMARY_MODEL or error.status not in (400, 403, 404):
+                    raise
+                model = PRIMARY_MODEL
+                payload["model"] = model
+                response = self.client.transport(payload)
             calls = [item for item in response.get("output", []) if isinstance(item, dict) and item.get("type") == "function_call"]
             if not calls:
                 text = self.client.output_text(response)
