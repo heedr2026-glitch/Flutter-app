@@ -127,7 +127,7 @@ def quote_branch(c,org,period='monthly',claim=False):
     p=policy(c,org)
     if not p['allow_branches']:raise ValueError('هذه الباقة لا تسمح بإضافة فروع')
     count=admin.scalar(c,"SELECT COUNT(*) n FROM organization_branches WHERE organization_id=? AND id<>'main' AND status<>'rejected'",(org,))
-    configured_limit=package_limits.limit(c,p['package'],'branches')
+    configured_limit=package_limits.effective_limit(c,p['package'],'branches',org)
     if configured_limit is not None and count>=configured_limit:
         raise ValueError('تم بلوغ حد الفروع المحدد لهذه الباقة')
     if p['max_branches'] is not None and count>=p['max_branches']:raise ValueError('تم بلوغ الحد الأقصى للفروع')

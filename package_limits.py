@@ -122,3 +122,72 @@ def save_limits(connection, payload):
             (package, stored_employees, stored_vehicles, 100000 if users is None else users, branches, org_notifications, employee_notifications),
         )
     return read_limits(connection)
+
+
+# ---------------------------------------------------------------------------
+# حدود خاصة بمؤسسة واحدة: تتقدّم على حد الباقة لهذه المؤسسة فقط.
+# عدم وجود صف = تتبع حد الباقة. القيمة NULL = بلا حد.
+ORG_RESOURCES = ("employees", "vehicles", "branches")
+_UNLIMITED = -1
+
+
+def initialize_org(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS organization_resource_limits (
+        organization_id INTEGER NOT NULL,
+        resource TEXT NOT NULL,
+        value INTEGER NOT NULL,
+        PRIMARY KEY (organization_id, resource)
+    )""")
+
+
+def org_overrides(connection, organization_id):
+    try:
+        rows = connection.execute(
+            "SELECT resource, value FROM organization_resource_limits WHERE organization_id=?",
+            (organization_id,),
+        ).fetchall()
+    except Exception:
+        return {}
+    result = {}
+    for row in rows:
+        value = _row_value(row, "value", 1)
+        result[_row_value(row, "resource", 0)] = None if value == _UNLIMITED else int(value)
+    return result
+
+
+def effective_limit(connection, package, resource, organization_id=None):
+    """حد المؤسسة الخاص إن وُجد، وإلا حد الباقة. None = بلا حد."""
+    if organization_id is not None and resource in ORG_RESOURCES:
+        overrides = org_overrides(connection, organization_id)
+        if resource in overrides:
+            return overrides[resource]
+    return limit(connection, package, resource)
+
+
+def save_org_limits(connection, organization_id, payload):
+    """payload: {resource: int | "unlimited" | None}; None يعني الرجوع لحد الباقة."""
+    if not isinstance(payload, dict):
+        raise ValueError("بيانات الحدود غير صحيحة")
+    cleaned = {}
+    for resource, value in payload.items():
+        if resource not in ORG_RESOURCES:
+            raise ValueError("نوع الحد غير معروف")
+        if value is None or value == "":
+            cleaned[resource] = None
+        elif value == "unlimited":
+            cleaned[resource] = _UNLIMITED
+        elif type(value) is int and 0 <= value <= 100000:
+            cleaned[resource] = value
+        else:
+            raise ValueError("الحد يجب أن يكون عددًا من 0 إلى 100000 أو بلا حد")
+    for resource, value in cleaned.items():
+        connection.execute(
+            "DELETE FROM organization_resource_limits WHERE organization_id=? AND resource=?",
+            (organization_id, resource),
+        )
+        if value is not None:
+            connection.execute(
+                "INSERT INTO organization_resource_limits(organization_id, resource, value) VALUES(?,?,?)",
+                (organization_id, resource, value),
+            )
+    return org_overrides(connection, organization_id)
