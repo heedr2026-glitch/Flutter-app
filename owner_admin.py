@@ -239,7 +239,7 @@ def permission(path,method):
   if p.startswith('addon-offers'): return 'offers'
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('directory'): return 'organizations.view' if method=='GET' else 'organizations.edit'
-  if p.startswith(('credits','service-costs')): return 'usage'
+  if p.startswith(('credits','service-costs','ai-limits')): return 'usage'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
   for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('expenses','finance'),('technical-ai','security'),('performance','security'),('readiness','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
    if p.startswith(prefix): return perm
@@ -657,6 +657,9 @@ def handle(h,method,s):
  except (ValueError,TypeError,KeyError) as e: raise s.ApiError(400,str(e))
 
 def dispatch(c,r,m,d,q,page,a,h,s):
+ if r=='ai-limits' or r.startswith('ai-limits/'):
+  import ai_limit_policy
+  return ai_limit_policy.handle(c,r,m,d)
  if r.startswith('directory/'):
   import identity_directory
   return identity_directory.handle(c,r,m,d,q,page,a,__import__(__name__),s)

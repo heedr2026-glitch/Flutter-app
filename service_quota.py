@@ -167,9 +167,18 @@ def snapshot_bulk(c, org_ids=None, today=None):
                 totals = adjustments.setdefault(org, {service: 0 for service in SERVICES})
                 totals[row['service']] += int(row['units'] or 0)
     overrides = {}
+    special_monthly = {}
     if table_exists(c, 'ai_limits'):
-        overrides = {row['organization_id']: int(row['daily_limit'])
-                     for row in grouped('SELECT organization_id,daily_limit FROM ai_limits WHERE {scope}')}
+        for row in grouped('SELECT * FROM ai_limits WHERE {scope}'):
+            overrides[row['organization_id']] = int(row['daily_limit'])
+            if row.get('monthly_limit') is not None:
+                special_monthly[row['organization_id']] = int(row['monthly_limit'])
+    # حد المجموعة: يطبَّق على كل مؤسسة ليست في قائمة الحدود الخاصة. NULL = حسب الباقة.
+    group_daily = group_monthly = None
+    if table_exists(c, 'ai_group_limits'):
+        found = _rows(c, 'SELECT * FROM ai_group_limits WHERE id=1')
+        if found:
+            group_daily, group_monthly = found[0].get('daily_limit'), found[0].get('monthly_limit')
     gifts = {}
     if table_exists(c, 'platform_daily_credits'):
         for row in grouped('SELECT organization_id,day,units FROM platform_daily_credits WHERE day>=? AND {scope}',
@@ -191,11 +200,19 @@ def snapshot_bulk(c, org_ids=None, today=None):
         gift_today = gift_days.get(today_iso, 0)
         gift_cycle = sum(n for day, n in gift_days.items() if day >= start_iso)
         package_daily = plan['ai_daily'] if plan['ai_daily'] is not None else DEFAULT_AI_DAILY.get(package, 5)
-        base_daily = overrides.get(org, int(package_daily))
-        # حد شهري غير محدد أو مؤسسة لها سقف يومي خاص: يُطبَّق السقف اليومي وحده كما كان،
-        # والحد الشهري المعروض (اليومي × أيام الدورة) للعرض فقط؛ فتغيير الباقة أو السقف وسط الدورة لا يوقف المؤسسة.
-        ai_monthly_enforced = plan['ai_monthly'] is not None and org not in overrides
-        ai_base = int(plan['ai_monthly']) if ai_monthly_enforced else base_daily * (end - start).days
+        if org in overrides:
+            # مؤسسة في قائمة الحدود الخاصة: يومي خاص، وشهري خاص إن حُدد.
+            base_daily = overrides[org]
+            monthly = special_monthly.get(org)
+        elif group_daily is not None or group_monthly is not None:
+            base_daily = int(group_daily) if group_daily is not None else int(package_daily)
+            monthly = group_monthly if group_monthly is not None else plan['ai_monthly']
+        else:
+            base_daily = int(package_daily)
+            monthly = plan['ai_monthly']
+        # حد شهري غير محدد: يُطبَّق السقف اليومي وحده، والشهري المعروض (اليومي × أيام الدورة) للعرض فقط.
+        ai_monthly_enforced = monthly is not None
+        ai_base = int(monthly) if ai_monthly_enforced else base_daily * (end - start).days
         services = {}
         for service in SERVICES:
             if service == 'ai':
