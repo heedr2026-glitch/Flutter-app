@@ -173,24 +173,14 @@ def snapshot_bulk(c, org_ids=None, today=None):
             overrides[row['organization_id']] = int(row['daily_limit'])
             if row.get('monthly_limit') is not None:
                 special_monthly[row['organization_id']] = int(row['monthly_limit'])
-    # حد المجموعة: يطبَّق على كل مؤسسة ليست في قائمة الحدود الخاصة. NULL = حسب الباقة.
-    group_daily = group_monthly = None
-    if table_exists(c, 'ai_group_limits'):
-        found = _rows(c, 'SELECT * FROM ai_group_limits WHERE id=1')
-        if found:
-            group_daily, group_monthly = found[0].get('daily_limit'), found[0].get('monthly_limit')
     gifts = {}
     if table_exists(c, 'platform_daily_credits'):
         for row in grouped('SELECT organization_id,day,units FROM platform_daily_credits WHERE day>=? AND {scope}',
                            (window_iso,)):
             gifts.setdefault(row['organization_id'], {})[str(row['day'])[:10]] = int(row['units'] or 0)
 
-    # حدود واتساب والمكالمات: حد المجموعة وقائمة الحدود الخاصة (شهري فقط).
-    svc_group, svc_special = {}, {}
-    if table_exists(c, 'service_group_limits'):
-        for row in _rows(c, 'SELECT service,monthly_limit FROM service_group_limits'):
-            if row['monthly_limit'] is not None:
-                svc_group[row['service']] = int(row['monthly_limit'])
+    # حدود واتساب والمكالمات الخاصة بمؤسسة (شهري فقط)؛ غيرها يتبع حد باقته.
+    svc_special = {}
     if table_exists(c, 'service_special_limits'):
         for row in grouped('SELECT organization_id,service,monthly_limit FROM service_special_limits WHERE {scope}'):
             svc_special[(row['organization_id'], row['service'])] = row['monthly_limit']
@@ -214,9 +204,6 @@ def snapshot_bulk(c, org_ids=None, today=None):
             # مؤسسة في قائمة الحدود الخاصة: يومي خاص، وشهري خاص إن حُدد.
             base_daily = overrides[org]
             monthly = special_monthly.get(org)
-        elif group_daily is not None or group_monthly is not None:
-            base_daily = int(group_daily) if group_daily is not None else int(package_daily)
-            monthly = group_monthly if group_monthly is not None else plan['ai_monthly']
         else:
             base_daily = int(package_daily)
             monthly = plan['ai_monthly']
@@ -239,8 +226,6 @@ def snapshot_bulk(c, org_ids=None, today=None):
                 units = plan['whatsapp_units'] if service == 'whatsapp' else plan['calls_units']
                 if (org, service) in svc_special:
                     units = svc_special[(org, service)]
-                elif service in svc_group:
-                    units = svc_group[service]
                 base = None if units is None else int(units)
                 limit = None if base is None else max(0, base + adjust[service])
                 raw = used_since(service, start_iso)
