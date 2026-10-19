@@ -431,7 +431,7 @@ def credits_bulk(c,s,org_ids=None,with_ledger=True):
   request=paid.get(org); months=(int(request['paid_months'] or 0)+int(request['bonus_months'] or 0)) if request else 0
   if (package.get('package') or 'free')=='free': monthly=0.0; income_source='free'
   elif request and request['requested_package']==package.get('package') and float(request['quoted_price'] or 0)>0 and months>0 and str(request['processed_at'] or '')[:10]>=str(package.get('starts_at') or '')[:10]: monthly=round(float(request['quoted_price'])/months,2); income_source='paid'
-  result[org]={'package':package.get('package') or 'free','subscription_value':monthly,'income_source':income_source,'cycle_start':quota['cycle_start'],'renews_at':quota['renews_at'],'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjust[x],'limit':q[x]['limit'],'unlimited':q[x]['unlimited'],'used':q[x]['used'],'daily_limit':q[x]['daily_limit'],'blocked':q[x]['blocked'],'reason':q[x]['reason'],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'calls_status':link['status'] if link else 'not_connected','calls_phone':link['phone_number'] if link else None,'calls_error':link['last_error'] if link else '','total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledgers.get(org,[])}
+  result[org]={'package':package.get('package') or 'free','subscription_value':monthly,'income_source':income_source,'cycle_start':quota['cycle_start'],'renews_at':quota['renews_at'],'services':{x:{'label':SERVICE_LABELS[x],'base':base[x],'adjustments':adjust[x],'limit':q[x]['limit'],'unlimited':q[x]['unlimited'],'monthly_enforced':bool(q[x].get('monthly_enforced')),'used':q[x]['used'],'daily_limit':q[x]['daily_limit'],'blocked':q[x]['blocked'],'reason':q[x]['reason'],'used_month':usage[x],'used_today':daily[x],'remaining':remaining[x],'cost':cost[x]} for x in SERVICE_LABELS},'calls_status':link['status'] if link else 'not_connected','calls_phone':link['phone_number'] if link else None,'calls_error':link['last_error'] if link else '','total_remaining':sum(remaining.values()),'usage_month':sum(usage.values()),'usage_today':sum(daily.values()),'actual_cost':total_cost,'estimated_profit':round(monthly-total_cost,2),'ledger':ledgers.get(org,[])}
  return result
 
 def credits_summary(c,org,s):
@@ -443,11 +443,17 @@ def customer_usage_summary(c,org,s):
  services={}
  total_limit=0
  total_used=0
+ total_remaining=0
  for key,item in summary['services'].items():
   # الأرقام من دورة اشتراك المؤسسة، وهي نفسها التي يُوقَف عندها الاستخدام.
+  item=dict(item)
+  if key=='ai' and not item.get('monthly_enforced'):
+   # بدون حد شهري للذكاء الاصطناعي: يُعرض «بلا حد» بالشهر مثل لوحة الإدارة، والإيقاف باليومي فقط.
+   item['unlimited']=True; item['limit']=0; item['remaining']=0
   limit=max(0,int(item['limit'] or 0))
   used=max(0,int(item['used'] or 0))
   remaining=max(0,int(item['remaining'] or 0))
+  if not item['unlimited']: total_remaining+=remaining
   total_limit+=limit
   total_used+=used if not item['unlimited'] else 0
   services[key]={
@@ -461,7 +467,7 @@ def customer_usage_summary(c,org,s):
  return {
   'package':summary['package'],
   'renewalDate':summary['renews_at'],
-  'totalRemaining':int(summary['total_remaining'] or 0),
+  'totalRemaining':total_remaining,
   'usageMonth':usage_month,
   'usageToday':max(0,int(summary['usage_today'] or 0)),
   'usagePercent':min(100,round(usage_month*100/total_limit)) if total_limit else 0,
