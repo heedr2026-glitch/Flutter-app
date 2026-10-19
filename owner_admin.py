@@ -659,7 +659,9 @@ def handle(h,method,s):
 def dispatch(c,r,m,d,q,page,a,h,s):
  if r=='ai-limits' or r.startswith('ai-limits/'):
   import ai_limit_policy
-  return ai_limit_policy.handle(c,r,m,d)
+  try: return ai_limit_policy.handle(c,r,m,d)
+  except ValueError: raise
+  except Exception as e: raise ValueError('تعذر تحميل الحدود: '+type(e).__name__+': '+str(e)[:200])
  if r.startswith('directory/'):
   import identity_directory
   return identity_directory.handle(c,r,m,d,q,page,a,__import__(__name__),s)
