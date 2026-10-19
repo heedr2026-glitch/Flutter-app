@@ -185,6 +185,16 @@ def snapshot_bulk(c, org_ids=None, today=None):
                            (window_iso,)):
             gifts.setdefault(row['organization_id'], {})[str(row['day'])[:10]] = int(row['units'] or 0)
 
+    # حدود واتساب والمكالمات: حد المجموعة وقائمة الحدود الخاصة (شهري فقط).
+    svc_group, svc_special = {}, {}
+    if table_exists(c, 'service_group_limits'):
+        for row in _rows(c, 'SELECT service,monthly_limit FROM service_group_limits'):
+            if row['monthly_limit'] is not None:
+                svc_group[row['service']] = int(row['monthly_limit'])
+    if table_exists(c, 'service_special_limits'):
+        for row in grouped('SELECT organization_id,service,monthly_limit FROM service_special_limits WHERE {scope}'):
+            svc_special[(row['organization_id'], row['service'])] = row['monthly_limit']
+
     result = {}
     for plan in plans:
         org = plan['organization_id']
@@ -227,6 +237,10 @@ def snapshot_bulk(c, org_ids=None, today=None):
                 daily_limit = max(0, base_daily + gift_today + max(0, max(0, adjust['ai']) - spent))
             else:
                 units = plan['whatsapp_units'] if service == 'whatsapp' else plan['calls_units']
+                if (org, service) in svc_special:
+                    units = svc_special[(org, service)]
+                elif service in svc_group:
+                    units = svc_group[service]
                 base = None if units is None else int(units)
                 limit = None if base is None else max(0, base + adjust[service])
                 raw = used_since(service, start_iso)
