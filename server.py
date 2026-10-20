@@ -4215,6 +4215,20 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             except DB_INTEGRITY_ERRORS:
                 raise ApiError(409, "اسم المستخدم مستخدم بالفعل")
             return
+        if method == "POST" and path == "/api/login-help":
+            # دعم من صفحة الدخول بدون تسجيل دخول، بحد إرسال داخل الوحدة نفسها.
+            import login_help
+            data = self._body()
+            with db() as connection:
+                try:
+                    result = login_help.create(connection, data, owner_admin.client_ip(self))
+                except PermissionError as error:
+                    raise ApiError(429, str(error))
+                except ValueError as error:
+                    raise ApiError(400, str(error))
+                connection.commit()
+            self._send(201, result)
+            return
         if method == "POST" and path == "/api/login":
             data = self._body()
             with db() as connection:

@@ -41,7 +41,7 @@ COPY market_insights.py /app/market_insights.py
 COPY commercial_leads.py /app/commercial_leads.py
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/
-COPY service_quota.py ai_limit_policy.py /app/
+COPY service_quota.py ai_limit_policy.py login_help.py /app/
 
 RUN mkdir -p /data && useradd --create-home khdoom && chown -R khdoom:khdoom /app /data
 USER khdoom

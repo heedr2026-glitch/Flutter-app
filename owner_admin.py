@@ -240,6 +240,7 @@ def permission(path,method):
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('directory'): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith(('credits','service-costs','ai-limits','service-limits')): return 'usage'
+  if p.startswith('login-help'): return 'support'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
   for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('expenses','finance'),('technical-ai','security'),('performance','security'),('readiness','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
    if p.startswith(prefix): return perm
@@ -663,6 +664,9 @@ def handle(h,method,s):
  except (ValueError,TypeError,KeyError) as e: raise s.ApiError(400,str(e))
 
 def dispatch(c,r,m,d,q,page,a,h,s):
+ if r=='login-help' or r.startswith('login-help/'):
+  import login_help
+  return login_help.handle_admin(c,r,m,d,q)
  if r=='ai-limits' or r.startswith(('ai-limits/','service-limits/')):
   import ai_limit_policy
   try: return ai_limit_policy.handle(c,r,m,d)

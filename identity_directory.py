@@ -97,7 +97,7 @@ def handle(c, route, method, data, query, page, actor, admin, server):
             c.execute('UPDATE users SET archived_at=NULL,active=1 WHERE id=?',(ident,))
         admin.audit(c,actor['name'],'directory_restored',kind+'/'+str(ident)+' '+str(record['name']))
         return {'saved':True,'message':'تم الاسترجاع'}
-    match=re.fullmatch(r'directory/(organizations|users)/(\d+)/(name|password|archive|transfer)',route)
+    match=re.fullmatch(r'directory/(organizations|users)/(\d+)/(name|username|password|archive|transfer)',route)
     if not match or method != 'POST': raise ValueError('مسار إدارة الحسابات غير صحيح')
     kind,ident,action=match.groups();ident=int(ident)
     table='organizations' if kind=='organizations' else 'users'
@@ -109,6 +109,19 @@ def handle(c, route, method, data, query, page, actor, admin, server):
         if not 2<=len(name)<=120: raise ValueError('اكتب الاسم بين حرفين و120 حرفًا')
         c.execute('UPDATE '+table+' SET name=? WHERE id=?',(name,ident))
         admin.audit(c,actor['name'],'directory_name',json.dumps({'kind':kind,'id':ident,'before':record['name'],'after':name},ensure_ascii=False))
+    elif action=='username':
+        # اسم الدخول يُعدَّل من الإدارة كاحتياط إذا تعذر على المشترك تعديله من التطبيق.
+        user_id=ident if kind=='users' else (owner_for(c,ident) or {'id':None})['id']
+        if not user_id: raise ValueError('لا يوجد مالك مرتبط؛ انقل الملكية أولًا')
+        new_username=server.normalize_username(data.get('username',''))
+        if len(new_username)<3 or len(new_username)>80: raise ValueError('اسم المستخدم من 3 إلى 80 حرفًا')
+        old=c.execute('SELECT username FROM users WHERE id=?',(user_id,)).fetchone()
+        if old and server.normalize_username(old['username'])==new_username: raise ValueError('هذا هو اسم المستخدم الحالي')
+        if c.execute("SELECT id FROM users WHERE id<>? AND (username=? COLLATE NOCASE OR (email<>'' AND email=? COLLATE NOCASE))",(user_id,new_username,new_username)).fetchone():
+            raise ValueError('اسم المستخدم مستخدم لمشترك ثاني')
+        c.execute('UPDATE users SET username=? WHERE id=?',(new_username,user_id))
+        c.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
+        admin.audit(c,actor['name'],'directory_username',json.dumps({'user':user_id,'before':old['username'] if old else '','after':new_username},ensure_ascii=False))
     elif action=='password':
         user_id=ident if kind=='users' else (owner_for(c,ident) or {'id':None})['id']
         if not user_id: raise ValueError('لا يوجد مالك مرتبط؛ انقل الملكية أولًا')
