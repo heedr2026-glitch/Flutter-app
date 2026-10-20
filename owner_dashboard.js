@@ -631,7 +631,11 @@ document.addEventListener('click',async e=>{
   if(b.dataset.act==='directory-name')edit('تعديل الاسم',[f('name',kind==='users'?'اسم المشترك':'اسم المؤسسة')],{name:x.name},d=>api(path+'name','POST',d));
   if(b.dataset.act==='directory-username')edit('تعديل اسم المستخدم (اسم الدخول)',[f('username','اسم المستخدم الجديد — 3 أحرف على الأقل')],{username:x.username||x.owner_username||''},d=>api(path+'username','POST',d));
   if(b.dataset.act==='directory-password')edit('تعديل الباسورد',[f('password','كلمة مرور جديدة — 8 أحرف على الأقل','password')],{},d=>api(path+'password','POST',d));
-  if(b.dataset.act==='directory-archive')edit('حذف مع حفظ البيانات',[f('confirmation','اكتب الاسم للتأكيد: '+x.name)],{},d=>api(path+'archive','POST',d));
+  if(b.dataset.act==='directory-archive'){
+   const info=kind==='organizations'?[pkg[x.package]||x.package||'',x.created_at?'مسجّلة '+String(x.created_at).slice(0,10).replace(/-/g,'/'):''].filter(Boolean).join(' — '):[x.organization_name?'تبع '+x.organization_name:'',x.username?'اسم الدخول: '+x.username:''].filter(Boolean).join(' — ');
+   if(!confirm('متأكد تبي تحذف «'+x.name+'»'+(info?' — '+info:'')+'؟\n\nتقدر ترجعها بعدين من «المحذوفات».'))return;
+   await api(path+'archive','POST',{confirmation:x.name});flash('تم الحذف، وتقدر ترجعه من «المحذوفات»');render();
+  }
   if(b.dataset.act==='directory-transfer'){
    const users=[];for(let page=1;;page++){const d=await api(`directory/users?organization=${x.id}&page=${page}`);users.push(...d.items.filter(u=>u.active&&u.id!==x.owner_id));if(page*30>=d.total)break}
    if(!users.length)throw Error('أضف مستخدمًا نشطًا للمؤسسة أولًا ليصبح المالك الجديد');
