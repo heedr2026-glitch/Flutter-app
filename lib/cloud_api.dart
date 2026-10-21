@@ -31,6 +31,12 @@ class KhdoomCloudApi {
            : Future.value(scope),
        _client = CloudHttpClient(client);
 
+  /// دعم من صفحة الدخول بدون تسجيل دخول (نسيت اسم المستخدم أو كلمة المرور...).
+  Future<Map<String, dynamic>> loginHelp(Map<String, dynamic> data) async {
+    final result = await _request('POST', '/api/login-help', body: data);
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   Future<Map<String, dynamic>> register(Map<String, dynamic> data) async {
     final result = await _request('POST', '/api/register', body: data);
     return Map<String, dynamic>.from(result as Map);

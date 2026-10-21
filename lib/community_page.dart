@@ -16,6 +16,7 @@ class CommunityPage extends StatefulWidget {
 class _CommunityPageState extends State<CommunityPage> {
   static const _storage = FlutterSecureStorage();
   final _composer = TextEditingController();
+  final _scroll = ScrollController();
   KhdoomCloudApi? _api;
   List<dynamic> _posts = [];
   bool _loading = true;
@@ -89,6 +90,13 @@ class _CommunityPageState extends State<CommunityPage> {
       await _api!.createCommunityPost(body);
       _composer.clear();
       await _load();
+      if (_scroll.hasClients) {
+        _scroll.animateTo(
+          0,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
     } catch (error) {
       if (mounted) {
         setState(
@@ -126,6 +134,7 @@ class _CommunityPageState extends State<CommunityPage> {
 
   @override
   void dispose() {
+    _scroll.dispose();
     _refreshTimer?.cancel();
     _composer.dispose();
     _api?.close();
@@ -149,48 +158,6 @@ class _CommunityPageState extends State<CommunityPage> {
         body: SafeArea(
           child: Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF172554),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: const Color(0xFF38BDF8).withValues(alpha: .35),
-                    ),
-                  ),
-                  child: Column(
-                    children: [
-                      TextField(
-                        controller: _composer,
-                        maxLines: 3,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
-                          hintText: 'شارك فكرة أو سؤالًا مع مؤسسات خدوم',
-                          hintStyle: TextStyle(color: Colors.white60),
-                          border: InputBorder.none,
-                        ),
-                      ),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: FilledButton.icon(
-                          onPressed: _sending ? null : _publish,
-                          icon: _sending
-                              ? const SizedBox.square(
-                                  dimension: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.send),
-                          label: const Text('نشر'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -212,7 +179,10 @@ class _CommunityPageState extends State<CommunityPage> {
                     : RefreshIndicator(
                         onRefresh: _load,
                         child: ListView.builder(
-                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 20),
+                          // الأحدث تحت جنب خانة الكتابة، والأقدم فوق (مثل الواتساب).
+                          controller: _scroll,
+                          reverse: true,
+                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
                           itemCount: _posts.length,
                           itemBuilder: (_, index) {
                             final post = Map<String, dynamic>.from(
@@ -278,6 +248,54 @@ class _CommunityPageState extends State<CommunityPage> {
                           },
                         ),
                       ),
+              ),
+              // خانة الكتابة ثابتة تحت مثل الواتساب.
+              Container(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF111B35),
+                  border: Border(
+                    top: BorderSide(
+                      color: const Color(0xFF38BDF8).withValues(alpha: .25),
+                    ),
+                  ),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF172554),
+                          borderRadius: BorderRadius.circular(22),
+                        ),
+                        child: TextField(
+                          controller: _composer,
+                          minLines: 1,
+                          maxLines: 4,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            hintText: 'شارك فكرة أو سؤالًا مع مؤسسات خدوم',
+                            hintStyle: TextStyle(color: Colors.white60),
+                            border: InputBorder.none,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.icon(
+                      onPressed: _sending ? null : _publish,
+                      icon: _sending
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send),
+                      label: const Text('نشر'),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
