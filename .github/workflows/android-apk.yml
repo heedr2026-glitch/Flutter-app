@@ -73,3 +73,13 @@ jobs:
           gh release create "khdoom-build-${{ github.run_number }}" Khdoom-latest.apk \
             --title "Khdoom Android build ${{ github.run_number }}" \
             --notes "Installable Khdoom Android package."
+      - name: Publish test APK download (next-build branch)
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/next-build')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-debug.apk Khdoom-test.apk
+          gh release create "khdoom-test-${{ github.run_number }}" Khdoom-test.apk \
+            --target "${{ github.sha }}" --prerelease \
+            --title "Khdoom test build ${{ github.run_number }}" \
+            --notes "نسخة تجريبية من فرع ${{ github.ref_name }} للتجربة على الجوال."
