@@ -3573,6 +3573,130 @@ class _DashboardPageState extends State<DashboardPage> {
 
   final _conversation = AssistantConversation();
 
+  /// الموظفين = سجل الموظفين (ملفاتهم ووثائقهم) + المستخدمين اللي لهم حساب دخول.
+  List<Map<String, dynamic>> _assistantStaff(
+    List<Map<String, dynamic>> users,
+    List<Map<String, dynamic>> registry,
+  ) {
+    final staff = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final record in registry) {
+      if (record['archived'] == true) continue;
+      final key = _normalizeAssistantText(record['name']?.toString() ?? '');
+      if (key.isEmpty || !seen.add(key)) continue;
+      staff.add({...record, '_registry': true});
+    }
+    for (final user in users) {
+      final key = _normalizeAssistantText(user['name']?.toString() ?? '');
+      if (key.isEmpty || !seen.add(key)) continue;
+      staff.add({...user, '_account': true});
+    }
+    return staff;
+  }
+
+  /// موظف بالاسم يرجع هو بس، «جميع الموظفين» يرجع الكل، وغير كذا null (نسأل تقصد مين).
+  List<Map<String, dynamic>>? _assistantPickStaff(
+    String text,
+    List<Map<String, dynamic>> staff,
+  ) {
+    final wantsAll = ['جميع', 'كل ', 'كلهم', 'الكل', 'الموظفين', 'العمال']
+        .any(text.contains);
+    var named = staff.where((x) {
+      final name = _normalizeAssistantText(x['name']?.toString() ?? '');
+      return name.isNotEmpty && text.contains(name);
+    }).toList();
+    if (named.isEmpty) {
+      const common = {'محمد', 'عبد', 'عبدالله', 'موظف', 'الموظف'};
+      final words = text.split(' ').toSet();
+      named = staff.where((x) {
+        return _normalizeAssistantText(x['name']?.toString() ?? '')
+            .split(' ')
+            .where((w) => w.length >= 3 && !common.contains(w))
+            .any(words.contains);
+      }).toList();
+    }
+    if (named.isNotEmpty && !['جميع', 'كل ', 'كلهم', 'الكل'].any(text.contains)) {
+      return named;
+    }
+    if (wantsAll) return staff;
+    return staff.length == 1 ? staff : null;
+  }
+
+  String _assistantStaffCard(
+    Map<String, dynamic> person,
+    List<Map<String, dynamic>> users,
+  ) {
+    final key = _normalizeAssistantText(person['name']?.toString() ?? '');
+    Map<String, dynamic>? account = person['_account'] == true ? person : null;
+    if (account == null) {
+      for (final user in users) {
+        if (_normalizeAssistantText(user['name']?.toString() ?? '') == key) {
+          account = user;
+          break;
+        }
+      }
+    }
+    final role = (person['jobTitle'] ?? person['role'] ?? person['job_title'] ?? '')
+        .toString();
+    return [
+      '👤 ${person['name'] ?? 'موظف'}',
+      if (role.isNotEmpty) 'الوظيفة: $role',
+      if ((person['nationality']?.toString() ?? '').isNotEmpty)
+        'الجنسية: ${person['nationality']}',
+      if ((person['phone']?.toString() ?? '').isNotEmpty) 'الجوال: ${person['phone']}',
+      if (person['_registry'] == true) ...[
+        'انتهاء الإقامة: ${_assistantDateStatus(person['iqama'])}',
+        if ((person['contract']?.toString() ?? '').isNotEmpty)
+          'انتهاء العقد: ${_assistantDateStatus(person['contract'])}',
+      ],
+      account == null
+          ? 'حساب دخول: ما عنده'
+          : 'حساب دخول: ${account['active'] == false ? 'موقوف' : 'نشط'}',
+    ].join('\n');
+  }
+
+  /// مركبة بالاسم أو جزء منه أو أرقام اللوحة؛ «جميع المركبات» الكل؛ غير كذا null.
+  List<Map<String, dynamic>>? _assistantPickVehicles(
+    String text,
+    List<Map<String, dynamic>> vehicles,
+  ) {
+    if (['جميع', 'كل ', 'كلها', 'الكل', 'المركبات', 'السيارات'].any(text.contains)) {
+      return vehicles;
+    }
+    final digits = RegExp(r'\d{2,}')
+        .allMatches(
+          text.replaceAllMapped(
+            RegExp('[٠-٩]'),
+            (m) => (m.group(0)!.codeUnitAt(0) - 0x0660).toString(),
+          ),
+        )
+        .map((m) => m.group(0)!)
+        .toList();
+    const skip = {'مركبه', 'المركبه', 'سياره', 'السياره', 'طلعلي', 'وريني', 'اعرض'};
+    final words = text.split(' ').where((w) => w.length >= 3).toSet();
+    final matching = vehicles.where((vehicle) {
+      final name = _normalizeAssistantText(vehicle['name']?.toString() ?? '');
+      final plate = _normalizeAssistantText(vehicle['plate']?.toString() ?? '');
+      final plateDigits = plate.replaceAll(RegExp(r'\D'), '');
+      final assigned = _normalizeAssistantText(
+        vehicle['assignedEmployee']?.toString() ?? '',
+      );
+      final status = vehicle['status']?.toString() ?? 'working';
+      final statusMatches =
+          (text.contains('صيان') && status == 'maintenance') ||
+          (text.contains('عطل') && status == 'broken') ||
+          (text.contains('متوقف') && status == 'stopped');
+      return (name.isNotEmpty && text.contains(name)) ||
+          name.split(' ').where((w) => w.length >= 3 && !skip.contains(w)).any(words.contains) ||
+          (plate.isNotEmpty && text.contains(plate)) ||
+          (plateDigits.isNotEmpty && digits.any(plateDigits.contains)) ||
+          (assigned.isNotEmpty && text.contains(assigned)) ||
+          statusMatches;
+    }).toList();
+    if (matching.isNotEmpty) return matching;
+    return vehicles.length == 1 ? vehicles : null;
+  }
+
   Future<void> _askOrganizationAssistant(String question) async {
     if (_conversation.busy || _assistantLoading) return;
     if (_assistantLocked) {
@@ -3844,52 +3968,11 @@ class _DashboardPageState extends State<DashboardPage> {
             MaterialPageRoute(builder: (_) => const VehiclesPage()),
           );
         } else {
-          final wantsAllVehicles = _hasAny(text, ['جميع', 'كل ', 'كلها', 'الكل']);
-      final digits = RegExp(r'\d{2,}').allMatches(
-        text.replaceAllMapped(
-          RegExp('[٠-٩]'),
-          (m) => (m.group(0)!.codeUnitAt(0) - 0x0660).toString(),
-        ),
-      ).map((m) => m.group(0)!).toList();
-      final words = text.split(' ').where((w) => w.length >= 3).toSet();
-      const vehicleWords = {'مركبه', 'المركبه', 'مركبات', 'المركبات', 'سياره', 'السياره', 'سيارات', 'طلعلي', 'وريني', 'اعرض'};
-      final matching = wantsAllVehicles
-          ? <Map<String, dynamic>>[]
-          : vehicles.where((vehicle) {
-              final name = _normalizeArabic(vehicle['name']?.toString() ?? '');
-              final plate = _normalizeArabic(vehicle['plate']?.toString() ?? '');
-              final plateDigits = plate.replaceAll(RegExp(r'\D'), '');
-              final assigned = _normalizeArabic(
-                vehicle['assignedEmployee']?.toString() ?? '',
-              );
-              final status = vehicle['status']?.toString() ?? 'working';
-              final statusMatches =
-                  (text.contains('صيان') && status == 'maintenance') ||
-                  (text.contains('عطل') && status == 'broken') ||
-                  (text.contains('متوقف') && status == 'stopped');
-              final nameParts = name
-                  .split(' ')
-                  .where((w) => w.length >= 3 && !vehicleWords.contains(w));
-              return (name.isNotEmpty && text.contains(name)) ||
-                  nameParts.any(words.contains) ||
-                  (plate.isNotEmpty && text.contains(plate)) ||
-                  digits.any((d) => plateDigits.contains(d)) ||
-                  (assigned.isNotEmpty && text.contains(assigned)) ||
-                  statusMatches;
-            }).toList();
-      if (!wantsAllVehicles && matching.isEmpty) {
-        if (vehicles.length == 1) {
-          matching.add(vehicles.first);
-        } else {
-          // ما عرفنا أي مركبة: نسأل بالأسماء بس، بدون صور.
-          return 'تقصد أي مركبة؟\n' +
-              vehicles
-                  .map((v) => '• ${v['name'] ?? 'مركبة'}${(v['plate']?.toString() ?? '').isEmpty ? '' : ' — ${v['plate']}'}')
-                  .join('\n') +
-              '\n\nأو قل «جميع المركبات» وأعرضها كلها.';
-        }
-      }
-      final selected = wantsAllVehicles ? vehicles : matching;
+          final selected = _assistantPickVehicles(text, vehicles);
+          if (selected == null) {
+            // ما عرفنا أي مركبة: نسأل بالأسماء بس، بدون صور.
+            answer = 'تقصد أي مركبة؟\n${vehicles.map((v) => '• ${v['name'] ?? 'مركبة'}${(v['plate']?.toString() ?? '').isEmpty ? '' : ' — ${v['plate']}'}').join('\n')}\n\nأو قل «جميع المركبات» وأعرضها كلها.';
+          } else {
           attachedRecords.addAll(selected);
           answer = selected
               .map(
@@ -3897,6 +3980,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     '🚗 ${vehicle['name']?.toString() ?? 'مركبة'}${(vehicle['plate']?.toString() ?? '').isEmpty ? '' : '\nاللوحة: ${vehicle['plate']}'}\nالموظف المسؤول: ${(vehicle['assignedEmployee']?.toString() ?? '').isEmpty ? 'غير محدد' : vehicle['assignedEmployee']}\nالحالة: ${const {'working': 'شغّالة', 'stopped': 'متوقفة', 'broken': 'عطلانة', 'maintenance': 'تحت الصيانة'}[vehicle['status']] ?? 'شغّالة'}\nالتأمين: ${_assistantDateStatus(vehicle['insurance'])}\nالفحص: ${_assistantDateStatus(vehicle['inspection'])}\nالاستمارة: ${_assistantDateStatus(vehicle['registration'])}',
               )
               .join('\n\n');
+          }
           action = () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const VehiclesPage()),
@@ -3909,32 +3993,22 @@ class _DashboardPageState extends State<DashboardPage> {
           text.contains('عقد')) {
         if (!_can('employees')) {
           answer = 'ما عندك صلاحية تشوف بيانات الموظفين.';
-        } else if (employees.isEmpty) {
-          answer = 'ما فيه موظفين مسجّلين للحين.';
         } else {
-          final matching = employees.where((employee) {
-            final name = _normalizeAssistantText(
-              employee['name']?.toString() ?? '',
-            );
-            return name.isNotEmpty && text.contains(name);
-          }).toList();
-          final selected = matching.isEmpty ? employees.take(8) : matching;
-          attachedRecords.addAll(selected);
-          for (final employee in selected) {
-            attachedRecords.addAll(
-              employeeAlerts.where(
-                (record) =>
-                    _normalizeAssistantText(record['name']?.toString() ?? '') ==
-                    _normalizeAssistantText(employee['name']?.toString() ?? ''),
-              ),
-            );
+          final staff = _assistantStaff(employees, employeeAlerts);
+          final picked = _assistantPickStaff(text, staff);
+          if (staff.isEmpty) {
+            answer = 'ما فيه موظفين مسجّلين للحين. تقدر تضيفهم من «إدارة الموظفين».';
+          } else if (text.contains('كم') || text.contains('عدد')) {
+            final registry = staff.where((x) => x['_registry'] == true).length;
+            answer =
+                'عندك ${staff.length} ${staff.length == 1 ? 'موظف' : 'موظفين'}: $registry في سجل الموظفين، و${employees.length} ${employees.length == 1 ? 'حساب دخول' : 'حسابات دخول'} للتطبيق.';
+          } else if (picked == null) {
+            answer =
+                'تقصد أي موظف؟\n${staff.map((x) => '• ${x['name']}').join('\n')}\n\nأو قل «جميع الموظفين» وأعرضهم كلهم.';
+          } else {
+            attachedRecords.addAll(picked);
+            answer = picked.map((x) => _assistantStaffCard(x, employees)).join('\n\n');
           }
-          answer = selected
-              .map(
-                (employee) =>
-                    '👤 ${employee['name']?.toString() ?? 'موظف'}\nالوظيفة: ${employee['role']?.toString() ?? 'غير محددة'}\nالحالة: ${employee['active'] == false ? 'موقوف' : 'نشط'}',
-              )
-              .join('\n\n');
         }
       } else if (text.contains('فرع') || text.contains('فروع')) {
         answer =
@@ -13469,12 +13543,27 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
             (text.contains('صيان') && status == 'maintenance') ||
             (text.contains('عطل') && status == 'broken') ||
             (text.contains('متوقف') && status == 'stopped');
+        final plateDigits = plate.replaceAll(RegExp(r'\D'), '');
+        final words = text.split(' ').where((w) => w.length >= 3).toSet();
         return (name.isNotEmpty && text.contains(name)) ||
+            name
+                .split(' ')
+                .where((w) => w.length >= 3 && !{'مركبه', 'سياره'}.contains(w))
+                .any(words.contains) ||
             (plate.isNotEmpty && text.contains(plate)) ||
+            (plateDigits.length >= 2 &&
+                RegExp(r'\d{2,}')
+                    .allMatches(text)
+                    .any((m) => plateDigits.contains(m.group(0)!))) ||
             (assigned.isNotEmpty && text.contains(assigned)) ||
             statusMatches;
       }).toList();
-      final selected = matching.isEmpty ? vehicles.take(5) : matching;
+      final wantsAllVehicles = _hasAny(text, ['جميع', 'كل ', 'كلها', 'الكل', 'المركبات', 'السيارات']);
+      if (matching.isEmpty && !wantsAllVehicles && vehicles.length > 1) {
+        // ما عرفنا أي مركبة: نسأل بالأسماء بس، بدون صور.
+        return 'تقصد أي مركبة؟\n${vehicles.map((v) => '• ${v['name'] ?? 'مركبة'}').join('\n')}\n\nأو قل «جميع المركبات» وأعرضها كلها.';
+      }
+      final selected = wantsAllVehicles || matching.isEmpty ? vehicles : matching;
       attachments?.addAll(selected);
       if (selected.length == 1) {
         _lastContext =
