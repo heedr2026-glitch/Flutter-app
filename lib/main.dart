@@ -51,6 +51,7 @@ import 'commercial_research/commercial_research_models.dart';
 import 'commercial_research/commercial_whatsapp.dart';
 import 'commercial_research/commercial_research_report.dart';
 import 'commercial_research/leads_notebook_page.dart';
+import 'device_backup.dart';
 
 const accountDeletionUrl = 'https://khdoom-api.onrender.com/delete-account';
 
@@ -2942,6 +2943,10 @@ class _DashboardPageState extends State<DashboardPage> {
       },
     );
     KhdoomNotices.poll();
+    // يرجّع المركبات والسجلات والتواريخ من الخادم على جوال جديد أو بعد التحديث.
+    DeviceBackup.sync().then((_) {
+      if (mounted) _loadBusinessName();
+    });
     _loadMarketInsights();
     _loadReminders();
     _sessionValidationTimer = Timer.periodic(

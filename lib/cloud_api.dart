@@ -31,6 +31,34 @@ class KhdoomCloudApi {
            : Future.value(scope),
        _client = CloudHttpClient(client);
 
+  /// نسخة بيانات الجوال في الخادم: قائمة المفاتيح المحفوظة (بدون القيم).
+  Future<List<dynamic>> deviceBackupIndex() async {
+    final result = await _request('GET', '/api/device-backup');
+    return List<dynamic>.from((result as Map)['items'] as List? ?? const []);
+  }
+
+  Future<Map<String, dynamic>> deviceBackupItem(String branch, String key) async {
+    final result = await _request(
+      'GET',
+      '/api/device-backup/item?branch=${Uri.encodeQueryComponent(branch)}&key=${Uri.encodeQueryComponent(key)}',
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<Map<String, dynamic>> putDeviceBackup(
+    String branch,
+    String key,
+    String value,
+    String updatedAt,
+  ) async {
+    final result = await _request(
+      'PUT',
+      '/api/device-backup',
+      body: {'branch': branch, 'key': key, 'value': value, 'updatedAt': updatedAt},
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
   /// دعم من صفحة الدخول بدون تسجيل دخول (نسيت اسم المستخدم أو كلمة المرور...).
   Future<Map<String, dynamic>> loginHelp(Map<String, dynamic> data) async {
     final result = await _request('POST', '/api/login-help', body: data);

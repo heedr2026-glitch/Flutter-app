@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'device_backup.dart';
+
 /// Branch-owned records keep their legacy keys for the main office. No copying
 /// or destructive migration is needed. Each handle captures an immutable scope.
 class BranchPreferences implements SharedPreferences {
@@ -209,8 +211,11 @@ class BranchPreferences implements SharedPreferences {
       )
       .toSet();
   @override
-  Future<bool> setString(String key, String value) =>
-      raw.setString(keyFor(key), value);
+  Future<bool> setString(String key, String value) async {
+    final saved = await raw.setString(keyFor(key), value);
+    if (saved) DeviceBackup.markDirty(raw, branchId, key);
+    return saved;
+  }
   @override
   Future<bool> setBool(String key, bool value) =>
       raw.setBool(keyFor(key), value);
@@ -223,7 +228,11 @@ class BranchPreferences implements SharedPreferences {
   Future<bool> setStringList(String key, List<String> value) =>
       raw.setStringList(keyFor(key), value);
   @override
-  Future<bool> remove(String key) => raw.remove(keyFor(key));
+  Future<bool> remove(String key) async {
+    final removed = await raw.remove(keyFor(key));
+    if (removed) DeviceBackup.markDirty(raw, branchId, key);
+    return removed;
+  }
   @override
   Future<void> reload() => raw.reload();
   @override
