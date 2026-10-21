@@ -239,7 +239,7 @@ def permission(path,method):
   if p.startswith('addon-offers'): return 'offers'
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('directory'): return 'organizations.view' if method=='GET' else 'organizations.edit'
-  if p.startswith(('credits','service-costs','ai-limits','service-limits','db-size')): return 'usage'
+  if p.startswith(('credits','service-costs','ai-limits','service-limits','db-size','owner-')): return 'usage'
   if p.startswith('login-help'): return 'support'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
   for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('expenses','finance'),('technical-ai','security'),('performance','security'),('readiness','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
@@ -672,6 +672,26 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    except Exception: pass
    used=int(c.execute('PRAGMA page_count').fetchone()[0])*int(c.execute('PRAGMA page_size').fetchone()[0])
   return {'used':used,'limit':limit,'percent':round(used*100/limit,1) if limit else 0}
+ if r=='owner-data':
+  limit=int(os.environ.get('KHDOOM_DB_LIMIT_MB','512'))*1024*1024
+  try: used=int(c.execute('SELECT pg_database_size(current_database()) AS n').fetchone()['n'])
+  except Exception:
+   try: c.rollback()
+   except Exception: pass
+   used=int(c.execute('PRAGMA page_count').fetchone()[0])*int(c.execute('PRAGMA page_size').fetchone()[0])
+  tops=[]
+  if table_exists(c,'device_backup',s):
+   tops=rows(c,'SELECT b.organization_id id,COALESCE(o.name,\'\') name,SUM(b.size) size,COUNT(*) items FROM device_backup b LEFT JOIN organizations o ON o.id=b.organization_id GROUP BY b.organization_id,o.name ORDER BY SUM(b.size) DESC LIMIT 10')
+  return {'used':used,'limit':limit,'percent':round(used*100/limit,1) if limit else 0,'top':tops}
+ if r=='owner-ai':
+  today=stamp()[:10]; month=today[:7]
+  unit=float(service_unit_costs(c,s)['ai']['unit_cost'])
+  src=service_unit_costs(c,s)['ai']['source']
+  day=c.execute('SELECT COUNT(*) n FROM ai_usage WHERE created_at>=?',(today,)).fetchone()['n']
+  mon=c.execute('SELECT COUNT(*) n FROM ai_usage WHERE created_at>=?',(month+'-01',)).fetchone()['n']
+  tops=rows(c,'SELECT u.organization_id id,COALESCE(o.name,\'\') name,COUNT(*) requests FROM ai_usage u LEFT JOIN organizations o ON o.id=u.organization_id WHERE u.created_at>=? GROUP BY u.organization_id,o.name ORDER BY COUNT(*) DESC LIMIT 10',(month+'-01',))
+  for t in tops: t['cost']=round(int(t['requests'])*unit,2)
+  return {'today':int(day),'month':int(mon),'unit_cost':unit,'source':src,'cost_today':round(int(day)*unit,2),'cost_month':round(int(mon)*unit,2),'month_label':month,'top':tops}
  if r=='login-help' or r.startswith('login-help/'):
   import login_help
   return login_help.handle_admin(c,r,m,d,q)
