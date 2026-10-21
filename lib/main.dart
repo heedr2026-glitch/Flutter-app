@@ -2646,6 +2646,130 @@ class _DashboardPageState extends State<DashboardPage> {
       BranchPreferences.getInstance();
   final TextEditingController _assistantController = TextEditingController();
   String _homeTab = 'ask';
+  List<Map<String, dynamic>> _reminders = [];
+  bool _remindersGreeted = false;
+
+  /// «تذكير»: كل اللي قرّب ينتهي أو انتهى (مركبات، موظفين، مؤسسة)، الأقرب أول.
+  Future<void> _loadReminders() async {
+    final prefs = await _branchPrefs;
+    final items = <Map<String, dynamic>>[];
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    void add(String kind, String owner, String what, dynamic raw) {
+      final date = DateTime.tryParse(raw?.toString() ?? '');
+      if (date == null) return;
+      final days = DateTime(date.year, date.month, date.day).difference(today).inDays;
+      if (days > 60) return;
+      items.add({'kind': kind, 'owner': owner, 'what': what, 'days': days, 'date': date});
+    }
+
+    for (final v in _assistantList(prefs, 'business_vehicles')) {
+      final name = v['name']?.toString() ?? 'مركبة';
+      add('vehicle', name, 'الاستمارة', v['registration']);
+      add('vehicle', name, 'التأمين', v['insurance']);
+      add('vehicle', name, 'الفحص', v['inspection']);
+    }
+    for (final e in _assistantList(prefs, 'employee_alert_records')) {
+      if (e['archived'] == true) continue;
+      final name = e['name']?.toString() ?? 'موظف';
+      add('employee', name, 'الإقامة', e['iqama']);
+      add('employee', name, 'العقد', e['contract']);
+      add('employee', name, 'التأمين', e['insurance']);
+    }
+    for (final title in const [
+      'الرخصة البلدية',
+      'السجل التجاري',
+      'اشتراك قوى',
+      'حماية الأجور – مدد',
+      'شهادة الدفاع المدني',
+    ]) {
+      add('organization', 'المؤسسة', title, prefs.getString('alert_$title'));
+    }
+    for (final r in _assistantList(prefs, 'organization_alert_records')) {
+      add('organization', 'المؤسسة', r['title']?.toString() ?? 'مستند', r['date']);
+    }
+    items.sort((a, b) => (a['days'] as int).compareTo(b['days'] as int));
+    if (!mounted) return;
+    setState(() {
+      _reminders = items;
+      // أول ما يفتح التطبيق: «اسألني» يذكّره بأقرب شي قرّب ينتهي.
+      if (!_remindersGreeted && _assistantAnswer.isEmpty && items.isNotEmpty) {
+        final first = items.first;
+        if ((first['days'] as int) <= 30) {
+          _assistantAnswer = 'تذكير: ${_reminderSentence(first)}'
+              '${items.length > 1 ? '\nوعندك ${items.length - 1} غيرها في «تذكير».' : ''}';
+        }
+      }
+      _remindersGreeted = true;
+    });
+  }
+
+  String _reminderSentence(Map<String, dynamic> item) {
+    final days = item['days'] as int;
+    final date = item['date'] as DateTime;
+    final when = '${date.year}/${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')}';
+    final subject = item['kind'] == 'vehicle'
+        ? 'مركبة ${item['owner']}'
+        : item['kind'] == 'employee'
+        ? 'الموظف ${item['owner']}'
+        : 'المؤسسة';
+    final left = days < 0
+        ? 'منتهية من ${-days} يوم'
+        : days == 0
+        ? 'تنتهي اليوم'
+        : 'باقي $days يوم';
+    return '$subject: ${item['what']} تنتهي بتاريخ $when، $left';
+  }
+
+  Widget _remindersView() {
+    if (_reminders.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: Text(
+          'ما فيه شي قرّب ينتهي خلال الشهرين الجاية ✅',
+          style: TextStyle(color: Colors.white70),
+        ),
+      );
+    }
+    return Column(
+      children: _reminders.take(30).map((item) {
+        final days = item['days'] as int;
+        final color = days < 0
+            ? const Color(0xFFEF4444)
+            : days <= 7
+            ? const Color(0xFFF97316)
+            : days <= 30
+            ? const Color(0xFFFACC15)
+            : const Color(0xFF22C55E);
+        final icon = item['kind'] == 'vehicle'
+            ? Icons.directions_car_outlined
+            : item['kind'] == 'employee'
+            ? Icons.badge_outlined
+            : Icons.apartment_outlined;
+        return Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0B1020),
+            borderRadius: BorderRadius.circular(12),
+            border: Border(right: BorderSide(color: color, width: 4)),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: color),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  _reminderSentence(item),
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
   bool _marketLoading = false;
   bool _marketNew = false;
   List<Map<String, dynamic>> _marketItems = [];
@@ -2657,6 +2781,7 @@ class _DashboardPageState extends State<DashboardPage> {
       onTap: () {
         setState(() => _homeTab = id);
         if (id == 'market') _loadMarketInsights(markSeen: true);
+        if (id == 'remind') _loadReminders();
       },
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 9),
@@ -2678,7 +2803,9 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
             ),
-            if (id == 'market' && _marketNew) ...[
+            if ((id == 'market' && _marketNew) ||
+                (id == 'remind' &&
+                    _reminders.any((x) => (x['days'] as int) <= 30))) ...[
               const SizedBox(width: 6),
               Container(
                 width: 9,
@@ -2816,6 +2943,7 @@ class _DashboardPageState extends State<DashboardPage> {
     );
     KhdoomNotices.poll();
     _loadMarketInsights();
+    _loadReminders();
     _sessionValidationTimer = Timer.periodic(
       const Duration(minutes: 2),
       (_) => _validateCloudSession(),
@@ -4255,13 +4383,17 @@ class _DashboardPageState extends State<DashboardPage> {
           Row(
             children: [
               Expanded(child: _homeTabButton('market', 'وضعك في السوق')),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
+              Expanded(child: _homeTabButton('remind', 'تذكير')),
+              const SizedBox(width: 6),
               Expanded(child: _homeTabButton('ask', 'اسألني')),
             ],
           ),
           const SizedBox(height: 10),
           if (_homeTab == 'market')
             _marketInsightsView()
+          else if (_homeTab == 'remind')
+            _remindersView()
           else ...[
           TextField(
             controller: _assistantController,
