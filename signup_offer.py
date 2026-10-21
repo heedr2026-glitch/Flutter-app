@@ -21,6 +21,11 @@ def migrate(c):
         c.execute("ALTER TABLE signup_offer ADD COLUMN IF NOT EXISTS ends_on TEXT NOT NULL DEFAULT ''")
     elif 'ends_on' not in {row[1] for row in c.execute('PRAGMA table_info(signup_offer)').fetchall()}:
         c.execute("ALTER TABLE signup_offer ADD COLUMN ends_on TEXT NOT NULL DEFAULT ''")
+    # تاريخ بداية العرض: يُسجَّل عند تشغيله، أو من أول مستفيد للعروض القديمة.
+    if hasattr(c, '_connection'):
+        c.execute("ALTER TABLE signup_offer ADD COLUMN IF NOT EXISTS starts_on TEXT NOT NULL DEFAULT ''")
+    elif 'starts_on' not in {row[1] for row in c.execute('PRAGMA table_info(signup_offer)').fetchall()}:
+        c.execute("ALTER TABLE signup_offer ADD COLUMN starts_on TEXT NOT NULL DEFAULT ''")
 
 
 def overview(c):
@@ -29,6 +34,24 @@ def overview(c):
     result['remaining'] = max(0, result['max_claims'] - result['claimed'])
     result['ends_on'] = result.get('ends_on') or ''
     result['expired'] = bool(result['ends_on'] and _today() > result['ends_on'])
+    try:
+        claims = [dict(r) for r in c.execute('''SELECT s.organization_id,s.package,s.months,s.starts_at,s.expires_at,o.name,
+            (SELECT u.phone FROM users u WHERE u.organization_id=o.id AND u.role='admin' ORDER BY u.id LIMIT 1) phone
+            FROM signup_offer_claims s LEFT JOIN organizations o ON o.id=s.organization_id
+            ORDER BY s.starts_at DESC LIMIT 300''').fetchall()]
+    except Exception:
+        claims = [dict(r) for r in c.execute('''SELECT organization_id,package,months,starts_at,expires_at
+            FROM signup_offer_claims ORDER BY starts_at DESC LIMIT 300''').fetchall()]
+    starts_on = result.get('starts_on') or ''
+    if not starts_on and claims:
+        starts_on = min(_today(x['starts_at']) for x in claims)
+    result['starts_on'] = starts_on
+    result['today'] = _today()
+    result['days_left'] = None
+    if result['ends_on']:
+        delta = datetime.strptime(result['ends_on'], '%Y-%m-%d') - datetime.strptime(_today(), '%Y-%m-%d')
+        result['days_left'] = max(0, delta.days)
+    result['claims'] = claims
     return result
 
 
@@ -82,8 +105,12 @@ def configure(c, data, error):
             raise error(400, 'تاريخ نهاية العرض غير صحيح')
         if ends_on < _today():
             raise error(400, 'تاريخ نهاية العرض لازم يكون اليوم أو بعده')
-    updated = c.execute('''UPDATE signup_offer SET enabled=?,max_claims=?,package=?,months=?,ends_on=?,revision=revision+1
-        WHERE id=1 AND revision=?''', (int(data['enabled']), data['max_claims'], data['package'], data['months'], ends_on, data['revision']))
+    current = c.execute('SELECT enabled,starts_on FROM signup_offer WHERE id=1').fetchone()
+    starts_on = (current['starts_on'] if current else '') or ''
+    if data['enabled'] and (not current or not current['enabled']):
+        starts_on = _today()  # إعادة تشغيل العرض تبدأ عدّه من اليوم
+    updated = c.execute('''UPDATE signup_offer SET enabled=?,max_claims=?,package=?,months=?,ends_on=?,starts_on=?,revision=revision+1
+        WHERE id=1 AND revision=?''', (int(data['enabled']), data['max_claims'], data['package'], data['months'], ends_on, starts_on, data['revision']))
     if updated.rowcount != 1:
         raise error(409, 'تغير العرض أو عدد المستفيدين؛ حدّث الصفحة قبل الحفظ')
     return overview(c)
