@@ -5550,6 +5550,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _canViewSettings = true;
   bool _canViewAuditLog = true;
   String? _profileImagePath;
+  String? _logoData;
 
   Future<void> _openAccountDeletionPage() async {
     final opened = await launchUrl(
@@ -6127,22 +6128,25 @@ class _SettingsPageState extends State<SettingsPage> {
       _canManageSettings = canManageSettings;
       _canViewSettings = canViewSettings;
       _canViewAuditLog = canViewAuditLog;
-      _profileImagePath = prefs.getString('profile_image_path');
+      // صورة الإعدادات = شعار المؤسسة نفسه، فتغييره من أي مكان يظهر هنا.
+      _logoData = prefs.getString('business_logo_data');
+      _profileImagePath = prefs.getString('business_logo_path');
       _isLoading = false;
     });
   }
 
   Future<void> _pickProfileImage() async {
-    const channel = MethodChannel('khdoom/profile_image');
-    // اسم ملف فريد حتى لا تكتب صورة حساب فوق صورة حساب آخر على نفس الجوال.
-    final destinationPath = await channel.invokeMethod<String>('pickImage', {
-      'fileName': 'khdoom_profile_${DateTime.now().microsecondsSinceEpoch}',
-    });
-    if (destinationPath == null || destinationPath.isEmpty) return;
+    // تغيير الشعار يتم من «بيانات المؤسسة» حتى يُحفظ في الخادم ويظهر في كل مكان.
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const MyBusinessPage()),
+    );
     final prefs = await BranchPreferences.getInstance();
-    await prefs.setString('profile_image_path', destinationPath);
     if (!mounted) return;
-    setState(() => _profileImagePath = destinationPath);
+    setState(() {
+      _logoData = prefs.getString('business_logo_data');
+      _profileImagePath = prefs.getString('business_logo_path');
+    });
   }
 
   Future<bool> _ensureAdminPassword() async {
@@ -6440,7 +6444,12 @@ class _SettingsPageState extends State<SettingsPage> {
                                 ),
                                 clipBehavior: Clip.antiAlias,
                                 child:
-                                    _profileImagePath != null &&
+                                    _organizationLogoBytes(_logoData) != null
+                                    ? Image.memory(
+                                        _organizationLogoBytes(_logoData)!,
+                                        fit: BoxFit.cover,
+                                      )
+                                    : _profileImagePath != null &&
                                         File(_profileImagePath!).existsSync()
                                     ? Image.file(
                                         File(_profileImagePath!),
