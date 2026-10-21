@@ -990,8 +990,9 @@ function renderSignupOffer(data){
  const addMonths=n=>{const base=data.ends_on&&!data.expired?new Date(data.ends_on+'T12:00:00'):new Date(data.today+'T12:00:00');base.setMonth(base.getMonth()+n);return base.toISOString().slice(0,10)};
  const b=$('soBtns');
  b.append(action('تعديل العرض',()=>edit('تعديل أوائل المشتركين',[f('max_claims','عدد المستفيدين','number'),f('package','الباقة','select',packageOptions.slice(1)),f('months','مدة الهدية (أشهر)','number'),f('ends_on','تاريخ نهاية العرض (فاضي = بدون نهاية)','date'),f('enabled','فعال','checkbox')],{...data},d=>api('/owner/api/signup-offer','PUT',{enabled:!!d.enabled,max_claims:Number(d.max_claims),package:d.package,months:Number(d.months),ends_on:d.ends_on||'',revision:data.revision})),'primary'));
- b.append(action('تمديد شهر',()=>confirm('تمديد نهاية العرض إلى '+addMonths(1).replace(/-/g,'/')+'؟')?save({ends_on:addMonths(1)}):null));
+ if(data.ends_on){b.append(action('تمديد شهر',()=>confirm('تمديد نهاية العرض إلى '+addMonths(1).replace(/-/g,'/')+'؟')?save({ends_on:addMonths(1)}):null));
  b.append(action('تمديد 3 شهور',()=>confirm('تمديد نهاية العرض إلى '+addMonths(3).replace(/-/g,'/')+'؟')?save({ends_on:addMonths(3)}):null));
+}
  if(data.ends_on)b.append(action('بدون تاريخ نهاية',()=>confirm('العرض يستمر لين تكتمل المقاعد أو توقفه بنفسك؟')?save({ends_on:''}):null));
  b.append(action(data.enabled?'إيقاف العرض':'تشغيل العرض',()=>confirm(data.enabled?'إيقاف العرض؟ المؤسسات الجديدة بتنسجل مجانية.':'تشغيل العرض من اليوم؟')?save({enabled:!data.enabled}):null,data.enabled?'danger':''));
  append('<h3>المستفيدون</h3>'+table(data.claims||[],[['المؤسسة',x=>can('organizations.view')?button(x.name||('#'+x.organization_id),'profile',x.organization_id):esc(x.name||'')],['الجوال',x=>esc(x.phone||'—')],['الهدية',x=>esc(pkg[x.package]||x.package)+' · '+x.months+' أشهر'],['من',x=>d10(x.starts_at)],['إلى',x=>d10(x.expires_at)]]));
