@@ -2390,6 +2390,8 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
         self.wfile.write(body)
 
     def _raw_body(self) -> bytes:
+        # نسخة بيانات الجوال قد تحمل صورًا مضمّنة؛ باقي الطلبات تبقى على 1 ميقا.
+        limit = 16 * 1_048_576 if urlparse(self.path).path.startswith("/api/device-backup") else 1_048_576
         try:
             transfer_encoding = self.headers.get("Transfer-Encoding", "").lower()
             if "chunked" in transfer_encoding:
@@ -2402,13 +2404,13 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
                     if size == 0:
                         self.rfile.readline()
                         break
-                    if len(chunks) + size > 1_048_576:
+                    if len(chunks) + size > limit:
                         raise ApiError(413, "حجم الطلب أكبر من المسموح")
                     chunks.extend(self.rfile.read(size))
                     self.rfile.read(2)
                 return bytes(chunks)
             length = int(self.headers.get("Content-Length", "0"))
-            if length > 1_048_576:
+            if length > limit:
                 raise ApiError(413, "حجم الطلب أكبر من المسموح")
             return self.rfile.read(length) if length else b""
         except ValueError:
@@ -5579,7 +5581,7 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
                 # The expiry date is private to the organization owner.  Keep
                 # it out of employee responses so one employee cannot expose
                 # or mix another person's publication details in the app.
-                if user.get("role") != "admin":
+                if user["role"] != "admin":
                     for item in projected:
                         item.pop("expires_at", None)
                         item.pop("remaining_days", None)
@@ -5728,6 +5730,32 @@ async function act(url,method,body){let r=await fetch(url,{method,headers:hdr(),
             if path == "/api/subscription" and method == "GET":
                 row = connection.execute("SELECT package,starts_at,expires_at FROM subscriptions WHERE organization_id=?", (organization_id,)).fetchone()
                 self._send(200, dict(row))
+                return
+            if path == "/api/device-backup" and method in ("GET", "PUT"):
+                # نسخة في الخادم لبيانات الجوال (مركبات، سجل الموظفين، تواريخ الرخص...).
+                import device_backup
+                try:
+                    if method == "GET":
+                        result = device_backup.index(connection, organization_id)
+                    else:
+                        if user["role"] != "admin":
+                            raise ApiError(403, "حفظ النسخة لمدير المؤسسة فقط")
+                        result = device_backup.put_item(connection, organization_id, self._body())
+                        connection.commit()
+                except ValueError as error:
+                    raise ApiError(400, str(error))
+                self._send(200, result)
+                return
+            if path == "/api/device-backup/item" and method == "GET":
+                import device_backup
+                query = parse_qs(urlparse(self.path).query)
+                try:
+                    result = device_backup.get_item(connection, organization_id, query.get("branch", ["main"])[0], query.get("key", [""])[0])
+                except ValueError as error:
+                    raise ApiError(400, str(error))
+                except LookupError:
+                    raise ApiError(404, "غير موجود")
+                self._send(200, result)
                 return
             if path == "/api/usage-summary" and method == "GET":
                 self._send(200, owner_admin.customer_usage_summary(connection, organization_id, __import__("sys").modules[__name__]))
