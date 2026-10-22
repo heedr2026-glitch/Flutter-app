@@ -18,7 +18,8 @@ button.ok{background:#15803d;border-color:#86efac}
 .turn.agent{background:#174887}
 .turn.user{background:#1f2937;margin-inline-start:auto}
 .turn b{display:block;font-size:.85em;color:#bae6fd}
-.pending{border:2px solid #fbbf24;border-radius:14px;padding:12px;margin:10px 0;background:#1c1917}
+@keyframes pulse{50%{box-shadow:0 0 0 6px rgba(251,191,36,.35)}}
+.pending{animation:pulse 1.6s ease-in-out 3;border:2px solid #fbbf24;border-radius:14px;padding:12px;margin:10px 0;background:#1c1917}
 .muted{color:#cbd5e1;font-size:.92em}
 label.check{display:flex;align-items:center;gap:10px}label.check input{width:auto;margin:0}
 .saved{color:#86efac}
@@ -33,12 +34,12 @@ label.check{display:flex;align-items:center;gap:10px}label.check input{width:aut
 <p class="muted">الجوال ما يحفظ المفتاح نفسه، يحفظ رمز دخول خاص تقدر تلغيه من لوحة الإدارة. خل قفل الشاشة شغال في جوالك.</p></div>
 <div id="savedBox" hidden><p class="saved">✓ هذا الجوال محفوظ، تقدر تستخدم الموظف بدون مفتاح.</p><button id="forget" type="button" class="stop">خروج من هذا الجوال</button></div>
 <p class="muted" id="installHint">💡 تبيه مثل التطبيق؟ من قائمة المتصفح ⋮ اختر «إضافة إلى الشاشة الرئيسية».</p>
-<div id="pendingBox"></div>
 </section>
 
 <section class="card">
 <h2>المحادثة</h2>
 <div id="turns"><p class="muted">تظهر هنا المحادثة الكتابية والصوتية.</p></div>
+<div id="pendingBox"></div>
 <textarea id="message" placeholder="اكتب سؤالك أو أمرك هنا"></textarea>
 <button id="send" type="button">إرسال</button>
 </section>
@@ -79,11 +80,13 @@ function draw(){const list=order.map(id=>turns[id]).filter(t=>t&&t.text);$('turn
 function showPending(item){
   if(!item||!item.token||$('p-'+item.token))return;
   const box=document.createElement('div');box.className='pending';box.id='p-'+item.token;
-  box.innerHTML='<b>بانتظار تأكيدك:</b><p>'+esc(item.summary)+'</p><div class="row"><button type="button" class="ok">أكد</button><button type="button" class="stop">إلغاء</button></div>';
+  box.innerHTML='<b>⚠️ بانتظار تأكيدك:</b><p>'+esc(item.summary)+'</p><div class="row"><button type="button" class="ok">✅ أكّد</button><button type="button" class="stop">❌ إلغاء</button></div>';
   const [ok,cancel]=box.querySelectorAll('button');
   ok.onclick=async()=>{ok.disabled=cancel.disabled=true;try{const r=await fetch('/owner/api/agent/confirm',{method:'POST',headers:hdr(),body:JSON.stringify({token:item.token})});const d=await r.json();if(!r.ok||d.error)throw new Error(d.error||'تعذر التنفيذ');box.innerHTML='<b>✅ تم التنفيذ:</b> '+esc(d.summary);add('agent','تم التنفيذ: '+d.summary)}catch(e){box.innerHTML='<b>⚠️ ما تنفذ:</b> '+esc(e.message)}};
   cancel.onclick=()=>{box.innerHTML='<b>تم الإلغاء.</b> '+esc(item.summary);setTimeout(()=>box.remove(),4000)};
-  $('pendingBox').prepend(box);
+  $('pendingBox').append(box);
+  // يطلع تحت آخر رسالة والصفحة تنزل له تلقائيًا
+  setTimeout(()=>box.scrollIntoView({behavior:'smooth',block:'center'}),150);
 }
 function settle(token,text){const box=$('p-'+token);if(box)box.innerHTML=text}
 
