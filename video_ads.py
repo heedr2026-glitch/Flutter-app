@@ -520,6 +520,21 @@ def _read_upload(h, s, max_mb: int, target: Path) -> int:
     return length
 
 
+_wm_lock = __import__("threading").RLock()
+
+
+def _run_ffmpeg(cmd, timeout):
+    """كل أوامر ffmpeg تمر من هنا: وحدة بالمرة، وبخيط واحد، عشان ذاكرة السيرفر (512MB) ما تنفجر."""
+    cmd = list(cmd)
+    if cmd and cmd[0] == "ffmpeg":
+        extra = ["-threads", "1", "-filter_threads", "1"]
+        if "libx264" in cmd:
+            extra += ["-x264-params", "rc-lookahead=10:ref=2:sync-lookahead=0"]
+        cmd = cmd[:-1] + extra + cmd[-1:]
+    with _wm_lock:
+        return subprocess.run(cmd, capture_output=True, timeout=timeout)
+
+
 def _ffmpeg() -> bool:
     return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
@@ -538,18 +553,16 @@ def probe_seconds(path: Path) -> float | None:
 def trim_video(source: Path, target: Path, start: float, length: float) -> bool:
     """قص سريع بدون إعادة ترميز، مع تجهيز الملف للتشغيل المباشر."""
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
-                               "-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(target)],
-                              capture_output=True, timeout=180)
+        done = _run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
+                               "-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(target)], 180)
         ok = done.returncode == 0 and target.exists() and target.stat().st_size > 0
         got = probe_seconds(target) if ok else None
         if ok and got is not None and abs(got - length) <= 1.5:
             return True
         # القص السريع يتقيد بالإطارات المفتاحية؛ إذا طلع غير دقيق نعيد الترميز بدقة.
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
+        done = _run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
                                "-vf", "scale='min(1080,iw)':-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-                               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)],
-                              capture_output=True, timeout=600)
+                               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)], 600)
         return done.returncode == 0 and target.exists() and target.stat().st_size > 0
     except (subprocess.SubprocessError, OSError):
         return False
@@ -571,12 +584,11 @@ def optimize_video(source: Path) -> Path | None:
 
 def _optimize_locked(source: Path, target: Path, temp: Path) -> Path | None:
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(source),
+        done = _run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(source),
                                "-vf", "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'",
                                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "2M", "-bufsize", "4M",
                                "-pix_fmt", "yuv420p", "-g", "60", "-c:a", "aac", "-b:a", "96k", "-ac", "2",
-                               "-movflags", "+faststart", str(temp)],
-                              capture_output=True, timeout=900)
+                               "-movflags", "+faststart", str(temp)], 900)
         if done.returncode == 0 and temp.exists() and temp.stat().st_size > 0:
             temp.replace(target)
             return target
@@ -648,7 +660,6 @@ def start_backfill(s) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-_wm_lock = __import__("threading").Lock()
 
 
 def prepare_watermark_async(row) -> None:
@@ -674,10 +685,9 @@ def watermarked(row, build: bool = False) -> Path | None:
         return source
     temp = target.with_suffix(".part.mp4")
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(source), "-i", str(LOGO), "-filter_complex",
+        done = _run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(source), "-i", str(LOGO), "-filter_complex",
                                "[1:v][0:v]scale2ref=w=iw*0.16:h=ow/mdar[logo][base];[logo]format=rgba,colorchannelmixer=aa=0.85[l];[base][l]overlay=W-w-W*0.04:H-h-H*0.04",
-                               "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-c:a", "copy", "-movflags", "+faststart", str(temp)],
-                              capture_output=True, timeout=600)
+                               "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-c:a", "copy", "-movflags", "+faststart", str(temp)], 600)
         if done.returncode == 0 and temp.exists():
             temp.replace(target)
             return target
@@ -696,9 +706,8 @@ def _link_sig(c, ident: int, expires: int) -> str:
 # ---------------------------------------------------------------- الأصوات (مثل سناب)
 def extract_sound(source: Path, target: Path, start: float, length: float) -> bool:
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source),
-                               "-t", f"{length:.2f}", "-vn", "-c:a", "aac", "-b:a", "128k", "-ac", "2", str(target)],
-                              capture_output=True, timeout=300)
+        done = _run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source),
+                               "-t", f"{length:.2f}", "-vn", "-c:a", "aac", "-b:a", "128k", "-ac", "2", str(target)], 300)
         return done.returncode == 0 and target.exists() and target.stat().st_size > 0
     except (subprocess.SubprocessError, OSError):
         return False
@@ -714,7 +723,7 @@ def image_to_video(image: Path, target: Path, sound: Path | None, seconds: float
     cmd += (["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "128k", "-shortest"] if sound else ["-an"])
     cmd += ["-movflags", "+faststart", str(target)]
     try:
-        done = subprocess.run(cmd, capture_output=True, timeout=600)
+        done = _run_ffmpeg(cmd, 600)
         return done.returncode == 0 and target.exists() and target.stat().st_size > 0
     except (subprocess.SubprocessError, OSError):
         return False
@@ -723,10 +732,9 @@ def image_to_video(image: Path, target: Path, sound: Path | None, seconds: float
 def replace_audio(video: Path, sound: Path, target: Path) -> bool:
     """يشيل صوت الفيديو الأصلي ويحط الصوت المختار (يتكرر إذا كان أقصر)."""
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(video), "-stream_loop", "-1", "-i", str(sound),
+        done = _run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(video), "-stream_loop", "-1", "-i", str(sound),
                                "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest",
-                               "-movflags", "+faststart", str(target)],
-                              capture_output=True, timeout=300)
+                               "-movflags", "+faststart", str(target)], 300)
         return done.returncode == 0 and target.exists() and target.stat().st_size > 0
     except (subprocess.SubprocessError, OSError):
         return False
