@@ -21,6 +21,7 @@ import community_admin
 from contextvars import ContextVar
 REQUEST_SCOPE = ContextVar("request_branch_scope", default=None)
 import organization_addons
+import video_ads
 import twitter_integration
 import tenant_isolation
 import owner_admin
@@ -1429,6 +1430,7 @@ def init_db() -> None:
             owner_admin.migrate(connection, postgres=True)
             community_admin.migrate(connection, postgres=True)
             organization_addons.migrate(connection, postgres=True)
+            video_ads.migrate(connection, postgres=True)
             identity_directory.migrate(connection, postgres=True)
             vehicle_tracking.migrate(connection, postgres=True)
             tenant_isolation.migrate(connection, postgres=True)
@@ -1841,6 +1843,7 @@ def init_db() -> None:
         owner_admin.migrate(connection)
         community_admin.migrate(connection)
         organization_addons.migrate(connection)
+        video_ads.migrate(connection)
         identity_directory.migrate(connection)
         vehicle_tracking.migrate(connection)
         tenant_isolation.migrate(connection)
@@ -2684,6 +2687,8 @@ setupAuditOrganizations=function(accounts,organizations=[]){const select=documen
         if owner_admin.handle(self, method, __import__('sys').modules[__name__]):
             return
         if organization_addons.client(self, method, __import__('sys').modules[__name__]):
+            return
+        if video_ads.client(self, method, __import__('sys').modules[__name__]):
             return
         if community_admin.client(self, method, __import__('sys').modules[__name__]):
             return

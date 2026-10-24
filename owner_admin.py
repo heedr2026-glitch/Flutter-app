@@ -234,6 +234,7 @@ def permission(path,method):
   if p=='technical-ai/state' or p.startswith('me/2fa'): return None
   if p.startswith('finance'): return 'finance'
   if p.startswith('export/'): return {'organizations':'organizations.view','payments':'finance','expenses':'finance','audit':'security'}.get(p[7:],'admins')
+  if p.startswith('video-ads'): return 'ads'
   if p=='addons': return 'packages'
   if p.startswith('community/rewards/'): return 'rewards'
   if p.startswith('addon-offers'): return 'offers'
@@ -574,6 +575,7 @@ def handle(h,method,s):
  path=urlparse(h.path).path.rstrip('/')
  if path=='/owner' and method=='GET': h._send_html((s.ROOT/'owner_dashboard.html').read_text(encoding='utf-8').replace('20260924-ad-image-compress-fix','20260926-ad-request-image-small')); return True
  if path=='/owner/dashboard.js' and method=='GET': h._send_javascript((s.ROOT/'owner_dashboard.js').read_text(encoding='utf-8')); return True
+ if path=='/owner/video-ads.js' and method=='GET': h._send_javascript((s.ROOT/'owner_video_ads.js').read_text(encoding='utf-8')); return True
  if path=='/owner/addons.js' and method=='GET': h._send_javascript((s.ROOT/'owner_addons.js').read_text(encoding='utf-8')); return True
  if not path.startswith('/owner/api/v2/'): return False
  route=path[len('/owner/api/v2/'):]
@@ -603,6 +605,8 @@ def handle(h,method,s):
    h._send(200,{'token':token}); return True
   actor=authorize(h,s)
   if route=='me' and method=='GET': h._send(200,actor); return True
+  if route.startswith('video-ads/') and route.endswith('/file') and method=='GET':
+   import video_ads; video_ads.owner_file(h,route,s); return True
   if route.startswith('ads/image/') and method=='GET':
    value=ad_image_lookup(route[len('ads/image/'):],s)
    if not value: raise s.ApiError(404,'صورة الإعلان غير موجودة')
@@ -720,6 +724,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    items=rows(c,'SELECT id,active,approved,expires_at,scheduled_at,published_at,review_note,status '+src+' ORDER BY id DESC LIMIT 30 OFFSET ?',[*args,(page-1)*30])
    return {'signature':items,'total':scalar(c,'SELECT COUNT(*) n '+src,args)}
   raise s.ApiError(403,'لا تملك صلاحية عرض التحديثات')
+ if r=='video-ads' or r.startswith('video-ads/'):
+  import video_ads
+  return video_ads.owner(c,r,m,d,q,page,a,s)
  if r=='addons' or r.startswith(('addon-offers','accounts','branches/','organization-verifications')):
   import organization_addons
   return organization_addons.owner(c,r,m,d,q,page,a,s)
