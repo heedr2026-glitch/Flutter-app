@@ -144,7 +144,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
     final seconds = player.value.duration.inMilliseconds / 1000;
     await player.setLooping(false);
     player.addListener(_loopInsideRange);
-    await player.play();
+    // الفيديو يبدأ واقف؛ المستخدم يشغله بضغطة لما يبي.
     if (!mounted) return;
     setState(() {
       _file = file;
@@ -158,7 +158,11 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
     final player = _player;
     if (player == null || !player.value.isInitialized) return;
     final position = player.value.position.inMilliseconds / 1000;
-    if (position >= _range.end || !player.value.isPlaying && position >= _duration - 0.1) {
+    if (!player.value.isPlaying) {
+      if (mounted) setState(() {});
+      return;
+    }
+    if (position >= _range.end || position >= _duration - 0.1) {
       player.seekTo(Duration(milliseconds: (_range.start * 1000).round()));
       player.play();
     }
@@ -304,13 +308,33 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
     final player = _player!;
     final overlay = _overlay.text.trim();
     final length = _range.end - _range.start;
-    return ListView(
+    return Focus(
+      // أول ما يكتب في أي خانة يوقف الفيديو عشان يركز.
+      onFocusChange: (has) {
+        if (has) _player?.pause();
+      },
+      child: ListView(
       padding: const EdgeInsets.all(16),
       children: [
         AspectRatio(
           aspectRatio: 9 / 16,
           child: LayoutBuilder(
             builder: (context, box) => GestureDetector(
+              onTap: () {
+                FocusScope.of(context).unfocus();
+                final p = _player;
+                if (p == null) return;
+                if (p.value.isPlaying) {
+                  p.pause();
+                } else {
+                  final pos = p.value.position.inMilliseconds / 1000;
+                  if (pos < _range.start || pos >= _range.end - 0.1) {
+                    p.seekTo(Duration(milliseconds: (_range.start * 1000).round()));
+                  }
+                  p.play();
+                }
+                setState(() {});
+              },
               onVerticalDragUpdate: overlay.isEmpty
                   ? null
                   : (d) => setState(
@@ -331,6 +355,10 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
                       Align(
                         alignment: Alignment(0, _overlayY * 2 - 1),
                         child: overlayTextPreview(overlay),
+                      ),
+                    if (!player.value.isPlaying)
+                      const Center(
+                        child: Icon(Icons.play_circle_fill, size: 72, color: Colors.white70),
                       ),
                   ],
                 ),
@@ -444,6 +472,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
           child: const Text('اختيار فيديو ثاني'),
         ),
       ],
+    ),
     );
   }
 }

@@ -47,7 +47,32 @@ class _KhdoomHomeShellState extends State<KhdoomHomeShell> {
         ),
         bottomNavigationBar: Directionality(
           textDirection: TextDirection.rtl,
-          child: NavigationBar(
+          child: NavigationBarTheme(
+            // نفس ألوان الصفحة الرئيسية الداكنة.
+            data: NavigationBarThemeData(
+              backgroundColor: const Color(0xFF111B35),
+              surfaceTintColor: Colors.transparent,
+              indicatorColor: const Color(0xFF38BDF8),
+              iconTheme: WidgetStateProperty.resolveWith(
+                (states) => IconThemeData(
+                  color: states.contains(WidgetState.selected)
+                      ? const Color(0xFF0B1020)
+                      : Colors.white70,
+                ),
+              ),
+              labelTextStyle: WidgetStateProperty.resolveWith(
+                (states) => TextStyle(
+                  fontSize: 12,
+                  color: states.contains(WidgetState.selected)
+                      ? const Color(0xFF38BDF8)
+                      : Colors.white70,
+                  fontWeight: states.contains(WidgetState.selected)
+                      ? FontWeight.bold
+                      : FontWeight.normal,
+                ),
+              ),
+            ),
+            child: NavigationBar(
             selectedIndex: _tab,
             onDestinationSelected: (i) => setState(() {
               _tab = i;
@@ -75,6 +100,7 @@ class _KhdoomHomeShellState extends State<KhdoomHomeShell> {
                 label: 'مؤسستي',
               ),
             ],
+          ),
           ),
         ),
       ),
