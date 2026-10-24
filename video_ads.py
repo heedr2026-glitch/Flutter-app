@@ -24,7 +24,8 @@ import owner_admin as admin
 
 # المدد المسموحة عند الموافقة (بالساعات).
 DURATIONS = {"1h": 1, "2h": 2, "1d": 24, "2d": 48, "1w": 168, "1m": 720}
-DURATION_LABELS = {"1h": "ساعة", "2h": "ساعتين", "1d": "يوم", "2d": "يومين", "1w": "أسبوع", "1m": "شهر"}
+DURATION_LABELS = {"1h": "ساعة", "2h": "ساعتين", "1d": "يوم", "2d": "يومين", "1w": "أسبوع", "1m": "شهر", "forever": "دايم"}
+OFFICIAL_NAME = "خدوم"
 DEFAULT_SETTINGS = {
     "max_seconds": 30,          # المدة القصوى للفيديو، يزيدها المالك متى ما يبي
     "quota_free": 0,            # عدد الإعلانات المجانية بالشهر لكل باقة
@@ -98,6 +99,9 @@ def migrate(c, postgres: bool = False) -> None:
         public INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, uses INTEGER NOT NULL DEFAULT 0,
         deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)""")
     c.execute("CREATE INDEX IF NOT EXISTS video_ad_sounds_scope ON video_ad_sounds(public, hidden, deleted)")
+    for column in ("is_official", "pinned"):
+        if postgres or column not in present:
+            c.execute("ALTER TABLE video_ads ADD COLUMN " + ("IF NOT EXISTS " if postgres else "") + column + " INTEGER NOT NULL DEFAULT 0")
     if postgres or "optimized" not in present:
         c.execute("ALTER TABLE video_ads ADD COLUMN " + ("IF NOT EXISTS " if postgres else "") + "optimized INTEGER NOT NULL DEFAULT 0")
     c.execute("CREATE INDEX IF NOT EXISTS video_ads_status ON video_ads(status, deleted)")
@@ -262,15 +266,17 @@ def owner_list(c, status: str, page: int) -> dict:
         status = "pending"
     select = ("SELECT v.id,v.organization_id,v.title,v.caption,v.overlay_text,v.activity,v.contact,v.allow_download,v.size_bytes,v.seconds,"
               "v.status,v.paid,v.price_sar,v.transfer_name,v.duration_key,v.review_note,v.reviewed_by,v.created_at,v.submitted_at,"
-              "v.published_at,v.expires_at,o.name organization_name")
-    where = "FROM video_ads v JOIN organizations o ON o.id=v.organization_id WHERE v.deleted=0 AND v.status=?"
-    order = "v.submitted_at ASC,v.id ASC" if status == "pending" else "v.id DESC"
+              "v.published_at,v.expires_at,v.is_official,v.pinned,v.overlay_y,o.name organization_name")
+    where = "FROM video_ads v LEFT JOIN organizations o ON o.id=v.organization_id WHERE v.deleted=0 AND v.status=?"
+    order = "v.submitted_at ASC,v.id ASC" if status == "pending" else "v.pinned DESC,v.id DESC"
     result = admin.paged(c, select, where, [status], order, page)
     result["items"] = [{**_owner_row(x), "package": org_package(c, x["organization_id"]),
+                        "organization_name": OFFICIAL_NAME if x["is_official"] else x["organization_name"],
                         "likes": int(c.execute("SELECT COUNT(*) n FROM video_ad_likes WHERE video_ad_id=?", (x["id"],)).fetchone()["n"])}
                        for x in result.get("items", [])]
     result["counts"] = {k: c.execute("SELECT COUNT(*) n FROM video_ads WHERE deleted=0 AND status=?", (k,)).fetchone()["n"] for k in statuses}
     result["durations"] = [{"key": k, "label": DURATION_LABELS[k]} for k in DURATIONS]
+    result["officialDurations"] = [{"key": k, "label": v} for k, v in DURATION_LABELS.items()]
     return result
 
 
@@ -321,6 +327,85 @@ def owner_overrides(c) -> list:
     return [{**x, "package": org_package(c, x["organization_id"])} for x in items]
 
 
+def _official_expiry(key: str):
+    if key == "forever":
+        return None
+    if key not in DURATIONS:
+        raise ValueError("اختر مدة المقطع")
+    return (datetime.now(timezone.utc) + timedelta(hours=DURATIONS[key])).isoformat()
+
+
+def official_create(c, d, actor):
+    content_type = str(d.get("contentType", "video/mp4"))
+    if content_type not in VIDEO_TYPES and content_type not in IMAGE_TYPES:
+        raise ValueError("اختار فيديو أو صورة")
+    key = str(d.get("duration", "forever"))
+    _official_expiry(key)
+    sound_id = d.get("soundId") or None
+    if sound_id and not c.execute("SELECT id FROM video_ad_sounds WHERE id=? AND deleted=0 AND file_name<>''", (int(sound_id),)).fetchone():
+        raise ValueError("الصوت غير متاح")
+    cur = c.execute("""INSERT INTO video_ads(organization_id,title,caption,overlay_text,overlay_y,allow_download,content_type,status,duration_key,
+                       created_at,is_official,pinned,sound_id,reviewed_by) VALUES(0,?,?,?,?,?,?,'draft',?,?,1,?,?,?)""",
+                    (str(d.get("title", "")).strip()[:80], str(d.get("caption", "")).strip()[:300], str(d.get("overlayText", "")).strip()[:120],
+                     admin.number(d.get("overlayY", 0.15), 0, 1), int(d.get("allowDownload", True) is not False), content_type, key, stamp(),
+                     int(d.get("pinned") is True), int(sound_id) if sound_id else None, actor[:80]))
+    ident = cur.lastrowid or c.execute("SELECT MAX(id) n FROM video_ads WHERE is_official=1").fetchone()["n"]
+    admin.audit(c, actor, "video_ad_official_created", ident)
+    return {"id": ident, "uploadUrl": f"/owner/api/v2/video-ads/official/{ident}/upload"}
+
+
+def official_update(c, ident, d, actor):
+    row = c.execute("SELECT * FROM video_ads WHERE id=? AND is_official=1 AND deleted=0", (ident,)).fetchone()
+    if not row:
+        raise ValueError("المقطع غير موجود")
+    fields, args = [], []
+    for key, column, limit in (("title", "title", 80), ("caption", "caption", 300), ("overlayText", "overlay_text", 120)):
+        if key in d:
+            fields.append(column + "=?"); args.append(str(d.get(key) or "").strip()[:limit])
+    if "overlayY" in d:
+        fields.append("overlay_y=?"); args.append(admin.number(d["overlayY"], 0, 1))
+    if "pinned" in d:
+        fields.append("pinned=?"); args.append(int(d["pinned"] is True))
+    if "allowDownload" in d:
+        fields.append("allow_download=?"); args.append(int(d["allowDownload"] is not False))
+    if d.get("duration"):
+        key = str(d["duration"])
+        fields += ["duration_key=?", "expires_at=?", "status=?"]
+        args += [key, _official_expiry(key), "published" if row["file_name"] else row["status"]]
+    if fields:
+        c.execute("UPDATE video_ads SET " + ",".join(fields) + " WHERE id=?", (*args, ident))
+        admin.audit(c, actor, "video_ad_official_updated", ident)
+    return {"saved": True}
+
+
+def owner_upload(h, route, s) -> None:
+    """رفع ملف مقطع خدوم من لوحة الإدارة، والنشر فورًا."""
+    match = re.fullmatch(r"video-ads/official/([0-9]+)/upload", route)
+    if not match:
+        raise s.ApiError(404, "المسار غير موجود")
+    q = {k: v[0] for k, v in parse_qs(urlparse(h.path).query).items()}
+    try:
+        with s.db() as c:
+            row = c.execute("SELECT * FROM video_ads WHERE id=? AND is_official=1 AND deleted=0", (int(match[1]),)).fetchone()
+            if not row or row["status"] != "draft":
+                raise ValueError("المقطع غير موجود")
+            sound = c.execute("SELECT * FROM video_ad_sounds WHERE id=? AND deleted=0", (row["sound_id"],)).fetchone() if row["sound_id"] else None
+            final, seconds, is_image = _process_upload(c, h, s, row, q, sound)
+            now = stamp()
+            c.execute("""UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds),optimized=0,content_type=?,status='published',
+                         published_at=?,expires_at=? WHERE id=?""",
+                      (final.name, final.stat().st_size, seconds, "video/mp4" if (is_image or sound) else row["content_type"],
+                       now, _official_expiry(row["duration_key"] or "forever"), row["id"]))
+            if sound:
+                c.execute("UPDATE video_ad_sounds SET uses=uses+1 WHERE id=?", (sound["id"],))
+            admin.audit(c, getattr(h, "platform_actor", {}).get("name", "المالك"), "video_ad_official_published", row["id"])
+            c.commit()
+        optimize_async(s, row["id"])
+        h._send(200, {"published": True, "id": row["id"], "seconds": seconds})
+    except ValueError as error:
+        raise s.ApiError(400, str(error))
+
+
 def owner(c, r, m, d, q, page, a, s):
     actor = a.get("name") or "المالك"
     if r == "video-ads" and m == "GET":
@@ -332,6 +417,14 @@ def owner(c, r, m, d, q, page, a, s):
         return cfg
     if r == "video-ads/settings" and m == "PUT":
         return save_settings(c, d, actor)
+    if r == "video-ads/official" and m == "POST":
+        return official_create(c, d, actor)
+    match = re.fullmatch(r"video-ads/official/([0-9]+)", r)
+    if match and m == "PUT":
+        return official_update(c, int(match[1]), d, actor)
+    if r == "video-ads/all-sounds" and m == "GET":
+        rows = c.execute("SELECT * FROM video_ad_sounds WHERE deleted=0 AND file_name<>'' ORDER BY uses DESC,id DESC LIMIT 300").fetchall()
+        return {"items": [_sound_out(c, x) for x in rows]}
     match = re.fullmatch(r"video-ads/quota/([0-9]+)", r)
     if match and m == "PUT":
         org = int(match[1])
@@ -396,6 +489,8 @@ def _public(row, base_contact="", package="") -> dict:
             "seconds": row["seconds"], "organizationId": row["organization_id"],
             "organizationName": row["organization_name"] if "organization_name" in row.keys() else "",
             "vip": package == "vip",
+            "official": bool(row["is_official"]) if "is_official" in row.keys() else False,
+            "pinned": bool(row["pinned"]) if "pinned" in row.keys() else False,
             "overlayY": float(row["overlay_y"]) if "overlay_y" in row.keys() else 0.15,
             "videoUrl": f"/api/video-ads/{row['id']}/file", "publishedAt": row["published_at"], "expiresAt": row["expires_at"]}
 
@@ -510,10 +605,18 @@ def _optimize_row(c, row) -> bool:
 def optimize_async(s, ident: int) -> None:
     def run():
         try:
-            with s.db() as c:
-                row = c.execute("SELECT id,file_name FROM video_ads WHERE id=? AND deleted=0 AND optimized=0", (ident,)).fetchone()
-                if row and _optimize_row(c, row):
-                    c.commit()
+            # ننتظر لين يتحفظ الطلب الأصلي (الملف الجديد) قبل الضغط.
+            for _ in range(30):
+                time.sleep(1)
+                with s.db() as c:
+                    row = c.execute("SELECT id,file_name FROM video_ads WHERE id=? AND deleted=0 AND optimized=0", (ident,)).fetchone()
+                    if not row:
+                        return
+                    path = _file_path(row)
+                    if path and path.exists():
+                        if _optimize_row(c, row):
+                            c.commit()
+                        return
         except Exception as error:
             print("video_ads optimize:", error, flush=True)
 
@@ -715,6 +818,64 @@ def sounds_client(h, method, s, c, user, org, r, q):
     raise s.ApiError(404, "المسار غير موجود")
 
 
+def _process_upload(c, h, s, row, q, sound):
+    """يحفظ الملف المرفوع ويجهزه: قص الفيديو، صورة ← فيديو، واستبدال الصوت."""
+    ident = row["id"]
+    cfg = settings(c)
+    try:
+        start = max(0.0, float(q.get("start", 0) or 0))
+        end = float(q["end"]) if q.get("end") else None
+    except ValueError:
+        raise ValueError("بداية ونهاية القص غير صحيحة")
+    wants_trim = end is not None
+    # الفيديو الطويل يرتفع كامل والسيرفر يقصه؛ لذلك حده أكبر.
+    is_image = row["content_type"] in IMAGE_TYPES
+    suffix = IMAGE_TYPES[row["content_type"]] if is_image else VIDEO_TYPES.get(row["content_type"], ".mp4")
+    sound_path = (video_dir() / sound["file_name"]) if sound else None
+    if is_image or sound:
+        if not _ffmpeg():
+            raise ValueError("تجهيز الصورة والصوت غير متاح حاليًا")
+        if is_image:
+            wants_trim = False
+    raw_path = video_dir() / f"raw_{ident}_{os.urandom(6).hex()}{suffix}"
+    size = _read_upload(h, s, max(cfg["max_upload_mb"], 200) if wants_trim else cfg["max_upload_mb"], raw_path)
+    final = video_dir() / f"v{ident}_{os.urandom(6).hex()}{suffix}"
+    seconds = None
+    if is_image:
+        final = final.with_suffix(".mp4")
+        length = min(float(sound["seconds"]) if sound else IMAGE_SECONDS, cfg["max_seconds"])
+        ok = image_to_video(raw_path, final, sound_path, length)
+        raw_path.unlink(missing_ok=True)
+        if not ok:
+            raise ValueError("تعذر تجهيز الصورة، جرّب صورة ثانية")
+    elif wants_trim and _ffmpeg():
+        length = end - start
+        if length <= 0 or length > cfg["max_seconds"] + 0.5:
+            raw_path.unlink(missing_ok=True)
+            raise ValueError(f"اختار مقطع مدته {cfg['max_seconds']} ثانية أو أقل")
+        if not trim_video(raw_path, final, start, length):
+            raw_path.unlink(missing_ok=True)
+            raise ValueError("تعذر قص الفيديو، جرّب فيديو ثاني")
+        raw_path.unlink(missing_ok=True)
+    else:
+        raw_path.replace(final)
+    if sound and not is_image:
+        mixed = final.with_name(final.stem + "_a.mp4")
+        if not replace_audio(final, sound_path, mixed):
+            final.unlink(missing_ok=True)
+            raise ValueError("تعذر إضافة الصوت على الفيديو")
+        final.unlink(missing_ok=True)
+        final = mixed
+    seconds = probe_seconds(final)
+    if seconds is not None and seconds > cfg["max_seconds"] + 1.5:
+        final.unlink(missing_ok=True)
+        raise ValueError(f"المدة القصوى للفيديو {cfg['max_seconds']} ثانية؛ قص الفيديو أولًا")
+    if not wants_trim and not is_image and final.stat().st_size > cfg["max_upload_mb"] * 1_048_576:
+        final.unlink(missing_ok=True)
+        raise ValueError(f"حجم الفيديو أكبر من {cfg['max_upload_mb']} ميقا")
+    return final, seconds, is_image
+
+
 def client(h, method, s) -> bool:
     path = urlparse(h.path).path.rstrip("/")
     if not path.startswith("/api/video-ads"):
@@ -771,13 +932,17 @@ def client(h, method, s) -> bool:
                 return True
             if r == "feed" and method == "GET":
                 activity = (q.get("activity") or "").strip()
-                sql = ("SELECT v.*,o.name organization_name,o.phone org_phone FROM video_ads v JOIN organizations o ON o.id=v.organization_id "
+                sql = ("SELECT v.*,COALESCE(o.name,'') organization_name,COALESCE(o.phone,'') org_phone FROM video_ads v LEFT JOIN organizations o ON o.id=v.organization_id "
                        "WHERE v.deleted=0 AND v.status='published' AND (v.expires_at IS NULL OR v.expires_at>?)")
                 args = [stamp()]
                 if activity:
                     sql += " AND v.activity=?"; args.append(activity[:60])
-                sql += " ORDER BY v.published_at DESC LIMIT 50"
+                sql += " ORDER BY v.pinned DESC,v.published_at DESC LIMIT 50"
                 items = [_public(x, x["org_phone"] or "", org_package(c, x["organization_id"])) for x in c.execute(sql, args).fetchall()]
+                for item in items:
+                    if item["official"]:
+                        item["organizationName"] = OFFICIAL_NAME
+                        item["contact"] = ""
                 _attach_likes(c, items, org)
                 result = {"items": items}
             elif re.fullmatch(r"[0-9]+/like", r) and method == "POST":
@@ -831,59 +996,8 @@ def client(h, method, s) -> bool:
                 row = c.execute("SELECT * FROM video_ads WHERE id=? AND organization_id=? AND deleted=0", (ident, org)).fetchone()
                 if not row or row["status"] != "draft":
                     raise ValueError("المسودة غير موجودة")
-                cfg = settings(c)
-                try:
-                    start = max(0.0, float(q.get("start", 0) or 0))
-                    end = float(q["end"]) if q.get("end") else None
-                except ValueError:
-                    raise ValueError("بداية ونهاية القص غير صحيحة")
-                wants_trim = end is not None
-                # الفيديو الطويل يرتفع كامل والسيرفر يقصه؛ لذلك حده أكبر.
-                is_image = row["content_type"] in IMAGE_TYPES
-                suffix = IMAGE_TYPES[row["content_type"]] if is_image else VIDEO_TYPES.get(row["content_type"], ".mp4")
                 sound = usable_sound(c, row["sound_id"], org) if row["sound_id"] else None
-                sound_path = (video_dir() / sound["file_name"]) if sound else None
-                if is_image or sound:
-                    if not _ffmpeg():
-                        raise ValueError("تجهيز الصورة والصوت غير متاح حاليًا")
-                    if is_image:
-                        wants_trim = False
-                raw_path = video_dir() / f"raw_{ident}_{os.urandom(6).hex()}{suffix}"
-                size = _read_upload(h, s, max(cfg["max_upload_mb"], 200) if wants_trim else cfg["max_upload_mb"], raw_path)
-                final = video_dir() / f"v{ident}_{os.urandom(6).hex()}{suffix}"
-                seconds = None
-                if is_image:
-                    final = final.with_suffix(".mp4")
-                    length = min(float(sound["seconds"]) if sound else IMAGE_SECONDS, cfg["max_seconds"])
-                    ok = image_to_video(raw_path, final, sound_path, length)
-                    raw_path.unlink(missing_ok=True)
-                    if not ok:
-                        raise ValueError("تعذر تجهيز الصورة، جرّب صورة ثانية")
-                elif wants_trim and _ffmpeg():
-                    length = end - start
-                    if length <= 0 or length > cfg["max_seconds"] + 0.5:
-                        raw_path.unlink(missing_ok=True)
-                        raise ValueError(f"اختار مقطع مدته {cfg['max_seconds']} ثانية أو أقل")
-                    if not trim_video(raw_path, final, start, length):
-                        raw_path.unlink(missing_ok=True)
-                        raise ValueError("تعذر قص الفيديو، جرّب فيديو ثاني")
-                    raw_path.unlink(missing_ok=True)
-                else:
-                    raw_path.replace(final)
-                if sound and not is_image:
-                    mixed = final.with_name(final.stem + "_a.mp4")
-                    if not replace_audio(final, sound_path, mixed):
-                        final.unlink(missing_ok=True)
-                        raise ValueError("تعذر إضافة الصوت على الفيديو")
-                    final.unlink(missing_ok=True)
-                    final = mixed
-                seconds = probe_seconds(final)
-                if seconds is not None and seconds > cfg["max_seconds"] + 1.5:
-                    final.unlink(missing_ok=True)
-                    raise ValueError(f"المدة القصوى للفيديو {cfg['max_seconds']} ثانية؛ قص الفيديو أولًا")
-                if not wants_trim and not is_image and final.stat().st_size > cfg["max_upload_mb"] * 1_048_576:
-                    final.unlink(missing_ok=True)
-                    raise ValueError(f"حجم الفيديو أكبر من {cfg['max_upload_mb']} ميقا")
+                final, seconds, is_image = _process_upload(c, h, s, row, q, sound)
                 old = row
                 c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds),optimized=0,content_type=? WHERE id=?",
                           (final.name, final.stat().st_size, seconds, "video/mp4" if (is_image or sound) else row["content_type"], ident))

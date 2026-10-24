@@ -605,6 +605,8 @@ def handle(h,method,s):
    h._send(200,{'token':token}); return True
   actor=authorize(h,s)
   if route=='me' and method=='GET': h._send(200,actor); return True
+  if route.startswith('video-ads/official/') and route.endswith('/upload') and method in ('PUT','POST'):
+   import video_ads; video_ads.owner_upload(h,route,s); return True
   if route.startswith('video-ads/') and route.endswith('/file') and method=='GET':
    import video_ads; video_ads.owner_file(h,route,s); return True
   if route.startswith('ads/image/') and method=='GET':
