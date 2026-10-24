@@ -265,6 +265,20 @@ class VideoAdsTest(unittest.TestCase):
                 self.assertEqual(call('/api/video-ads/sounds?scope=public', user=2)[1]['items'], [])
                 self.assertEqual(call('/api/video-ads', 'POST', {'title': 'x', 'seconds': 5, 'contentType': 'image/png', 'soundId': sound['id']}, user=2)[0], 400)
                 self.assertEqual(len(call('/api/video-ads/sounds')[1]['items']), 1)  # صاحبه يشوفه
+                # مقطع خدوم من الإدارة: ينشر فورًا، دايم، مثبت أول، وقابل للتعديل
+                status, off = call('/owner/api/v2/video-ads/official', 'POST', {'title': 'خدوم', 'contentType': 'image/png', 'duration': 'forever', 'pinned': True, 'overlayText': 'جديد'}, owner=True)
+                self.assertEqual(status, 200, off)
+                headers = {'Content-Type': 'image/png', 'X-Owner-Key': 'video-key'}
+                with urlopen(Request(base + off['uploadUrl'], data=image.read_bytes(), method='PUT', headers=headers), timeout=120) as r:
+                    self.assertEqual(json.loads(r.read())['published'], True)
+                feed = call('/api/video-ads/feed', user=2)[1]['items']
+                self.assertEqual((feed[0]['id'], feed[0]['official'], feed[0]['pinned'], feed[0]['organizationName'], feed[0]['expiresAt']), (off['id'], True, True, 'خدوم', None))
+                self.assertEqual(call('/owner/api/v2/video-ads/official/%d' % off['id'], 'PUT', {'overlayText': 'تعديل', 'pinned': False, 'duration': '1d'}, owner=True)[0], 200)
+                item = [x for x in call('/api/video-ads/feed', user=2)[1]['items'] if x['id'] == off['id']][0]
+                self.assertEqual((item['overlayText'], item['pinned']), ('تعديل', False))
+                self.assertIsNotNone(item['expiresAt'])
+                listing = call('/owner/api/v2/video-ads?status=published', owner=True)[1]
+                self.assertIn('خدوم', [x['organization_name'] for x in listing['items']])
                 # إيقاف الميزة كاملة
                 call('/owner/api/v2/video-ads/settings', 'PUT', {'sounds_enabled': 0}, owner=True)
                 self.assertEqual(call('/api/video-ads/sounds')[0], 400)
