@@ -177,8 +177,12 @@ class VideoAdsTest(unittest.TestCase):
                 status, up, _ = call(draft['uploadUrl'] + '?start=10&end=30', 'PUT', raw=source.read_bytes())
                 self.assertEqual(status, 200, up)
                 self.assertLess(abs(up['seconds'] - 20), 2)
-                with server.db() as c:
-                    row = c.execute('SELECT optimized,file_name FROM video_ads WHERE id=?', (draft['id'],)).fetchone()
+                import time as _t0
+                for _ in range(120):
+                    with server.db() as c:
+                        row = c.execute('SELECT optimized,file_name FROM video_ads WHERE id=?', (draft['id'],)).fetchone()
+                    if row['optimized'] == 1: break
+                    _t0.sleep(0.5)
                 self.assertEqual(row['optimized'], 1)
                 self.assertTrue(row['file_name'].endswith('_m.mp4'))
                 import video_ads, time as _t
