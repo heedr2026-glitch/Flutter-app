@@ -2859,30 +2859,12 @@ class _AdvertisementRequestDialogState
           if (widget.existingAds.isNotEmpty) const SizedBox(height: 14),
           designCard,
           const SizedBox(height: 14),
-          _referenceCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'معاينة مباشرة',
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  'يتم تحديث المعاينة تلقائيًا مع أي تغيير في الإعدادات',
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-                const SizedBox(height: 10),
-                _buildBannerPreview(showTools: false),
-              ],
-            ),
-          ),
-          const SizedBox(height: 14),
+          // شريط واحد فقط: المعاينة القابلة للتحرير بالأعلى هي نفسها الشكل النهائي.
           LayoutBuilder(
             builder: (context, constraints) {
               final preview = OutlinedButton.icon(
                 onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('المعاينة محدثة بالأسفل')),
+                  const SnackBar(content: Text('المعاينة محدثة بالأعلى')),
                 ),
                 icon: const Icon(Icons.visibility_outlined),
                 label: const Text('معاينة'),
@@ -3295,7 +3277,7 @@ class _AdvertisementRequestDialogState
         Expanded(
           child: OutlinedButton.icon(
             onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('المعاينة محدثة بالأسفل')),
+              const SnackBar(content: Text('المعاينة محدثة بالأعلى')),
             ),
             icon: const Icon(Icons.visibility_outlined),
             label: const Text('معاينة'),

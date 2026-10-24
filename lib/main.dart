@@ -1,3 +1,4 @@
+import 'home_shell.dart';
 import 'vehicle_tracking_page.dart';
 import 'driver_link_page.dart';
 import 'whatsapp_workspace.dart';
@@ -41,6 +42,7 @@ import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
 import 'cloud_api.dart';
+import 'login_support_dialog.dart';
 import 'community_page.dart';
 import 'document_viewer.dart';
 import 'organization_record_editor.dart';
@@ -50,6 +52,7 @@ import 'commercial_research/commercial_research_models.dart';
 import 'commercial_research/commercial_whatsapp.dart';
 import 'commercial_research/commercial_research_report.dart';
 import 'commercial_research/leads_notebook_page.dart';
+import 'device_backup.dart';
 
 const accountDeletionUrl = 'https://khdoom-api.onrender.com/delete-account';
 
@@ -895,7 +898,7 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
       );
     }
     if (!_accountCreated) return const HomePage();
-    return _hasSession ? const DashboardPage() : const LoginPage();
+    return _hasSession ? const KhdoomHomeShell() : const LoginPage();
   }
 }
 
@@ -1288,7 +1291,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardPage()),
+        MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
         (_) => false,
       );
       return;
@@ -1362,7 +1365,7 @@ class _LoginPageState extends State<LoginPage> {
           if (!mounted) return;
           Navigator.pushAndRemoveUntil(
             context,
-            MaterialPageRoute(builder: (_) => const DashboardPage()),
+            MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
             (_) => false,
           );
           return;
@@ -1441,7 +1444,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardPage()),
+        MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
         (_) => false,
       );
       return;
@@ -1566,7 +1569,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return true;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardPage()),
+        MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
         (_) => false,
       );
       return true;
@@ -1837,6 +1840,11 @@ class _LoginPageState extends State<LoginPage> {
                       TextButton(
                         onPressed: _forgotUsername,
                         child: const Text('نسيت اسم المستخدم؟'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => showLoginSupportDialog(context),
+                        icon: const Icon(Icons.support_agent, size: 18),
+                        label: const Text('تواصل مع الدعم'),
                       ),
                     ],
                   ),
@@ -2640,6 +2648,130 @@ class _DashboardPageState extends State<DashboardPage> {
       BranchPreferences.getInstance();
   final TextEditingController _assistantController = TextEditingController();
   String _homeTab = 'ask';
+  List<Map<String, dynamic>> _reminders = [];
+  bool _remindersGreeted = false;
+
+  /// «تذكير»: كل اللي قرّب ينتهي أو انتهى (مركبات، موظفين، مؤسسة)، الأقرب أول.
+  Future<void> _loadReminders() async {
+    final prefs = await _branchPrefs;
+    final items = <Map<String, dynamic>>[];
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    void add(String kind, String owner, String what, dynamic raw) {
+      final date = DateTime.tryParse(raw?.toString() ?? '');
+      if (date == null) return;
+      final days = DateTime(date.year, date.month, date.day).difference(today).inDays;
+      if (days > 60) return;
+      items.add({'kind': kind, 'owner': owner, 'what': what, 'days': days, 'date': date});
+    }
+
+    for (final v in _assistantList(prefs, 'business_vehicles')) {
+      final name = v['name']?.toString() ?? 'مركبة';
+      add('vehicle', name, 'الاستمارة', v['registration']);
+      add('vehicle', name, 'التأمين', v['insurance']);
+      add('vehicle', name, 'الفحص', v['inspection']);
+    }
+    for (final e in _assistantList(prefs, 'employee_alert_records')) {
+      if (e['archived'] == true) continue;
+      final name = e['name']?.toString() ?? 'موظف';
+      add('employee', name, 'الإقامة', e['iqama']);
+      add('employee', name, 'العقد', e['contract']);
+      add('employee', name, 'التأمين', e['insurance']);
+    }
+    for (final title in const [
+      'الرخصة البلدية',
+      'السجل التجاري',
+      'اشتراك قوى',
+      'حماية الأجور – مدد',
+      'شهادة الدفاع المدني',
+    ]) {
+      add('organization', 'المؤسسة', title, prefs.getString('alert_$title'));
+    }
+    for (final r in _assistantList(prefs, 'organization_alert_records')) {
+      add('organization', 'المؤسسة', r['title']?.toString() ?? 'مستند', r['date']);
+    }
+    items.sort((a, b) => (a['days'] as int).compareTo(b['days'] as int));
+    if (!mounted) return;
+    setState(() {
+      _reminders = items;
+      // أول ما يفتح التطبيق: «اسألني» يذكّره بأقرب شي قرّب ينتهي.
+      if (!_remindersGreeted && _assistantAnswer.isEmpty && items.isNotEmpty) {
+        final first = items.first;
+        if ((first['days'] as int) <= 30) {
+          _assistantAnswer = 'تذكير: ${_reminderSentence(first)}'
+              '${items.length > 1 ? '\nوعندك ${items.length - 1} غيرها في «تذكير».' : ''}';
+        }
+      }
+      _remindersGreeted = true;
+    });
+  }
+
+  String _reminderSentence(Map<String, dynamic> item) {
+    final days = item['days'] as int;
+    final date = item['date'] as DateTime;
+    final when = '${date.year}/${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')}';
+    final subject = item['kind'] == 'vehicle'
+        ? 'مركبة ${item['owner']}'
+        : item['kind'] == 'employee'
+        ? 'الموظف ${item['owner']}'
+        : 'المؤسسة';
+    final left = days < 0
+        ? 'منتهية من ${-days} يوم'
+        : days == 0
+        ? 'تنتهي اليوم'
+        : 'باقي $days يوم';
+    return '$subject: ${item['what']} تنتهي بتاريخ $when، $left';
+  }
+
+  Widget _remindersView() {
+    if (_reminders.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: Text(
+          'ما فيه شي قرّب ينتهي خلال الشهرين الجاية ✅',
+          style: TextStyle(color: Colors.white70),
+        ),
+      );
+    }
+    return Column(
+      children: _reminders.take(30).map((item) {
+        final days = item['days'] as int;
+        final color = days < 0
+            ? const Color(0xFFEF4444)
+            : days <= 7
+            ? const Color(0xFFF97316)
+            : days <= 30
+            ? const Color(0xFFFACC15)
+            : const Color(0xFF22C55E);
+        final icon = item['kind'] == 'vehicle'
+            ? Icons.directions_car_outlined
+            : item['kind'] == 'employee'
+            ? Icons.badge_outlined
+            : Icons.apartment_outlined;
+        return Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0B1020),
+            borderRadius: BorderRadius.circular(12),
+            border: Border(right: BorderSide(color: color, width: 4)),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: color),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  _reminderSentence(item),
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
   bool _marketLoading = false;
   bool _marketNew = false;
   List<Map<String, dynamic>> _marketItems = [];
@@ -2651,6 +2783,7 @@ class _DashboardPageState extends State<DashboardPage> {
       onTap: () {
         setState(() => _homeTab = id);
         if (id == 'market') _loadMarketInsights(markSeen: true);
+        if (id == 'remind') _loadReminders();
       },
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 9),
@@ -2672,7 +2805,9 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
             ),
-            if (id == 'market' && _marketNew) ...[
+            if ((id == 'market' && _marketNew) ||
+                (id == 'remind' &&
+                    _reminders.any((x) => (x['days'] as int) <= 30))) ...[
               const SizedBox(width: 6),
               Container(
                 width: 9,
@@ -2809,7 +2944,12 @@ class _DashboardPageState extends State<DashboardPage> {
       },
     );
     KhdoomNotices.poll();
+    // يرجّع المركبات والسجلات والتواريخ من الخادم على جوال جديد أو بعد التحديث.
+    DeviceBackup.sync().then((_) {
+      if (mounted) _loadBusinessName();
+    });
     _loadMarketInsights();
+    _loadReminders();
     _sessionValidationTimer = Timer.periodic(
       const Duration(minutes: 2),
       (_) => _validateCloudSession(),
@@ -3567,6 +3707,130 @@ class _DashboardPageState extends State<DashboardPage> {
 
   final _conversation = AssistantConversation();
 
+  /// الموظفين = سجل الموظفين (ملفاتهم ووثائقهم) + المستخدمين اللي لهم حساب دخول.
+  List<Map<String, dynamic>> _assistantStaff(
+    List<Map<String, dynamic>> users,
+    List<Map<String, dynamic>> registry,
+  ) {
+    final staff = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final record in registry) {
+      if (record['archived'] == true) continue;
+      final key = _normalizeAssistantText(record['name']?.toString() ?? '');
+      if (key.isEmpty || !seen.add(key)) continue;
+      staff.add({...record, '_registry': true});
+    }
+    for (final user in users) {
+      final key = _normalizeAssistantText(user['name']?.toString() ?? '');
+      if (key.isEmpty || !seen.add(key)) continue;
+      staff.add({...user, '_account': true});
+    }
+    return staff;
+  }
+
+  /// موظف بالاسم يرجع هو بس، «جميع الموظفين» يرجع الكل، وغير كذا null (نسأل تقصد مين).
+  List<Map<String, dynamic>>? _assistantPickStaff(
+    String text,
+    List<Map<String, dynamic>> staff,
+  ) {
+    final wantsAll = ['جميع', 'كل ', 'كلهم', 'الكل', 'الموظفين', 'العمال']
+        .any(text.contains);
+    var named = staff.where((x) {
+      final name = _normalizeAssistantText(x['name']?.toString() ?? '');
+      return name.isNotEmpty && text.contains(name);
+    }).toList();
+    if (named.isEmpty) {
+      const common = {'محمد', 'عبد', 'عبدالله', 'موظف', 'الموظف'};
+      final words = text.split(' ').toSet();
+      named = staff.where((x) {
+        return _normalizeAssistantText(x['name']?.toString() ?? '')
+            .split(' ')
+            .where((w) => w.length >= 3 && !common.contains(w))
+            .any(words.contains);
+      }).toList();
+    }
+    if (named.isNotEmpty && !['جميع', 'كل ', 'كلهم', 'الكل'].any(text.contains)) {
+      return named;
+    }
+    if (wantsAll) return staff;
+    return staff.length == 1 ? staff : null;
+  }
+
+  String _assistantStaffCard(
+    Map<String, dynamic> person,
+    List<Map<String, dynamic>> users,
+  ) {
+    final key = _normalizeAssistantText(person['name']?.toString() ?? '');
+    Map<String, dynamic>? account = person['_account'] == true ? person : null;
+    if (account == null) {
+      for (final user in users) {
+        if (_normalizeAssistantText(user['name']?.toString() ?? '') == key) {
+          account = user;
+          break;
+        }
+      }
+    }
+    final role = (person['jobTitle'] ?? person['role'] ?? person['job_title'] ?? '')
+        .toString();
+    return [
+      '👤 ${person['name'] ?? 'موظف'}',
+      if (role.isNotEmpty) 'الوظيفة: $role',
+      if ((person['nationality']?.toString() ?? '').isNotEmpty)
+        'الجنسية: ${person['nationality']}',
+      if ((person['phone']?.toString() ?? '').isNotEmpty) 'الجوال: ${person['phone']}',
+      if (person['_registry'] == true) ...[
+        'انتهاء الإقامة: ${_assistantDateStatus(person['iqama'])}',
+        if ((person['contract']?.toString() ?? '').isNotEmpty)
+          'انتهاء العقد: ${_assistantDateStatus(person['contract'])}',
+      ],
+      account == null
+          ? 'حساب دخول: ما عنده'
+          : 'حساب دخول: ${account['active'] == false ? 'موقوف' : 'نشط'}',
+    ].join('\n');
+  }
+
+  /// مركبة بالاسم أو جزء منه أو أرقام اللوحة؛ «جميع المركبات» الكل؛ غير كذا null.
+  List<Map<String, dynamic>>? _assistantPickVehicles(
+    String text,
+    List<Map<String, dynamic>> vehicles,
+  ) {
+    if (['جميع', 'كل ', 'كلها', 'الكل', 'المركبات', 'السيارات'].any(text.contains)) {
+      return vehicles;
+    }
+    final digits = RegExp(r'\d{2,}')
+        .allMatches(
+          text.replaceAllMapped(
+            RegExp('[٠-٩]'),
+            (m) => (m.group(0)!.codeUnitAt(0) - 0x0660).toString(),
+          ),
+        )
+        .map((m) => m.group(0)!)
+        .toList();
+    const skip = {'مركبه', 'المركبه', 'سياره', 'السياره', 'طلعلي', 'وريني', 'اعرض'};
+    final words = text.split(' ').where((w) => w.length >= 3).toSet();
+    final matching = vehicles.where((vehicle) {
+      final name = _normalizeAssistantText(vehicle['name']?.toString() ?? '');
+      final plate = _normalizeAssistantText(vehicle['plate']?.toString() ?? '');
+      final plateDigits = plate.replaceAll(RegExp(r'\D'), '');
+      final assigned = _normalizeAssistantText(
+        vehicle['assignedEmployee']?.toString() ?? '',
+      );
+      final status = vehicle['status']?.toString() ?? 'working';
+      final statusMatches =
+          (text.contains('صيان') && status == 'maintenance') ||
+          (text.contains('عطل') && status == 'broken') ||
+          (text.contains('متوقف') && status == 'stopped');
+      return (name.isNotEmpty && text.contains(name)) ||
+          name.split(' ').where((w) => w.length >= 3 && !skip.contains(w)).any(words.contains) ||
+          (plate.isNotEmpty && text.contains(plate)) ||
+          (plateDigits.isNotEmpty && digits.any(plateDigits.contains)) ||
+          (assigned.isNotEmpty && text.contains(assigned)) ||
+          statusMatches;
+    }).toList();
+    if (matching.isNotEmpty) return matching;
+    return vehicles.length == 1 ? vehicles : null;
+  }
+
   Future<void> _askOrganizationAssistant(String question) async {
     if (_conversation.busy || _assistantLoading) return;
     if (_assistantLocked) {
@@ -3838,27 +4102,11 @@ class _DashboardPageState extends State<DashboardPage> {
             MaterialPageRoute(builder: (_) => const VehiclesPage()),
           );
         } else {
-          final matching = vehicles.where((vehicle) {
-            final name = _normalizeAssistantText(
-              vehicle['name']?.toString() ?? '',
-            );
-            final plate = _normalizeAssistantText(
-              vehicle['plate']?.toString() ?? '',
-            );
-            final assigned = _normalizeAssistantText(
-              vehicle['assignedEmployee']?.toString() ?? '',
-            );
-            final status = vehicle['status']?.toString() ?? 'working';
-            final statusMatches =
-                (text.contains('صيان') && status == 'maintenance') ||
-                (text.contains('عطل') && status == 'broken') ||
-                (text.contains('متوقف') && status == 'stopped');
-            return (name.isNotEmpty && text.contains(name)) ||
-                (plate.isNotEmpty && text.contains(plate)) ||
-                (assigned.isNotEmpty && text.contains(assigned)) ||
-                statusMatches;
-          }).toList();
-          final selected = matching.isEmpty ? vehicles.take(5) : matching;
+          final selected = _assistantPickVehicles(text, vehicles);
+          if (selected == null) {
+            // ما عرفنا أي مركبة: نسأل بالأسماء بس، بدون صور.
+            answer = 'تقصد أي مركبة؟\n${vehicles.map((v) => '• ${v['name'] ?? 'مركبة'}${(v['plate']?.toString() ?? '').isEmpty ? '' : ' — ${v['plate']}'}').join('\n')}\n\nأو قل «جميع المركبات» وأعرضها كلها.';
+          } else {
           attachedRecords.addAll(selected);
           answer = selected
               .map(
@@ -3866,6 +4114,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     '🚗 ${vehicle['name']?.toString() ?? 'مركبة'}${(vehicle['plate']?.toString() ?? '').isEmpty ? '' : '\nاللوحة: ${vehicle['plate']}'}\nالموظف المسؤول: ${(vehicle['assignedEmployee']?.toString() ?? '').isEmpty ? 'غير محدد' : vehicle['assignedEmployee']}\nالحالة: ${const {'working': 'شغّالة', 'stopped': 'متوقفة', 'broken': 'عطلانة', 'maintenance': 'تحت الصيانة'}[vehicle['status']] ?? 'شغّالة'}\nالتأمين: ${_assistantDateStatus(vehicle['insurance'])}\nالفحص: ${_assistantDateStatus(vehicle['inspection'])}\nالاستمارة: ${_assistantDateStatus(vehicle['registration'])}',
               )
               .join('\n\n');
+          }
           action = () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const VehiclesPage()),
@@ -3878,32 +4127,22 @@ class _DashboardPageState extends State<DashboardPage> {
           text.contains('عقد')) {
         if (!_can('employees')) {
           answer = 'ما عندك صلاحية تشوف بيانات الموظفين.';
-        } else if (employees.isEmpty) {
-          answer = 'ما فيه موظفين مسجّلين للحين.';
         } else {
-          final matching = employees.where((employee) {
-            final name = _normalizeAssistantText(
-              employee['name']?.toString() ?? '',
-            );
-            return name.isNotEmpty && text.contains(name);
-          }).toList();
-          final selected = matching.isEmpty ? employees.take(8) : matching;
-          attachedRecords.addAll(selected);
-          for (final employee in selected) {
-            attachedRecords.addAll(
-              employeeAlerts.where(
-                (record) =>
-                    _normalizeAssistantText(record['name']?.toString() ?? '') ==
-                    _normalizeAssistantText(employee['name']?.toString() ?? ''),
-              ),
-            );
+          final staff = _assistantStaff(employees, employeeAlerts);
+          final picked = _assistantPickStaff(text, staff);
+          if (staff.isEmpty) {
+            answer = 'ما فيه موظفين مسجّلين للحين. تقدر تضيفهم من «إدارة الموظفين».';
+          } else if (text.contains('كم') || text.contains('عدد')) {
+            final registry = staff.where((x) => x['_registry'] == true).length;
+            answer =
+                'عندك ${staff.length} ${staff.length == 1 ? 'موظف' : 'موظفين'}: $registry في سجل الموظفين، و${employees.length} ${employees.length == 1 ? 'حساب دخول' : 'حسابات دخول'} للتطبيق.';
+          } else if (picked == null) {
+            answer =
+                'تقصد أي موظف؟\n${staff.map((x) => '• ${x['name']}').join('\n')}\n\nأو قل «جميع الموظفين» وأعرضهم كلهم.';
+          } else {
+            attachedRecords.addAll(picked);
+            answer = picked.map((x) => _assistantStaffCard(x, employees)).join('\n\n');
           }
-          answer = selected
-              .map(
-                (employee) =>
-                    '👤 ${employee['name']?.toString() ?? 'موظف'}\nالوظيفة: ${employee['role']?.toString() ?? 'غير محددة'}\nالحالة: ${employee['active'] == false ? 'موقوف' : 'نشط'}',
-              )
-              .join('\n\n');
         }
       } else if (text.contains('فرع') || text.contains('فروع')) {
         answer =
@@ -4150,13 +4389,17 @@ class _DashboardPageState extends State<DashboardPage> {
           Row(
             children: [
               Expanded(child: _homeTabButton('market', 'وضعك في السوق')),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
+              Expanded(child: _homeTabButton('remind', 'تذكير')),
+              const SizedBox(width: 6),
               Expanded(child: _homeTabButton('ask', 'اسألني')),
             ],
           ),
           const SizedBox(height: 10),
           if (_homeTab == 'market')
             _marketInsightsView()
+          else if (_homeTab == 'remind')
+            _remindersView()
           else ...[
           TextField(
             controller: _assistantController,
@@ -4279,7 +4522,7 @@ class _DashboardPageState extends State<DashboardPage> {
             onCategories: _openAssistantCategories,
             onBranchChanged: () => Navigator.pushAndRemoveUntil(
               context,
-              MaterialPageRoute(builder: (_) => const DashboardPage()),
+              MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
               (_) => false,
             ),
           ),
@@ -4619,7 +4862,7 @@ class EducationPage extends StatelessWidget {
                   child: FilledButton.icon(
                     onPressed: () => Navigator.pushAndRemoveUntil(
                       context,
-                      MaterialPageRoute(builder: (_) => const DashboardPage()),
+                      MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
                       (_) => false,
                     ),
                     style: FilledButton.styleFrom(
@@ -5530,7 +5773,10 @@ class _VehiclesPageState extends State<VehiclesPage> {
 }
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, this.openSupport = false});
+
+  /// يفتح «الدعم الفني» مباشرة (مثل زر تواصل في مقاطع خدوم).
+  final bool openSupport;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -5550,6 +5796,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _canViewSettings = true;
   bool _canViewAuditLog = true;
   String? _profileImagePath;
+  String? _logoData;
 
   Future<void> _openAccountDeletionPage() async {
     final opened = await launchUrl(
@@ -6078,6 +6325,9 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadSettings();
+    if (widget.openSupport) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openTechnicalSupport());
+    }
   }
 
   Future<void> _loadSettings() async {
@@ -6127,22 +6377,25 @@ class _SettingsPageState extends State<SettingsPage> {
       _canManageSettings = canManageSettings;
       _canViewSettings = canViewSettings;
       _canViewAuditLog = canViewAuditLog;
-      _profileImagePath = prefs.getString('profile_image_path');
+      // صورة الإعدادات = شعار المؤسسة نفسه، فتغييره من أي مكان يظهر هنا.
+      _logoData = prefs.getString('business_logo_data');
+      _profileImagePath = prefs.getString('business_logo_path');
       _isLoading = false;
     });
   }
 
   Future<void> _pickProfileImage() async {
-    const channel = MethodChannel('khdoom/profile_image');
-    // اسم ملف فريد حتى لا تكتب صورة حساب فوق صورة حساب آخر على نفس الجوال.
-    final destinationPath = await channel.invokeMethod<String>('pickImage', {
-      'fileName': 'khdoom_profile_${DateTime.now().microsecondsSinceEpoch}',
-    });
-    if (destinationPath == null || destinationPath.isEmpty) return;
+    // تغيير الشعار يتم من «بيانات المؤسسة» حتى يُحفظ في الخادم ويظهر في كل مكان.
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const MyBusinessPage()),
+    );
     final prefs = await BranchPreferences.getInstance();
-    await prefs.setString('profile_image_path', destinationPath);
     if (!mounted) return;
-    setState(() => _profileImagePath = destinationPath);
+    setState(() {
+      _logoData = prefs.getString('business_logo_data');
+      _profileImagePath = prefs.getString('business_logo_path');
+    });
   }
 
   Future<bool> _ensureAdminPassword() async {
@@ -6440,7 +6693,12 @@ class _SettingsPageState extends State<SettingsPage> {
                                 ),
                                 clipBehavior: Clip.antiAlias,
                                 child:
-                                    _profileImagePath != null &&
+                                    _organizationLogoBytes(_logoData) != null
+                                    ? Image.memory(
+                                        _organizationLogoBytes(_logoData)!,
+                                        fit: BoxFit.cover,
+                                      )
+                                    : _profileImagePath != null &&
                                         File(_profileImagePath!).existsSync()
                                     ? Image.file(
                                         File(_profileImagePath!),
@@ -13273,44 +13531,94 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
           .join('\n');
     }
 
-    Map<String, dynamic>? matchedEmployee;
-    for (final employee in employees) {
-      final name = _normalizeArabic(employee['name']?.toString() ?? '');
-      if (name.isNotEmpty && text.contains(name)) {
-        matchedEmployee = employee;
-        break;
-      }
+    // الموظفين = سجل الموظفين (ملفاتهم ووثائقهم) + المستخدمين اللي لهم حساب دخول.
+    final staff = <Map<String, dynamic>>[];
+    final staffNames = <String>{};
+    for (final record in employeeAlerts) {
+      if (record['archived'] == true) continue;
+      final key = _normalizeArabic(record['name']?.toString() ?? '');
+      if (key.isEmpty || !staffNames.add(key)) continue;
+      staff.add({...record, '_registry': true});
     }
-    if (matchedEmployee != null) {
-      _lastContext =
-          'employee:${_normalizeArabic(matchedEmployee['name']?.toString() ?? '')}';
-      attachments?.add(matchedEmployee);
-      final name = matchedEmployee['name']?.toString() ?? 'الموظف';
-      Map<String, dynamic>? alert;
-      for (final item in employeeAlerts) {
-        if (_normalizeArabic(item['name']?.toString() ?? '') ==
-            _normalizeArabic(name)) {
-          alert = item;
-          break;
-        }
+    for (final user in employees) {
+      final key = _normalizeArabic(user['name']?.toString() ?? '');
+      if (key.isEmpty || !staffNames.add(key)) continue;
+      staff.add({...user, '_account': true});
+    }
+    Map<String, dynamic>? accountFor(String key) {
+      for (final user in employees) {
+        if (_normalizeArabic(user['name']?.toString() ?? '') == key) return user;
       }
-      if (alert != null) attachments?.add(alert);
+      return null;
+    }
+
+    String staffCard(Map<String, dynamic> person) {
+      final name = person['name']?.toString() ?? 'موظف';
+      final key = _normalizeArabic(name);
+      final account = person['_account'] == true ? person : accountFor(key);
+      final role = (person['jobTitle'] ?? person['role'] ?? person['job_title'] ?? '')
+          .toString();
       return [
-        'بيانات الموظف $name:',
-        'الوظيفة: ${matchedEmployee['role'] ?? 'غير محددة'}',
-        if ((matchedEmployee['phone']?.toString() ?? '').isNotEmpty)
-          'الجوال: ${matchedEmployee['phone']}',
-        'الحالة: ${matchedEmployee['active'] == false ? 'موقوف' : 'نشط'}',
-        if (alert != null) 'انتهاء الإقامة: ${alert['iqama'] ?? 'غير مضاف'}',
-        if (alert != null) 'انتهاء العقد: ${alert['contract'] ?? 'غير مضاف'}',
-        if (alert != null)
-          'انتهاء التأمين: ${alert['insurance'] ?? 'غير مضاف'}',
+        '👤 $name',
+        if (role.isNotEmpty) 'الوظيفة: $role',
+        if ((person['nationality']?.toString() ?? '').isNotEmpty)
+          'الجنسية: ${person['nationality']}',
+        if ((person['phone']?.toString() ?? '').isNotEmpty)
+          'الجوال: ${person['phone']}',
+        if (person['_registry'] == true) ...[
+          'انتهاء الإقامة: ${_assistantDateStatus(person['iqama'])}',
+          if ((person['contract']?.toString() ?? '').isNotEmpty)
+            'انتهاء العقد: ${_assistantDateStatus(person['contract'])}',
+          if ((person['insurance']?.toString() ?? '').isNotEmpty)
+            'انتهاء التأمين: ${_assistantDateStatus(person['insurance'])}',
+        ],
+        account == null
+            ? 'حساب دخول: ما عنده'
+            : 'حساب دخول: ${account['active'] == false ? 'موقوف' : 'نشط'}',
       ].join('\n');
     }
-    if (_hasAny(text, ['كم موظف', 'عدد الموظفين', 'كم عامل', 'عدد العمال'])) {
-      return employees.length == 1
-          ? 'عندك موظف واحد مسجّل.'
-          : 'عندك ${employees.length} موظفين مسجّلين.';
+
+    final asksStaff = _hasAny(text, ['موظف', 'موظفين', 'عامل', 'عمال']);
+    final wantsAll = _hasAny(text, ['جميع', 'كل ', 'كلهم', 'الكل']);
+    if (asksStaff && !_hasAny(text, ['مركب', 'سيار']) && _hasAny(text, ['كم', 'عدد'])) {
+      final registry = staff.where((p) => p['_registry'] == true).length;
+      final accounts = employees.length;
+      return 'عندك ${staff.length} ${staff.length == 1 ? 'موظف' : 'موظفين'}: '
+          '$registry في سجل الموظفين، و$accounts ${accounts == 1 ? 'حساب دخول' : 'حسابات دخول'} للتطبيق.';
+    }
+    // موظف بالاسم: الاسم كامل أولًا، وبعدين أي جزء من الاسم (3 أحرف وأكثر).
+    // سؤال عن مركبة (حتى لو فيه اسم سائقها) يروح لقسم المركبات.
+    final aboutVehicle = _hasAny(text, ['مركب', 'سيار', 'لوحه']);
+    var namedStaff = aboutVehicle ? <Map<String, dynamic>>[] : staff.where((p) {
+      final name = _normalizeArabic(p['name']?.toString() ?? '');
+      return name.isNotEmpty && text.contains(name);
+    }).toList();
+    if (namedStaff.isEmpty && !aboutVehicle) {
+      const common = {'محمد', 'عبد', 'عبدالله', 'موظف', 'الموظف'};
+      namedStaff = staff.where((p) {
+        final parts = _normalizeArabic(p['name']?.toString() ?? '')
+            .split(' ')
+            .where((w) => w.length >= 3 && !common.contains(w));
+        return parts.any((w) => text.split(' ').contains(w));
+      }).toList();
+    }
+    if (namedStaff.length == 1 && !wantsAll) {
+      final person = namedStaff.first;
+      _lastContext =
+          'employee:${_normalizeArabic(person['name']?.toString() ?? '')}';
+      attachments?.add(person);
+      return staffCard(person);
+    }
+    if (namedStaff.length > 1 && !wantsAll) {
+      return 'لقيت أكثر من موظف بهالاسم، تقصد مين؟\n' +
+          namedStaff.map((p) => '• ${p['name']}').join('\n');
+    }
+    if (asksStaff && !aboutVehicle && (wantsAll || _hasAny(text, ['الموظفين', 'العمال']))) {
+      if (staff.isEmpty) {
+        return 'ما عندك موظفين مسجّلين للحين. تقدر تضيفهم من «إدارة الموظفين».';
+      }
+      attachments?.addAll(staff);
+      return staff.map(staffCard).join('\n\n');
     }
 
     Map<String, dynamic>? matchedRecord;
@@ -13379,12 +13687,27 @@ class _KhdoomAiAssistantPageState extends State<KhdoomAiAssistantPage> {
             (text.contains('صيان') && status == 'maintenance') ||
             (text.contains('عطل') && status == 'broken') ||
             (text.contains('متوقف') && status == 'stopped');
+        final plateDigits = plate.replaceAll(RegExp(r'\D'), '');
+        final words = text.split(' ').where((w) => w.length >= 3).toSet();
         return (name.isNotEmpty && text.contains(name)) ||
+            name
+                .split(' ')
+                .where((w) => w.length >= 3 && !{'مركبه', 'سياره'}.contains(w))
+                .any(words.contains) ||
             (plate.isNotEmpty && text.contains(plate)) ||
+            (plateDigits.length >= 2 &&
+                RegExp(r'\d{2,}')
+                    .allMatches(text)
+                    .any((m) => plateDigits.contains(m.group(0)!))) ||
             (assigned.isNotEmpty && text.contains(assigned)) ||
             statusMatches;
       }).toList();
-      final selected = matching.isEmpty ? vehicles.take(5) : matching;
+      final wantsAllVehicles = _hasAny(text, ['جميع', 'كل ', 'كلها', 'الكل', 'المركبات', 'السيارات']);
+      if (matching.isEmpty && !wantsAllVehicles && vehicles.length > 1) {
+        // ما عرفنا أي مركبة: نسأل بالأسماء بس، بدون صور.
+        return 'تقصد أي مركبة؟\n${vehicles.map((v) => '• ${v['name'] ?? 'مركبة'}').join('\n')}\n\nأو قل «جميع المركبات» وأعرضها كلها.';
+      }
+      final selected = wantsAllVehicles || matching.isEmpty ? vehicles : matching;
       attachments?.addAll(selected);
       if (selected.length == 1) {
         _lastContext =
