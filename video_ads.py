@@ -411,7 +411,7 @@ def probe_seconds(path: Path) -> float | None:
 def trim_video(source: Path, target: Path, start: float, length: float) -> bool:
     """قص سريع بدون إعادة ترميز، مع تجهيز الملف للتشغيل المباشر."""
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
                                "-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(target)],
                               capture_output=True, timeout=180)
         ok = done.returncode == 0 and target.exists() and target.stat().st_size > 0
@@ -419,7 +419,7 @@ def trim_video(source: Path, target: Path, start: float, length: float) -> bool:
         if ok and got is not None and abs(got - length) <= 1.5:
             return True
         # القص السريع يتقيد بالإطارات المفتاحية؛ إذا طلع غير دقيق نعيد الترميز بدقة.
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
                                "-vf", "scale='min(1080,iw)':-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
                                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)],
                               capture_output=True, timeout=600)
@@ -437,8 +437,14 @@ def optimize_video(source: Path) -> Path | None:
         return None
     target = source.with_name(source.stem + "_m.mp4")
     temp = target.with_suffix(".part.mp4")
+    # ضغط واحد بالمرة عشان السيرفر الصغير ما يتعب.
+    with _wm_lock:
+        return _optimize_locked(source, target, temp)
+
+
+def _optimize_locked(source: Path, target: Path, temp: Path) -> Path | None:
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source),
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(source),
                                "-vf", "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'",
                                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "2M", "-bufsize", "4M",
                                "-pix_fmt", "yuv420p", "-g", "60", "-c:a", "aac", "-b:a", "96k", "-ac", "2",
@@ -464,6 +470,8 @@ def _optimize_row(c, row) -> bool:
               (result.name, result.stat().st_size, row["id"]))
     for old in (source, source.with_name("wm_" + source.stem + ".mp4")):
         old.unlink(missing_ok=True)
+    with _wm_lock:
+        watermarked({"id": row["id"], "file_name": result.name}, build=True)
     return True
 
 
@@ -492,19 +500,33 @@ def start_backfill(s) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-def watermarked(row) -> Path | None:
-    """نسخة التنزيل عليها شعار خدوم في الزاوية؛ تنحفظ بعد أول تنزيل."""
+_wm_lock = __import__("threading").Lock()
+
+
+def prepare_watermark_async(row) -> None:
+    """يجهز نسخة التنزيل بالشعار بالخلفية، وحدة وحدة عشان ما يتعب السيرفر."""
+    data = {"id": row["id"], "file_name": row["file_name"]}
+
+    def run():
+        with _wm_lock:
+            watermarked(data, build=True)
+
+    __import__("threading").Thread(target=run, daemon=True).start()
+
+
+def watermarked(row, build: bool = False) -> Path | None:
+    """نسخة التنزيل عليها شعار خدوم في الزاوية؛ تتجهز بالخلفية مسبقًا."""
     source = _file_path(row)
     if not source or not source.exists():
         return None
     target = source.with_name("wm_" + source.stem + ".mp4")
     if target.exists():
         return target
-    if not _ffmpeg() or not LOGO.exists():
+    if not build or not _ffmpeg() or not LOGO.exists():
         return source
     temp = target.with_suffix(".part.mp4")
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source), "-i", str(LOGO), "-filter_complex",
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(source), "-i", str(LOGO), "-filter_complex",
                                "[1:v][0:v]scale2ref=w=iw*0.16:h=ow/mdar[logo][base];[logo]format=rgba,colorchannelmixer=aa=0.85[l];[base][l]overlay=W-w-W*0.04:H-h-H*0.04",
                                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-c:a", "copy", "-movflags", "+faststart", str(temp)],
                               capture_output=True, timeout=600)
@@ -540,6 +562,8 @@ def client(h, method, s) -> bool:
             if not row:
                 raise s.ApiError(404, "الفيديو غير متاح")
             path_wm = watermarked(row)
+            if path_wm and not path_wm.name.startswith("wm_"):
+                prepare_watermark_async(row)
             if not path_wm:
                 raise s.ApiError(404, "الفيديو غير متاح")
             _send_file(h, {"id": row["id"], "file_name": path_wm.name, "content_type": "video/mp4"}, s, download=True)
@@ -655,6 +679,7 @@ def client(h, method, s) -> bool:
                 if optimized:
                     final.unlink(missing_ok=True)
                     final = optimized
+                prepare_watermark_async({"id": ident, "file_name": final.name})
                 old = row
                 c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds),optimized=?,content_type=? WHERE id=?",
                           (final.name, final.stat().st_size, seconds, 1 if optimized else 0, "video/mp4" if optimized else row["content_type"], ident))

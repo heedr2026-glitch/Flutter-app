@@ -26,6 +26,13 @@ def test_db():
         connection.close()
 
 
+def _wm_ready(video_ads, ident):
+    with server.db() as c:
+        row = c.execute('SELECT file_name FROM video_ads WHERE id=?', (ident,)).fetchone()
+    path = video_ads.video_dir() / row['file_name']
+    return path.with_name('wm_' + path.stem + '.mp4').exists()
+
+
 class VideoAdsTest(unittest.TestCase):
     def test_full_flow(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -174,6 +181,10 @@ class VideoAdsTest(unittest.TestCase):
                     row = c.execute('SELECT optimized,file_name FROM video_ads WHERE id=?', (draft['id'],)).fetchone()
                 self.assertEqual(row['optimized'], 1)
                 self.assertTrue(row['file_name'].endswith('_m.mp4'))
+                import video_ads, time as _t
+                for _ in range(60):
+                    if _wm_ready(video_ads, draft['id']): break
+                    _t.sleep(0.5)
                 link = call('/api/video-ads/%d/download-link' % draft['id'], 'POST', {})[1]['url']
                 status, content, headers = call(link, auth=False)
                 self.assertEqual(status, 200)
