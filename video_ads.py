@@ -7,9 +7,15 @@
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
+import shutil
+import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -78,11 +84,15 @@ def migrate(c, postgres: bool = False) -> None:
     c.execute(f"""CREATE TABLE IF NOT EXISTS video_ad_submissions(
         id {identity}, organization_id BIGINT NOT NULL, video_ad_id BIGINT NOT NULL,
         paid INTEGER NOT NULL DEFAULT 0, counted INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)""")
+    present = set() if postgres else {r["name"] for r in c.execute("PRAGMA table_info(video_ads)")}
+    if postgres or "overlay_y" not in present:
+        c.execute("ALTER TABLE video_ads ADD COLUMN " + ("IF NOT EXISTS " if postgres else "") + "overlay_y REAL NOT NULL DEFAULT 0.15")
     c.execute("CREATE INDEX IF NOT EXISTS video_ads_status ON video_ads(status, deleted)")
     c.execute("CREATE INDEX IF NOT EXISTS video_ads_org ON video_ads(organization_id, deleted)")
     c.execute("CREATE INDEX IF NOT EXISTS video_ad_submissions_org ON video_ad_submissions(organization_id, created_at)")
     for key, value in DEFAULT_SETTINGS.items():
         c.execute("INSERT INTO video_ad_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING", (key, str(value)))
+    c.execute("INSERT INTO video_ad_settings(key,value) VALUES('link_secret',?) ON CONFLICT(key) DO NOTHING", (secrets.token_hex(32),))
 
 
 # ---------------------------------------------------------------- الإعدادات
@@ -166,11 +176,12 @@ def _file_path(row) -> Path | None:
 
 def _remove_file(row) -> None:
     path = _file_path(row)
-    if path and path.exists():
-        try:
-            path.unlink()
-        except OSError:
-            pass
+    if path:
+        for item in (path, path.with_name("wm_" + path.stem + ".mp4")):
+            try:
+                item.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def storage_used() -> int:
@@ -341,10 +352,12 @@ def _public(row, base_contact="", package="") -> dict:
             "seconds": row["seconds"], "organizationId": row["organization_id"],
             "organizationName": row["organization_name"] if "organization_name" in row.keys() else "",
             "vip": package == "vip",
+            "overlayY": float(row["overlay_y"]) if "overlay_y" in row.keys() else 0.15,
             "videoUrl": f"/api/video-ads/{row['id']}/file", "publishedAt": row["published_at"], "expiresAt": row["expires_at"]}
 
 
-def _read_upload(h, s, max_mb: int) -> bytes:
+def _read_upload(h, s, max_mb: int, target: Path) -> int:
+    """يكتب الفيديو مباشرة على القرص بدون تحميله كله في الذاكرة."""
     limit = max_mb * 1_048_576
     try:
         length = int(h.headers.get("Content-Length", "0"))
@@ -354,7 +367,87 @@ def _read_upload(h, s, max_mb: int) -> bytes:
         raise s.ApiError(400, "أرسل ملف الفيديو")
     if length > limit:
         raise s.ApiError(413, f"حجم الفيديو أكبر من {max_mb} ميقا")
-    return h.rfile.read(length)
+    remaining = length
+    with target.open("wb") as f:
+        while remaining > 0:
+            chunk = h.rfile.read(min(1_048_576, remaining))
+            if not chunk:
+                break
+            f.write(chunk)
+            remaining -= len(chunk)
+    if remaining:
+        target.unlink(missing_ok=True)
+        raise s.ApiError(400, "انقطع رفع الفيديو، حاول مرة ثانية")
+    return length
+
+
+def _ffmpeg() -> bool:
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
+def probe_seconds(path: Path) -> float | None:
+    if not shutil.which("ffprobe"):
+        return None
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+                             capture_output=True, text=True, timeout=30)
+        return float(out.stdout.strip())
+    except (ValueError, subprocess.SubprocessError, OSError):
+        return None
+
+
+def trim_video(source: Path, target: Path, start: float, length: float) -> bool:
+    """قص سريع بدون إعادة ترميز، مع تجهيز الملف للتشغيل المباشر."""
+    try:
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
+                               "-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(target)],
+                              capture_output=True, timeout=180)
+        ok = done.returncode == 0 and target.exists() and target.stat().st_size > 0
+        got = probe_seconds(target) if ok else None
+        if ok and got is not None and abs(got - length) <= 1.5:
+            return True
+        # القص السريع يتقيد بالإطارات المفتاحية؛ إذا طلع غير دقيق نعيد الترميز بدقة.
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
+                               "-vf", "scale='min(1080,iw)':-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)],
+                              capture_output=True, timeout=600)
+        return done.returncode == 0 and target.exists() and target.stat().st_size > 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+LOGO = Path(__file__).resolve().parent / "assets" / "images" / "khdoom_logo.png"
+
+
+def watermarked(row) -> Path | None:
+    """نسخة التنزيل عليها شعار خدوم في الزاوية؛ تنحفظ بعد أول تنزيل."""
+    source = _file_path(row)
+    if not source or not source.exists():
+        return None
+    target = source.with_name("wm_" + source.stem + ".mp4")
+    if target.exists():
+        return target
+    if not _ffmpeg() or not LOGO.exists():
+        return source
+    temp = target.with_suffix(".part.mp4")
+    try:
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source), "-i", str(LOGO), "-filter_complex",
+                               "[1:v][0:v]scale2ref=w=iw*0.16:h=ow/mdar[logo][base];[logo]format=rgba,colorchannelmixer=aa=0.85[l];[base][l]overlay=W-w-W*0.04:H-h-H*0.04",
+                               "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-c:a", "copy", "-movflags", "+faststart", str(temp)],
+                              capture_output=True, timeout=600)
+        if done.returncode == 0 and temp.exists():
+            temp.replace(target)
+            return target
+    except (subprocess.SubprocessError, OSError):
+        pass
+    temp.unlink(missing_ok=True)
+    return source
+
+
+def _link_sig(c, ident: int, expires: int) -> str:
+    row = c.execute("SELECT value FROM video_ad_settings WHERE key='link_secret'").fetchone()
+    secret = (row["value"] if row else "") or "khdoom"
+    return hmac.new(secret.encode(), f"{ident}:{expires}".encode(), hashlib.sha256).hexdigest()[:40]
 
 
 def client(h, method, s) -> bool:
@@ -363,6 +456,20 @@ def client(h, method, s) -> bool:
         return False
     q = {k: v[0] for k, v in parse_qs(urlparse(h.path).query).items()}
     try:
+        public = re.fullmatch(r"/api/video-ads/dl/([0-9]+)/([0-9]+)/([0-9a-f]{40})", path)
+        if public and method == "GET":
+            ident, expires = int(public[1]), int(public[2])
+            with s.db() as c:
+                if expires < time.time() or not hmac.compare_digest(public[3], _link_sig(c, ident, expires)):
+                    raise s.ApiError(403, "رابط التنزيل انتهى، اضغط تنزيل مرة ثانية")
+                row = c.execute("SELECT id,file_name,content_type FROM video_ads WHERE id=? AND deleted=0", (ident,)).fetchone()
+            if not row:
+                raise s.ApiError(404, "الفيديو غير متاح")
+            path_wm = watermarked(row)
+            if not path_wm:
+                raise s.ApiError(404, "الفيديو غير متاح")
+            _send_file(h, {"id": row["id"], "file_name": path_wm.name, "content_type": "video/mp4"}, s, download=True)
+            return True
         # تشغيل/تنزيل الفيديو يحتاج تسجيل الدخول (المشغل يرسل ترويسة Authorization).
         match = re.fullmatch(r"/api/video-ads/([0-9]+)/(file|download)", path)
         if match and method == "GET":
@@ -409,10 +516,11 @@ def client(h, method, s) -> bool:
                 if content_type not in VIDEO_TYPES:
                     raise ValueError("نوع الفيديو غير مدعوم")
                 now = stamp()
-                cur = c.execute("INSERT INTO video_ads(organization_id,title,caption,overlay_text,activity,contact,allow_download,content_type,seconds,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'draft',?)",
+                overlay_y = admin.number(d.get("overlayY", 0.15), 0, 1)
+                cur = c.execute("INSERT INTO video_ads(organization_id,title,caption,overlay_text,activity,contact,allow_download,content_type,seconds,status,created_at,overlay_y) VALUES(?,?,?,?,?,?,?,?,?,'draft',?,?)",
                                 (org, str(d.get("title", "")).strip()[:80], str(d.get("caption", "")).strip()[:300], str(d.get("overlayText", "")).strip()[:120],
                                  str(d.get("activity", "")).strip()[:60], str(d.get("contact", "")).strip()[:40], int(d.get("allowDownload", True) is not False),
-                                 content_type, seconds, now))
+                                 content_type, seconds, now, overlay_y))
                 ident = cur.lastrowid
                 if ident is None:
                     ident = c.execute("SELECT MAX(id) n FROM video_ads WHERE organization_id=?", (org,)).fetchone()["n"]
@@ -422,12 +530,52 @@ def client(h, method, s) -> bool:
                 row = c.execute("SELECT * FROM video_ads WHERE id=? AND organization_id=? AND deleted=0", (ident, org)).fetchone()
                 if not row or row["status"] != "draft":
                     raise ValueError("المسودة غير موجودة")
-                raw = _read_upload(h, s, settings(c)["max_upload_mb"])
-                name = f"v{ident}_{os.urandom(6).hex()}{VIDEO_TYPES.get(row['content_type'], '.mp4')}"
-                (video_dir() / name).write_bytes(raw)
-                c.execute("UPDATE video_ads SET file_name=?,size_bytes=? WHERE id=?", (name, len(raw), ident))
+                cfg = settings(c)
+                try:
+                    start = max(0.0, float(q.get("start", 0) or 0))
+                    end = float(q["end"]) if q.get("end") else None
+                except ValueError:
+                    raise ValueError("بداية ونهاية القص غير صحيحة")
+                wants_trim = end is not None
+                # الفيديو الطويل يرتفع كامل والسيرفر يقصه؛ لذلك حده أكبر.
+                suffix = VIDEO_TYPES.get(row["content_type"], ".mp4")
+                raw_path = video_dir() / f"raw_{ident}_{os.urandom(6).hex()}{suffix}"
+                size = _read_upload(h, s, max(cfg["max_upload_mb"], 200) if wants_trim else cfg["max_upload_mb"], raw_path)
+                final = video_dir() / f"v{ident}_{os.urandom(6).hex()}{suffix}"
+                seconds = None
+                if wants_trim and _ffmpeg():
+                    length = end - start
+                    if length <= 0 or length > cfg["max_seconds"] + 0.5:
+                        raw_path.unlink(missing_ok=True)
+                        raise ValueError(f"اختار مقطع مدته {cfg['max_seconds']} ثانية أو أقل")
+                    if not trim_video(raw_path, final, start, length):
+                        raw_path.unlink(missing_ok=True)
+                        raise ValueError("تعذر قص الفيديو، جرّب فيديو ثاني")
+                    raw_path.unlink(missing_ok=True)
+                else:
+                    raw_path.replace(final)
+                seconds = probe_seconds(final)
+                if seconds is not None and seconds > cfg["max_seconds"] + 1.5:
+                    final.unlink(missing_ok=True)
+                    raise ValueError(f"المدة القصوى للفيديو {cfg['max_seconds']} ثانية؛ قص الفيديو أولًا")
+                if not wants_trim and final.stat().st_size > cfg["max_upload_mb"] * 1_048_576:
+                    final.unlink(missing_ok=True)
+                    raise ValueError(f"حجم الفيديو أكبر من {cfg['max_upload_mb']} ميقا")
+                old = row
+                c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds) WHERE id=?", (final.name, final.stat().st_size, seconds, ident))
+                if old["file_name"]:
+                    _remove_file(old)
                 _trim_saved(c, org, keep=ident)
-                result = {"saved": True, "id": ident}
+                result = {"saved": True, "id": ident, "seconds": seconds}
+            elif re.fullmatch(r"[0-9]+/download-link", r) and method == "POST":
+                ident = int(r.split("/")[0])
+                row = c.execute("SELECT id,organization_id,status,allow_download FROM video_ads WHERE id=? AND deleted=0", (ident,)).fetchone()
+                if not row or (row["status"] != "published" and row["organization_id"] != org):
+                    raise s.ApiError(404, "الفيديو غير متاح")
+                if not row["allow_download"] and row["organization_id"] != org:
+                    raise s.ApiError(403, "المعلن لم يسمح بتنزيل هذا الفيديو")
+                expires = int(time.time()) + 900
+                result = {"url": f"/api/video-ads/dl/{ident}/{expires}/{_link_sig(c, ident, expires)}"}
             elif re.fullmatch(r"[0-9]+/submit", r) and method == "POST":
                 result = _submit(c, s, h, org, int(r.split("/")[0]))
             elif re.fullmatch(r"[0-9]+", r) and method == "DELETE":
