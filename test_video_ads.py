@@ -200,6 +200,78 @@ class VideoAdsTest(unittest.TestCase):
             finally:
                 httpd.shutdown()
 
+    def test_sounds_and_image_ads(self):
+        import shutil, subprocess
+        if not shutil.which('ffmpeg'):
+            self.skipTest('ffmpeg غير مثبت')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(server, 'DB_PATH', Path(directory) / 'test.db'), \
+             patch.object(server, 'OWNER_KEY_PATH', Path(directory) / 'owner.key'), \
+             patch.object(server, 'DATABASE_URL', ''), patch.object(server, 'db', test_db), \
+             patch.dict(os.environ, {'KHDOOM_OWNER_KEY': 'video-key', 'KHDOOM_VIDEO_DIR': str(Path(directory) / 'videos')}):
+            clip = Path(directory) / 'clip.mp4'
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x568:rate=15', '-f', 'lavfi', '-i', 'sine=frequency=440',
+                            '-t', '20', '-pix_fmt', 'yuv420p', '-shortest', str(clip)], check=True)
+            image = Path(directory) / 'offer.png'
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:size=400x600', '-frames:v', '1', str(image)], check=True)
+            server.init_db()
+            with server.db() as c:
+                for number, package in ((1, 'vip'), (2, 'vip')):
+                    c.execute('INSERT INTO organizations(id,name,created_at) VALUES(?,?,?)', (number, 'مؤسسة ' + str(number), server.now()))
+                    c.execute("INSERT INTO subscriptions(organization_id,package,starts_at) VALUES(?,?,?)", (number, package, server.now()))
+                    c.execute("INSERT INTO users(id,organization_id,name,username,password_hash,password_salt,role,created_at) VALUES(?,?,?,?,?,?,?,?)", (number, number, 'u', 'sd' + str(number), 'x', 'x', 'admin', server.now()))
+                    c.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)', (hashlib.sha256(('sd-token-' + str(number)).encode()).hexdigest(), number, (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(), server.now()))
+                c.commit()
+            httpd = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            base = 'http://127.0.0.1:' + str(httpd.server_port)
+            def call(path, method='GET', data=None, user=1, owner=False, raw=None, ctype='application/json'):
+                headers = {'Content-Type': ctype}
+                if owner: headers['X-Owner-Key'] = 'video-key'
+                else: headers['Authorization'] = 'Bearer sd-token-' + str(user)
+                body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)
+                try:
+                    with urlopen(Request(base + path, data=body, method=method, headers=headers), timeout=120) as r:
+                        content = r.read()
+                        return r.status, (json.loads(content) if r.headers.get('Content-Type', '').startswith('application/json') else content)
+                except HTTPError as e:
+                    return e.code, json.loads(e.read() or b'{}')
+            try:
+                self.assertEqual(call('/api/video-ads/sounds', 'POST', {'name': ''})[0], 400)
+                sound = call('/api/video-ads/sounds', 'POST', {'name': 'أمطار غزيرة', 'public': True})[1]
+                self.assertEqual(call(sound['uploadUrl'] + '?start=2&end=40', 'PUT', raw=clip.read_bytes(), ctype='video/mp4')[0], 400)
+                status, made = call(sound['uploadUrl'] + '?start=2&end=12', 'PUT', raw=clip.read_bytes(), ctype='video/mp4')
+                self.assertEqual(status, 200, made)
+                self.assertLess(abs(made['seconds'] - 10), 1)
+                public = call('/api/video-ads/sounds?scope=public', user=2)[1]['items']
+                self.assertEqual([(x['name'], x['organizationName'], x['uses']) for x in public], [('أمطار غزيرة', 'مؤسسة 1', 0)])
+                self.assertEqual(call('/api/video-ads/sounds/%d/file' % sound['id'], user=2)[0], 200)
+                # صورة + صوت عام من مؤسسة ثانية ← فيديو بطول الصوت
+                status, ad = call('/api/video-ads', 'POST', {'title': 'صورة', 'seconds': 10, 'contentType': 'image/png', 'soundId': sound['id']}, user=2)
+                self.assertEqual(status, 200, ad)
+                status, up = call(ad['uploadUrl'], 'PUT', raw=image.read_bytes(), user=2, ctype='image/png')
+                self.assertEqual(status, 200, up)
+                self.assertLess(abs(up['seconds'] - 10), 1.5)
+                # صورة بدون صوت ← 8 ثواني
+                ad2 = call('/api/video-ads', 'POST', {'title': 'بدون صوت', 'seconds': 8, 'contentType': 'image/png'}, user=2)[1]
+                self.assertLess(abs(call(ad2['uploadUrl'], 'PUT', raw=image.read_bytes(), user=2, ctype='image/png')[1]['seconds'] - 8), 1)
+                # فيديو + صوت: صوت الفيديو الأصلي يتبدل
+                ad3 = call('/api/video-ads', 'POST', {'title': 'فيديو بصوت', 'seconds': 15, 'soundId': sound['id']})[1]
+                self.assertEqual(call(ad3['uploadUrl'] + '?start=0&end=15', 'PUT', raw=clip.read_bytes(), ctype='video/mp4')[0], 200)
+                self.assertEqual(call('/api/video-ads/sounds?scope=public', user=2)[1]['items'][0]['uses'], 2)
+                # الإدارة توقف الصوت العام
+                self.assertEqual(len(call('/owner/api/v2/video-ads/sounds', owner=True)[1]['items']), 1)
+                self.assertEqual(call('/owner/api/v2/video-ads/sounds/%d' % sound['id'], 'PUT', {'hidden': True}, owner=True)[0], 200)
+                self.assertEqual(call('/api/video-ads/sounds?scope=public', user=2)[1]['items'], [])
+                self.assertEqual(call('/api/video-ads', 'POST', {'title': 'x', 'seconds': 5, 'contentType': 'image/png', 'soundId': sound['id']}, user=2)[0], 400)
+                self.assertEqual(len(call('/api/video-ads/sounds')[1]['items']), 1)  # صاحبه يشوفه
+                # إيقاف الميزة كاملة
+                call('/owner/api/v2/video-ads/settings', 'PUT', {'sounds_enabled': 0}, owner=True)
+                self.assertEqual(call('/api/video-ads/sounds')[0], 400)
+                self.assertFalse(call('/api/video-ads/quota')[1]['sounds_enabled'])
+            finally:
+                httpd.shutdown()
+
 
 if __name__ == '__main__':
     unittest.main()
