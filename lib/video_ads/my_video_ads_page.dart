@@ -247,6 +247,7 @@ class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
                 'سبب الرفض: ${item['reviewNote']}',
                 style: const TextStyle(color: Colors.red),
               ),
+            Text('❤️ ${(item['likes'] as num?)?.toInt() ?? 0} إعجاب'),
             if (item['status'] == 'published' && item['expiresAt'] != null)
               Text('ينتهي: ${_date(item['expiresAt'])}'),
             Row(

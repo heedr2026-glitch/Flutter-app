@@ -95,6 +95,31 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
     );
   }
 
+  Future<void> _like(Map<String, dynamic> item) async {
+    final wasLiked = item['liked'] == true;
+    final before = (item['likes'] as num?)?.toInt() ?? 0;
+    // يتغير فورًا على الشاشة، ثم نثبته من السيرفر.
+    setState(() {
+      item['liked'] = !wasLiked;
+      item['likes'] = before + (wasLiked ? -1 : 1);
+    });
+    try {
+      final result = await _api!.toggleLike((item['id'] as num).toInt());
+      if (!mounted) return;
+      setState(() {
+        item['liked'] = result['liked'] == true;
+        item['likes'] = (result['likes'] as num?)?.toInt() ?? item['likes'];
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        item['liked'] = wasLiked;
+        item['likes'] = before;
+      });
+      _message(error.toString());
+    }
+  }
+
   Future<void> _contact(Map<String, dynamic> item) async {
     final phone = (item['contact'] ?? '').toString().trim();
     if (phone.isEmpty) {
@@ -279,6 +304,7 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
             playing: widget.active && i == _index,
             saved: _saved.contains('${item['id']}'),
             onSave: () => _toggleSave(item),
+            onLike: () => _like(item),
             onContact: () => _contact(item),
             onShare: () => _share(item),
             onDownload: item['allowDownload'] == true
@@ -323,6 +349,7 @@ class _VideoAdView extends StatefulWidget {
     required this.playing,
     required this.saved,
     required this.onSave,
+    required this.onLike,
     required this.onContact,
     required this.onShare,
     this.onDownload,
@@ -333,6 +360,7 @@ class _VideoAdView extends StatefulWidget {
   final bool playing;
   final bool saved;
   final VoidCallback onSave;
+  final VoidCallback onLike;
   final VoidCallback onContact;
   final VoidCallback onShare;
   final VoidCallback? onDownload;
@@ -402,6 +430,7 @@ class _VideoAdViewState extends State<_VideoAdView> {
     final overlayY = ((item['overlayY'] as num?)?.toDouble() ?? 0.15).clamp(0.05, 0.85);
     return GestureDetector(
       onTap: _toggleSound,
+      onDoubleTap: item['liked'] == true ? null : widget.onLike,
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -438,6 +467,12 @@ class _VideoAdViewState extends State<_VideoAdView> {
             bottom: 110,
             child: Column(
               children: [
+                _SideButton(
+                  icon: item['liked'] == true ? Icons.favorite : Icons.favorite_border,
+                  color: item['liked'] == true ? Colors.redAccent : Colors.white,
+                  label: '${(item['likes'] as num?)?.toInt() ?? 0}',
+                  onTap: widget.onLike,
+                ),
                 _SideButton(
                   icon: widget.saved ? Icons.bookmark : Icons.bookmark_border,
                   label: 'حفظ',
@@ -523,8 +558,14 @@ class _OverlayText extends StatelessWidget {
 }
 
 class _SideButton extends StatelessWidget {
-  const _SideButton({required this.icon, required this.label, required this.onTap});
+  const _SideButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.color = Colors.white,
+  });
   final IconData icon;
+  final Color color;
   final String label;
   final VoidCallback onTap;
 
@@ -535,7 +576,7 @@ class _SideButton extends StatelessWidget {
       onTap: onTap,
       child: Column(
         children: [
-          Icon(icon, color: Colors.white, size: 32, shadows: const [Shadow(blurRadius: 6)]),
+          Icon(icon, color: color, size: 32, shadows: const [Shadow(blurRadius: 6)]),
           Text(label, style: const TextStyle(color: Colors.white, fontSize: 12)),
         ],
       ),

@@ -132,6 +132,10 @@ class VideoAdsApi {
 
   Future<void> delete(int id) => _json('DELETE', '/api/video-ads/$id');
 
+  Future<Map<String, dynamic>> toggleLike(int id) async => Map<String, dynamic>.from(
+    await _json('POST', '/api/video-ads/$id/like', {}) as Map,
+  );
+
   Future<Uri> downloadLink(int id) async {
     final result = await _json('POST', '/api/video-ads/$id/download-link', {}) as Map;
     return resolve(result['url'].toString());
