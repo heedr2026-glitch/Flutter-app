@@ -33,6 +33,7 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
   bool _loading = true;
   String? _error;
   int _index = 0;
+  bool _muted = true;
   final _pages = PageController();
 
   @override
@@ -220,6 +221,11 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
           automaticallyImplyLeading: widget.savedOnly,
           title: Text(widget.savedOnly ? 'المحفوظات' : 'عروض'),
           actions: [
+            IconButton(
+              tooltip: _muted ? 'تشغيل الصوت' : 'كتم الصوت',
+              icon: Icon(_muted ? Icons.volume_off : Icons.volume_up),
+              onPressed: () => setState(() => _muted = !_muted),
+            ),
             if (!widget.savedOnly) ...[
               IconButton(
                 tooltip: 'المحفوظات',
@@ -246,32 +252,6 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
               ),
             ],
           ],
-          bottom: widget.savedOnly || _activities.isEmpty
-              ? null
-              : PreferredSize(
-                  preferredSize: const Size.fromHeight(44),
-                  child: SizedBox(
-                    height: 44,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      children: [
-                        for (final a in ['', ..._activities])
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                            child: ChoiceChip(
-                              label: Text(a.isEmpty ? 'الكل' : a),
-                              selected: _activity == a,
-                              onSelected: (_) {
-                                setState(() => _activity = a);
-                                _load();
-                              },
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
         ),
         body: _body(),
       ),
@@ -299,6 +279,8 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
       child: PageView.builder(
         controller: _pages,
         scrollDirection: Axis.vertical,
+        // يجهّز الفيديو اللي بعده وأنت تشوف الحالي.
+        allowImplicitScrolling: true,
         itemCount: _items.length,
         onPageChanged: (i) => setState(() => _index = i),
         itemBuilder: (context, i) {
@@ -308,6 +290,8 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
             api: _api!,
             item: item,
             playing: widget.active && i == _index,
+            preload: i == _index + 1,
+            muted: _muted,
             saved: _saved.contains('${item['id']}'),
             onSave: () => _toggleSave(item),
             onLike: () => _like(item),
@@ -353,6 +337,8 @@ class _VideoAdView extends StatefulWidget {
     required this.api,
     required this.item,
     required this.playing,
+    required this.preload,
+    required this.muted,
     required this.saved,
     required this.onSave,
     required this.onLike,
@@ -364,6 +350,8 @@ class _VideoAdView extends StatefulWidget {
   final VideoAdsApi api;
   final Map<String, dynamic> item;
   final bool playing;
+  final bool preload;
+  final bool muted;
   final bool saved;
   final VoidCallback onSave;
   final VoidCallback onLike;
@@ -377,23 +365,25 @@ class _VideoAdView extends StatefulWidget {
 
 class _VideoAdViewState extends State<_VideoAdView> {
   VideoPlayerController? _controller;
-  bool _muted = true;
   bool _failed = false;
+  bool _paused = false;
 
   @override
   void initState() {
     super.initState();
-    if (widget.playing) _start();
+    if (widget.playing || widget.preload) _start();
   }
 
   @override
   void didUpdateWidget(covariant _VideoAdView old) {
     super.didUpdateWidget(old);
-    if (widget.playing && _controller == null) {
+    if (old.muted != widget.muted) _controller?.setVolume(widget.muted ? 0 : 1);
+    if ((widget.playing || widget.preload) && _controller == null) {
       _start();
-    } else if (widget.playing) {
+    } else if (widget.playing && !old.playing) {
+      _paused = false;
       _controller?.play();
-    } else {
+    } else if (!widget.playing) {
       _controller?.pause();
     }
   }
@@ -407,9 +397,9 @@ class _VideoAdViewState extends State<_VideoAdView> {
     try {
       await controller.initialize();
       await controller.setLooping(true);
-      await controller.setVolume(_muted ? 0 : 1);
+      await controller.setVolume(widget.muted ? 0 : 1);
       if (!mounted) return;
-      if (widget.playing) await controller.play();
+      if (widget.playing && !_paused) await controller.play();
       setState(() {});
     } catch (_) {
       if (mounted) setState(() => _failed = true);
@@ -422,9 +412,11 @@ class _VideoAdViewState extends State<_VideoAdView> {
     super.dispose();
   }
 
-  void _toggleSound() {
-    setState(() => _muted = !_muted);
-    _controller?.setVolume(_muted ? 0 : 1);
+  void _togglePause() {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    setState(() => _paused = !_paused);
+    _paused ? controller.pause() : controller.play();
   }
 
   @override
@@ -435,7 +427,7 @@ class _VideoAdViewState extends State<_VideoAdView> {
     final overlay = (item['overlayText'] ?? '').toString().trim();
     final overlayY = ((item['overlayY'] as num?)?.toDouble() ?? 0.15).clamp(0.05, 0.85);
     return GestureDetector(
-      onTap: _toggleSound,
+      onTap: _togglePause,
       onDoubleTap: item['liked'] == true ? null : widget.onLike,
       child: Stack(
         fit: StackFit.expand,
@@ -462,11 +454,9 @@ class _VideoAdViewState extends State<_VideoAdView> {
               alignment: Alignment(0, overlayY * 2 - 1),
               child: _OverlayText(overlay),
             ),
-          if (ready && _muted)
-            const Positioned(
-              top: 110,
-              left: 16,
-              child: Icon(Icons.volume_off, color: Colors.white70),
+          if (ready && _paused)
+            const Center(
+              child: Icon(Icons.play_arrow_rounded, size: 90, color: Colors.white70),
             ),
           Positioned(
             left: 10,
