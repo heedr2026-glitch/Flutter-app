@@ -50,6 +50,7 @@ dependencies:
   mobile_scanner: ^7.0.0
   flutter_map: ^8.1.0
   latlong2: ^0.9.1
+  video_player: ^2.9.2
 
 dev_dependencies:
   flutter_test:

@@ -1,3 +1,4 @@
+import 'home_shell.dart';
 import 'vehicle_tracking_page.dart';
 import 'driver_link_page.dart';
 import 'whatsapp_workspace.dart';
@@ -897,7 +898,7 @@ class _AppLaunchGateState extends State<AppLaunchGate> {
       );
     }
     if (!_accountCreated) return const HomePage();
-    return _hasSession ? const DashboardPage() : const LoginPage();
+    return _hasSession ? const KhdoomHomeShell() : const LoginPage();
   }
 }
 
@@ -1290,7 +1291,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardPage()),
+        MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
         (_) => false,
       );
       return;
@@ -1364,7 +1365,7 @@ class _LoginPageState extends State<LoginPage> {
           if (!mounted) return;
           Navigator.pushAndRemoveUntil(
             context,
-            MaterialPageRoute(builder: (_) => const DashboardPage()),
+            MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
             (_) => false,
           );
           return;
@@ -1443,7 +1444,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardPage()),
+        MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
         (_) => false,
       );
       return;
@@ -1568,7 +1569,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return true;
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const DashboardPage()),
+        MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
         (_) => false,
       );
       return true;
@@ -4521,7 +4522,7 @@ class _DashboardPageState extends State<DashboardPage> {
             onCategories: _openAssistantCategories,
             onBranchChanged: () => Navigator.pushAndRemoveUntil(
               context,
-              MaterialPageRoute(builder: (_) => const DashboardPage()),
+              MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
               (_) => false,
             ),
           ),
@@ -4861,7 +4862,7 @@ class EducationPage extends StatelessWidget {
                   child: FilledButton.icon(
                     onPressed: () => Navigator.pushAndRemoveUntil(
                       context,
-                      MaterialPageRoute(builder: (_) => const DashboardPage()),
+                      MaterialPageRoute(builder: (_) => const KhdoomHomeShell()),
                       (_) => false,
                     ),
                     style: FilledButton.styleFrom(
