@@ -34,8 +34,11 @@ DEFAULT_SETTINGS = {
     "max_saved": 5,             # حد الفيديوهات المحفوظة لكل مؤسسة
     "max_upload_mb": 40,
     "enabled": 1,
+    "sounds_enabled": 1,        # ميزة الأصوات (مثل سناب) يشغلها ويوقفها المالك
 }
 VIDEO_TYPES = {"video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm", "video/3gpp": ".3gp"}
+IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+IMAGE_SECONDS = 8  # الصورة بدون صوت تصير فيديو 8 ثواني
 
 
 def stamp() -> str:
@@ -87,6 +90,14 @@ def migrate(c, postgres: bool = False) -> None:
     present = set() if postgres else {r["name"] for r in c.execute("PRAGMA table_info(video_ads)")}
     if postgres or "overlay_y" not in present:
         c.execute("ALTER TABLE video_ads ADD COLUMN " + ("IF NOT EXISTS " if postgres else "") + "overlay_y REAL NOT NULL DEFAULT 0.15")
+    if postgres or "sound_id" not in present:
+        c.execute("ALTER TABLE video_ads ADD COLUMN " + ("IF NOT EXISTS " if postgres else "") + "sound_id BIGINT")
+    c.execute(f"""CREATE TABLE IF NOT EXISTS video_ad_sounds(
+        id {identity}, organization_id BIGINT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        file_name TEXT NOT NULL DEFAULT '', seconds REAL NOT NULL DEFAULT 0,
+        public INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, uses INTEGER NOT NULL DEFAULT 0,
+        deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)""")
+    c.execute("CREATE INDEX IF NOT EXISTS video_ad_sounds_scope ON video_ad_sounds(public, hidden, deleted)")
     if postgres or "optimized" not in present:
         c.execute("ALTER TABLE video_ads ADD COLUMN " + ("IF NOT EXISTS " if postgres else "") + "optimized INTEGER NOT NULL DEFAULT 0")
     c.execute("CREATE INDEX IF NOT EXISTS video_ads_status ON video_ads(status, deleted)")
@@ -112,7 +123,7 @@ def settings(c) -> dict:
 
 def save_settings(c, data: dict, actor: str) -> dict:
     limits = {"max_seconds": (5, 600), "quota_free": (0, 1000), "quota_basic": (0, 1000), "quota_vip": (0, 1000),
-              "paid_price_sar": (0, 100000), "max_saved": (1, 100), "max_upload_mb": (1, 500), "enabled": (0, 1)}
+              "paid_price_sar": (0, 100000), "max_saved": (1, 100), "max_upload_mb": (1, 500), "enabled": (0, 1), "sounds_enabled": (0, 1)}
     changed = {}
     for key, (low, high) in limits.items():
         if key not in data or data[key] in (None, ""):
@@ -147,7 +158,8 @@ def quota(c, org: int) -> dict:
                      (org, month_start())).fetchone()["n"]
     return {"package": package, "limit": limit, "used": int(used), "remaining": max(0, limit - int(used)),
             "custom": bool(override), "paid_price_sar": cfg["paid_price_sar"], "max_seconds": cfg["max_seconds"],
-            "max_saved": cfg["max_saved"], "can_create": package == "vip", "enabled": bool(cfg["enabled"])}
+            "max_saved": cfg["max_saved"], "can_create": package == "vip", "enabled": bool(cfg["enabled"]),
+            "sounds_enabled": bool(cfg["sounds_enabled"])}
 
 
 # ---------------------------------------------------------------- انتهاء المدة
@@ -333,6 +345,18 @@ def owner(c, r, m, d, q, page, a, s):
             c.execute("INSERT INTO video_ad_quota_overrides(organization_id,monthly_limit,updated_at) VALUES(?,?,?) ON CONFLICT(organization_id) DO UPDATE SET monthly_limit=excluded.monthly_limit,updated_at=excluded.updated_at", (org, limit, stamp()))
             admin.audit(c, actor, "video_ad_quota_set", json.dumps({"organization": org, "limit": limit}))
         return {"saved": True}
+    if r == "video-ads/sounds" and m == "GET":
+        rows = c.execute("SELECT * FROM video_ad_sounds WHERE public=1 AND deleted=0 AND file_name<>'' ORDER BY hidden ASC,uses DESC,id DESC LIMIT 300").fetchall()
+        return {"items": [_sound_out(c, x) for x in rows]}
+    match = re.fullmatch(r"video-ads/sounds/([0-9]+)", r)
+    if match and m == "PUT":
+        ident = int(match[1])
+        if not c.execute("SELECT id FROM video_ad_sounds WHERE id=? AND deleted=0", (ident,)).fetchone():
+            raise ValueError("الصوت غير موجود")
+        hidden = d.get("hidden") is True
+        c.execute("UPDATE video_ad_sounds SET hidden=? WHERE id=?", (int(hidden), ident))
+        admin.audit(c, actor, "video_ad_sound_hidden" if hidden else "video_ad_sound_shown", ident)
+        return {"saved": True}
     match = re.fullmatch(r"video-ads/([0-9]+)", r)
     if match and m == "PUT":
         return owner_review(c, int(match[1]), d, actor)
@@ -340,6 +364,14 @@ def owner(c, r, m, d, q, page, a, s):
 
 
 def owner_file(h, route, s) -> None:
+    sound = re.fullmatch(r"video-ads/sounds/([0-9]+)/file", route)
+    if sound:
+        with s.db() as c:
+            row = c.execute("SELECT id,file_name FROM video_ad_sounds WHERE id=? AND deleted=0", (int(sound[1]),)).fetchone()
+        if not row:
+            raise s.ApiError(404, "الصوت غير موجود")
+        _send_file(h, {"id": row["id"], "file_name": row["file_name"], "content_type": "audio/mp4"}, s)
+        return
     match = re.fullmatch(r"video-ads/([0-9]+)/file", route)
     if not match:
         raise s.ApiError(404, "المسار غير موجود")
@@ -411,7 +443,7 @@ def probe_seconds(path: Path) -> float | None:
 def trim_video(source: Path, target: Path, start: float, length: float) -> bool:
     """قص سريع بدون إعادة ترميز، مع تجهيز الملف للتشغيل المباشر."""
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
                                "-c", "copy", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(target)],
                               capture_output=True, timeout=180)
         ok = done.returncode == 0 and target.exists() and target.stat().st_size > 0
@@ -419,7 +451,7 @@ def trim_video(source: Path, target: Path, start: float, length: float) -> bool:
         if ok and got is not None and abs(got - length) <= 1.5:
             return True
         # القص السريع يتقيد بالإطارات المفتاحية؛ إذا طلع غير دقيق نعيد الترميز بدقة.
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source), "-t", f"{length:.2f}",
                                "-vf", "scale='min(1080,iw)':-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
                                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)],
                               capture_output=True, timeout=600)
@@ -437,8 +469,14 @@ def optimize_video(source: Path) -> Path | None:
         return None
     target = source.with_name(source.stem + "_m.mp4")
     temp = target.with_suffix(".part.mp4")
+    # ضغط واحد بالمرة عشان السيرفر الصغير ما يتعب.
+    with _wm_lock:
+        return _optimize_locked(source, target, temp)
+
+
+def _optimize_locked(source: Path, target: Path, temp: Path) -> Path | None:
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source),
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(source),
                                "-vf", "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'",
                                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "2M", "-bufsize", "4M",
                                "-pix_fmt", "yuv420p", "-g", "60", "-c:a", "aac", "-b:a", "96k", "-ac", "2",
@@ -464,7 +502,22 @@ def _optimize_row(c, row) -> bool:
               (result.name, result.stat().st_size, row["id"]))
     for old in (source, source.with_name("wm_" + source.stem + ".mp4")):
         old.unlink(missing_ok=True)
+    with _wm_lock:
+        watermarked({"id": row["id"], "file_name": result.name}, build=True)
     return True
+
+
+def optimize_async(s, ident: int) -> None:
+    def run():
+        try:
+            with s.db() as c:
+                row = c.execute("SELECT id,file_name FROM video_ads WHERE id=? AND deleted=0 AND optimized=0", (ident,)).fetchone()
+                if row and _optimize_row(c, row):
+                    c.commit()
+        except Exception as error:
+            print("video_ads optimize:", error, flush=True)
+
+    __import__("threading").Thread(target=run, daemon=True).start()
 
 
 _backfill_started = False
@@ -492,19 +545,33 @@ def start_backfill(s) -> None:
     threading.Thread(target=run, daemon=True).start()
 
 
-def watermarked(row) -> Path | None:
-    """نسخة التنزيل عليها شعار خدوم في الزاوية؛ تنحفظ بعد أول تنزيل."""
+_wm_lock = __import__("threading").Lock()
+
+
+def prepare_watermark_async(row) -> None:
+    """يجهز نسخة التنزيل بالشعار بالخلفية، وحدة وحدة عشان ما يتعب السيرفر."""
+    data = {"id": row["id"], "file_name": row["file_name"]}
+
+    def run():
+        with _wm_lock:
+            watermarked(data, build=True)
+
+    __import__("threading").Thread(target=run, daemon=True).start()
+
+
+def watermarked(row, build: bool = False) -> Path | None:
+    """نسخة التنزيل عليها شعار خدوم في الزاوية؛ تتجهز بالخلفية مسبقًا."""
     source = _file_path(row)
     if not source or not source.exists():
         return None
     target = source.with_name("wm_" + source.stem + ".mp4")
     if target.exists():
         return target
-    if not _ffmpeg() or not LOGO.exists():
+    if not build or not _ffmpeg() or not LOGO.exists():
         return source
     temp = target.with_suffix(".part.mp4")
     try:
-        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source), "-i", str(LOGO), "-filter_complex",
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(source), "-i", str(LOGO), "-filter_complex",
                                "[1:v][0:v]scale2ref=w=iw*0.16:h=ow/mdar[logo][base];[logo]format=rgba,colorchannelmixer=aa=0.85[l];[base][l]overlay=W-w-W*0.04:H-h-H*0.04",
                                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-c:a", "copy", "-movflags", "+faststart", str(temp)],
                               capture_output=True, timeout=600)
@@ -521,6 +588,131 @@ def _link_sig(c, ident: int, expires: int) -> str:
     row = c.execute("SELECT value FROM video_ad_settings WHERE key='link_secret'").fetchone()
     secret = (row["value"] if row else "") or "khdoom"
     return hmac.new(secret.encode(), f"{ident}:{expires}".encode(), hashlib.sha256).hexdigest()[:40]
+
+
+# ---------------------------------------------------------------- الأصوات (مثل سناب)
+def extract_sound(source: Path, target: Path, start: float, length: float) -> bool:
+    try:
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-ss", f"{start:.2f}", "-i", str(source),
+                               "-t", f"{length:.2f}", "-vn", "-c:a", "aac", "-b:a", "128k", "-ac", "2", str(target)],
+                              capture_output=True, timeout=300)
+        return done.returncode == 0 and target.exists() and target.stat().st_size > 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def image_to_video(image: Path, target: Path, sound: Path | None, seconds: float) -> bool:
+    """صورة وحدة تصير فيديو بطول الصوت (أو 8 ثواني بدون صوت)."""
+    cmd = ["ffmpeg", "-y", "-v", "error", "-threads", "1", "-loop", "1", "-framerate", "15", "-i", str(image)]
+    if sound:
+        cmd += ["-i", str(sound)]
+    cmd += ["-t", f"{seconds:.2f}", "-vf", "scale='min(720,iw)':-2,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+            "-tune", "stillimage", "-crf", "26", "-r", "15"]
+    cmd += (["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "128k", "-shortest"] if sound else ["-an"])
+    cmd += ["-movflags", "+faststart", str(target)]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=600)
+        return done.returncode == 0 and target.exists() and target.stat().st_size > 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def replace_audio(video: Path, sound: Path, target: Path) -> bool:
+    """يشيل صوت الفيديو الأصلي ويحط الصوت المختار (يتكرر إذا كان أقصر)."""
+    try:
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-threads", "1", "-i", str(video), "-stream_loop", "-1", "-i", str(sound),
+                               "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest",
+                               "-movflags", "+faststart", str(target)],
+                              capture_output=True, timeout=300)
+        return done.returncode == 0 and target.exists() and target.stat().st_size > 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def usable_sound(c, sound_id, org):
+    if not sound_id:
+        return None
+    row = c.execute("SELECT * FROM video_ad_sounds WHERE id=? AND deleted=0", (int(sound_id),)).fetchone()
+    if not row or not row["file_name"]:
+        raise ValueError("الصوت غير متاح")
+    if row["organization_id"] != org and (not row["public"] or row["hidden"]):
+        raise ValueError("الصوت غير متاح")
+    return row
+
+
+def _sound_out(c, row) -> dict:
+    org = c.execute("SELECT name FROM organizations WHERE id=?", (row["organization_id"],)).fetchone()
+    return {"id": row["id"], "name": row["name"], "seconds": row["seconds"], "public": bool(row["public"]),
+            "hidden": bool(row["hidden"]), "uses": int(row["uses"]), "organizationId": row["organization_id"],
+            "organizationName": org["name"] if org else "", "url": f"/api/video-ads/sounds/{row['id']}/file"}
+
+
+def sounds_client(h, method, s, c, user, org, r, q):
+    cfg = settings(c)
+    if not cfg["sounds_enabled"]:
+        raise ValueError("ميزة الأصوات موقفة مؤقتًا")
+    if r == "sounds" and method == "GET":
+        if q.get("scope") == "public":
+            rows = c.execute("SELECT * FROM video_ad_sounds WHERE public=1 AND hidden=0 AND deleted=0 AND file_name<>'' ORDER BY uses DESC,id DESC LIMIT 100").fetchall()
+        else:
+            rows = c.execute("SELECT * FROM video_ad_sounds WHERE organization_id=? AND deleted=0 AND file_name<>'' ORDER BY id DESC", (org,)).fetchall()
+        return {"items": [_sound_out(c, x) for x in rows]}
+    if r == "sounds" and method == "POST":
+        d = h._body()
+        name = str(d.get("name", "")).strip()[:60]
+        if not name:
+            raise ValueError("اكتب اسم الصوت")
+        cur = c.execute("INSERT INTO video_ad_sounds(organization_id,name,public,created_at) VALUES(?,?,?,?)",
+                        (org, name, int(d.get("public") is True), stamp()))
+        ident = cur.lastrowid or c.execute("SELECT MAX(id) n FROM video_ad_sounds WHERE organization_id=?", (org,)).fetchone()["n"]
+        return {"id": ident, "uploadUrl": f"/api/video-ads/sounds/{ident}/upload"}
+    match = re.fullmatch(r"sounds/([0-9]+)/upload", r)
+    if match and method in ("PUT", "POST"):
+        ident = int(match[1])
+        row = c.execute("SELECT * FROM video_ad_sounds WHERE id=? AND organization_id=? AND deleted=0", (ident, org)).fetchone()
+        if not row or row["file_name"]:
+            raise ValueError("الصوت غير موجود")
+        try:
+            start = max(0.0, float(q.get("start", 0) or 0))
+            end = float(q["end"]) if q.get("end") else None
+        except ValueError:
+            raise ValueError("بداية ونهاية الصوت غير صحيحة")
+        raw = video_dir() / f"sraw_{ident}_{os.urandom(6).hex()}.bin"
+        _read_upload(h, s, 200, raw)
+        try:
+            total = probe_seconds(raw) or 0
+            if end is None:
+                end = min(total, start + cfg["max_seconds"]) if total else start + cfg["max_seconds"]
+            length = end - start
+            if length <= 0.5 or length > cfg["max_seconds"] + 0.5:
+                raise ValueError(f"اختار جزء مدته {cfg['max_seconds']} ثانية أو أقل")
+            target = video_dir() / f"s{ident}_{os.urandom(6).hex()}.m4a"
+            if not extract_sound(raw, target, start, length):
+                raise ValueError("تعذر أخذ الصوت من هذا المقطع، جرّب مقطع ثاني")
+        finally:
+            raw.unlink(missing_ok=True)
+        seconds = probe_seconds(target) or length
+        c.execute("UPDATE video_ad_sounds SET file_name=?,seconds=? WHERE id=?", (target.name, seconds, ident))
+        return _sound_out(c, c.execute("SELECT * FROM video_ad_sounds WHERE id=?", (ident,)).fetchone())
+    match = re.fullmatch(r"sounds/([0-9]+)", r)
+    if match and method == "DELETE":
+        row = c.execute("SELECT * FROM video_ad_sounds WHERE id=? AND organization_id=? AND deleted=0", (int(match[1]), org)).fetchone()
+        if not row:
+            raise ValueError("الصوت غير موجود")
+        # الإعلانات اللي استخدمته تبقى؛ الصوت محفوظ داخلها.
+        c.execute("UPDATE video_ad_sounds SET deleted=1 WHERE id=?", (row["id"],))
+        if row["file_name"]:
+            (video_dir() / row["file_name"]).unlink(missing_ok=True)
+        return {"deleted": True}
+    if match and method == "PUT":
+        row = c.execute("SELECT * FROM video_ad_sounds WHERE id=? AND organization_id=? AND deleted=0", (int(match[1]), org)).fetchone()
+        if not row:
+            raise ValueError("الصوت غير موجود")
+        d = h._body()
+        c.execute("UPDATE video_ad_sounds SET public=?,name=? WHERE id=?",
+                  (int(d.get("public", bool(row["public"])) is True), (str(d.get("name") or row["name"]).strip()[:60]), row["id"]))
+        return _sound_out(c, c.execute("SELECT * FROM video_ad_sounds WHERE id=?", (row["id"],)).fetchone())
+    raise s.ApiError(404, "المسار غير موجود")
 
 
 def client(h, method, s) -> bool:
@@ -540,9 +732,20 @@ def client(h, method, s) -> bool:
             if not row:
                 raise s.ApiError(404, "الفيديو غير متاح")
             path_wm = watermarked(row)
+            if path_wm and not path_wm.name.startswith("wm_"):
+                prepare_watermark_async(row)
             if not path_wm:
                 raise s.ApiError(404, "الفيديو غير متاح")
             _send_file(h, {"id": row["id"], "file_name": path_wm.name, "content_type": "video/mp4"}, s, download=True)
+            return True
+        sound_file = re.fullmatch(r"/api/video-ads/sounds/([0-9]+)/file", path)
+        if sound_file and method == "GET":
+            with s.db() as c:
+                user = h._user(c)
+                row = c.execute("SELECT * FROM video_ad_sounds WHERE id=? AND deleted=0", (int(sound_file[1]),)).fetchone()
+                if not row or (row["organization_id"] != user["organization_id"] and (not row["public"] or row["hidden"])):
+                    raise s.ApiError(404, "الصوت غير متاح")
+            _send_file(h, {"id": row["id"], "file_name": row["file_name"], "content_type": "audio/mp4"}, s)
             return True
         # تشغيل/تنزيل الفيديو يحتاج تسجيل الدخول (المشغل يرسل ترويسة Authorization).
         match = re.fullmatch(r"/api/video-ads/([0-9]+)/(file|download)", path)
@@ -561,6 +764,11 @@ def client(h, method, s) -> bool:
             org = user["organization_id"]
             expire_due(c)
             r = path[len("/api/video-ads"):].lstrip("/")
+            if r == "sounds" or r.startswith("sounds/"):
+                result = sounds_client(h, method, s, c, user, org, r, q)
+                c.commit()
+                h._send(200, result)
+                return True
             if r == "feed" and method == "GET":
                 activity = (q.get("activity") or "").strip()
                 sql = ("SELECT v.*,o.name organization_name,o.phone org_phone FROM video_ads v JOIN organizations o ON o.id=v.organization_id "
@@ -603,14 +811,17 @@ def client(h, method, s) -> bool:
                 if seconds > cfg["max_seconds"] + 0.5:
                     raise ValueError(f"المدة القصوى للفيديو {cfg['max_seconds']} ثانية؛ قص الفيديو أولًا")
                 content_type = str(d.get("contentType", "video/mp4"))
-                if content_type not in VIDEO_TYPES:
+                if content_type not in VIDEO_TYPES and content_type not in IMAGE_TYPES:
                     raise ValueError("نوع الفيديو غير مدعوم")
+                sound = usable_sound(c, d.get("soundId"), org) if d.get("soundId") else None
+                if sound and not cfg["sounds_enabled"]:
+                    raise ValueError("ميزة الأصوات موقفة مؤقتًا")
                 now = stamp()
                 overlay_y = admin.number(d.get("overlayY", 0.15), 0, 1)
-                cur = c.execute("INSERT INTO video_ads(organization_id,title,caption,overlay_text,activity,contact,allow_download,content_type,seconds,status,created_at,overlay_y) VALUES(?,?,?,?,?,?,?,?,?,'draft',?,?)",
+                cur = c.execute("INSERT INTO video_ads(organization_id,title,caption,overlay_text,activity,contact,allow_download,content_type,seconds,status,created_at,overlay_y,sound_id) VALUES(?,?,?,?,?,?,?,?,?,'draft',?,?,?)",
                                 (org, str(d.get("title", "")).strip()[:80], str(d.get("caption", "")).strip()[:300], str(d.get("overlayText", "")).strip()[:120],
                                  str(d.get("activity", "")).strip()[:60], str(d.get("contact", "")).strip()[:40], int(d.get("allowDownload", True) is not False),
-                                 content_type, seconds, now, overlay_y))
+                                 content_type, seconds, now, overlay_y, sound["id"] if sound else None))
                 ident = cur.lastrowid
                 if ident is None:
                     ident = c.execute("SELECT MAX(id) n FROM video_ads WHERE organization_id=?", (org,)).fetchone()["n"]
@@ -628,12 +839,27 @@ def client(h, method, s) -> bool:
                     raise ValueError("بداية ونهاية القص غير صحيحة")
                 wants_trim = end is not None
                 # الفيديو الطويل يرتفع كامل والسيرفر يقصه؛ لذلك حده أكبر.
-                suffix = VIDEO_TYPES.get(row["content_type"], ".mp4")
+                is_image = row["content_type"] in IMAGE_TYPES
+                suffix = IMAGE_TYPES[row["content_type"]] if is_image else VIDEO_TYPES.get(row["content_type"], ".mp4")
+                sound = usable_sound(c, row["sound_id"], org) if row["sound_id"] else None
+                sound_path = (video_dir() / sound["file_name"]) if sound else None
+                if is_image or sound:
+                    if not _ffmpeg():
+                        raise ValueError("تجهيز الصورة والصوت غير متاح حاليًا")
+                    if is_image:
+                        wants_trim = False
                 raw_path = video_dir() / f"raw_{ident}_{os.urandom(6).hex()}{suffix}"
                 size = _read_upload(h, s, max(cfg["max_upload_mb"], 200) if wants_trim else cfg["max_upload_mb"], raw_path)
                 final = video_dir() / f"v{ident}_{os.urandom(6).hex()}{suffix}"
                 seconds = None
-                if wants_trim and _ffmpeg():
+                if is_image:
+                    final = final.with_suffix(".mp4")
+                    length = min(float(sound["seconds"]) if sound else IMAGE_SECONDS, cfg["max_seconds"])
+                    ok = image_to_video(raw_path, final, sound_path, length)
+                    raw_path.unlink(missing_ok=True)
+                    if not ok:
+                        raise ValueError("تعذر تجهيز الصورة، جرّب صورة ثانية")
+                elif wants_trim and _ffmpeg():
                     length = end - start
                     if length <= 0 or length > cfg["max_seconds"] + 0.5:
                         raw_path.unlink(missing_ok=True)
@@ -644,20 +870,27 @@ def client(h, method, s) -> bool:
                     raw_path.unlink(missing_ok=True)
                 else:
                     raw_path.replace(final)
+                if sound and not is_image:
+                    mixed = final.with_name(final.stem + "_a.mp4")
+                    if not replace_audio(final, sound_path, mixed):
+                        final.unlink(missing_ok=True)
+                        raise ValueError("تعذر إضافة الصوت على الفيديو")
+                    final.unlink(missing_ok=True)
+                    final = mixed
                 seconds = probe_seconds(final)
                 if seconds is not None and seconds > cfg["max_seconds"] + 1.5:
                     final.unlink(missing_ok=True)
                     raise ValueError(f"المدة القصوى للفيديو {cfg['max_seconds']} ثانية؛ قص الفيديو أولًا")
-                if not wants_trim and final.stat().st_size > cfg["max_upload_mb"] * 1_048_576:
+                if not wants_trim and not is_image and final.stat().st_size > cfg["max_upload_mb"] * 1_048_576:
                     final.unlink(missing_ok=True)
                     raise ValueError(f"حجم الفيديو أكبر من {cfg['max_upload_mb']} ميقا")
-                optimized = optimize_video(final)
-                if optimized:
-                    final.unlink(missing_ok=True)
-                    final = optimized
                 old = row
-                c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds),optimized=?,content_type=? WHERE id=?",
-                          (final.name, final.stat().st_size, seconds, 1 if optimized else 0, "video/mp4" if optimized else row["content_type"], ident))
+                c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds),optimized=0,content_type=? WHERE id=?",
+                          (final.name, final.stat().st_size, seconds, "video/mp4" if (is_image or sound) else row["content_type"], ident))
+                if sound:
+                    c.execute("UPDATE video_ad_sounds SET uses=uses+1 WHERE id=?", (sound["id"],))
+                # الضغط بالخلفية بعد الحفظ؛ المشترك ما ينتظره.
+                optimize_async(s, ident)
                 if old["file_name"]:
                     _remove_file(old)
                 _trim_saved(c, org, keep=ident)

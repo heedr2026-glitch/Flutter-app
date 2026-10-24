@@ -6,12 +6,16 @@
 })();
 let videoAdTab='pending';
 const videoAdUrls=new Map();
-const videoAdTabs=[['pending','طلب جديد'],['published','منشور'],['rejected','مرفوض'],['expired','منتهي'],['settings','⚙️ الإعدادات']];
+const videoAdTabs=[['pending','طلب جديد'],['published','منشور'],['rejected','مرفوض'],['expired','منتهي'],['sounds','🎵 الأصوات العامة'],['settings','⚙️ الإعدادات']];
 const videoAdSize=b=>b>1048576?(b/1048576).toFixed(1)+' ميقا':Math.round((b||0)/1024)+' كيلو';
 const previousRenderAddons=window.renderAddons||(typeof renderAddons==='function'?renderAddons:null);
 window.renderAddons=async function(route,v){
  if(route!=='video-ads')return previousRenderAddons?previousRenderAddons(route,v):false;
  const c=$('content'),valid=()=>v===version;
+ if(videoAdTab==='sounds'){
+  const d=await api('video-ads/sounds'),counts=(await api('video-ads?status=pending')).counts;if(!valid())return true;
+  c.innerHTML='';c.append(videoAdTabBar(counts));c.append(videoAdSoundsPanel(d.items||[]));return true;
+ }
  if(videoAdTab==='settings'){
   const d=await api('video-ads/settings'),counts=(await api('video-ads?status=pending')).counts;if(!valid())return true;
   c.innerHTML='';c.append(videoAdTabBar(counts));c.append(videoAdSettingsPanel(d));return true;
@@ -80,6 +84,7 @@ function videoAdSettingsPanel(d){
   <label>أقصى حجم للرفع (ميقا)<input data-k="max_upload_mb" type="number" min="1" max="500" value="${d.max_upload_mb}"></label>
  </div>
  <label class="check" style="display:block;margin:10px 0"><input data-k="enabled" type="checkbox" ${d.enabled?'checked':''}> إعلانات الفيديو شغالة</label>
+ <label class="check" style="display:block;margin:10px 0"><input data-k="sounds_enabled" type="checkbox" ${d.sounds_enabled?'checked':''}> 🎵 ميزة الأصوات شغالة (إنشاء صوت من مقطع، وإضافة الصوت على الفيديو والصورة)</label>
  <p class="muted">مساحة الفيديوهات المستخدمة على السيرفر: <b>${videoAdSize(used)}</b></p>
  <div class="toolbar"></div></div>
  <div class="panel"><h3>حد خاص لمؤسسة</h3><p class="muted">اكتب رقم المؤسسة وعدد إعلاناتها بالشهر. اتركه فاضي ليرجع لحد باقتها.</p>
@@ -89,6 +94,21 @@ function videoAdSettingsPanel(d){
  box.querySelector('.toolbar').append(action('حفظ الإعدادات',async()=>{const body={};box.querySelectorAll('[data-k]').forEach(i=>{body[i.dataset.k]=i.type==='checkbox'?(i.checked?1:0):i.value});try{await api('video-ads/settings','PUT',body);flash('تم حفظ الإعدادات ✓');render()}catch(e){flash(e.message)}},'primary'));
  box.querySelector('[data-qbar]').append(action('حفظ الحد الخاص',async()=>{const org=box.querySelector('[data-q="org"]').value,limit=box.querySelector('[data-q="limit"]').value.trim();if(!org){flash('اكتب رقم المؤسسة');return}try{await api('video-ads/quota/'+org,'PUT',{limit:limit===''?null:limit});flash(limit===''?'رجعت المؤسسة لحد باقتها':'تم حفظ الحد الخاص ✓');render()}catch(e){flash(e.message)}}));
  return box;
+}
+function videoAdSoundsPanel(items){
+ const box=document.createElement('div');
+ if(!items.length){box.innerHTML=note('لا توجد أصوات عامة بعد.');return box}
+ box.insertAdjacentHTML('beforeend','<p class="muted">الأصوات اللي اختار أصحابها تكون عامة لكل المشتركين. أوقف أي صوت فيه أغنية بحقوق أو غير لائق.</p>');
+ const list=document.createElement('div');list.className='cards';list.style.gridTemplateColumns='repeat(auto-fill,minmax(260px,1fr))';
+ for(const x of items){
+  const card=document.createElement('div');card.className='panel';if(x.hidden)card.style.opacity='.6';
+  card.innerHTML=`<p class="muted" style="margin:0">${esc(x.organizationName)}</p><h3 style="margin:6px 0">🎵 ${esc(x.name)}</h3><p style="margin:0 0 8px">▶️ ${Number(x.uses||0).toLocaleString('en')} استخدام · ${Math.round(x.seconds||0)} ث ${x.hidden?'· <b style="color:#b32635">موقوف</b>':''}</p><div data-audio></div><div class="toolbar"></div>`;
+  const bar=card.querySelector('.toolbar'),holder=card.querySelector('[data-audio]');
+  bar.append(action('▶️ استماع',async()=>{holder.textContent='جارٍ التحميل…';try{const r=await fetch('/owner/api/v2/video-ads/sounds/'+x.id+'/file',{headers:authHeaders(),cache:'no-store'});if(!r.ok)throw Error('تعذر تحميل الصوت');const a=document.createElement('audio');a.controls=true;a.autoplay=true;a.style.width='100%';a.src=URL.createObjectURL(await r.blob());holder.replaceChildren(a)}catch(e){holder.textContent=e.message}}));
+  bar.append(action(x.hidden?'✅ إعادة تشغيل':'⛔ إيقاف الصوت',async()=>{if(!x.hidden&&!confirm('إيقاف هذا الصوت؟ يختفي من الأصوات العامة ولا أحد يقدر يستخدمه.'))return;try{await api('video-ads/sounds/'+x.id,'PUT',{hidden:!x.hidden});flash(x.hidden?'رجع الصوت ✓':'تم إيقاف الصوت');render()}catch(e){flash(e.message)}},x.hidden?'':'danger'));
+  list.append(card);
+ }
+ box.append(list);return box;
 }
 // شارة الطلبات الجديدة بجانب الزر في القائمة.
 setInterval(()=>{if(typeof me!=='undefined'&&me&&can('ads'))api('video-ads?status=pending').then(d=>videoAdBadge(d.counts.pending)).catch(()=>{})},60000);
