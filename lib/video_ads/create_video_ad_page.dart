@@ -308,12 +308,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
     final player = _player!;
     final overlay = _overlay.text.trim();
     final length = _range.end - _range.start;
-    return Focus(
-      // أول ما يكتب في أي خانة يوقف الفيديو عشان يركز.
-      onFocusChange: (has) {
-        if (has) _player?.pause();
-      },
-      child: ListView(
+    return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         AspectRatio(
@@ -321,7 +316,6 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
           child: LayoutBuilder(
             builder: (context, box) => GestureDetector(
               onTap: () {
-                FocusScope.of(context).unfocus();
                 final p = _player;
                 if (p == null) return;
                 if (p.value.isPlaying) {
@@ -472,7 +466,6 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
           child: const Text('اختيار فيديو ثاني'),
         ),
       ],
-    ),
     );
   }
 }
