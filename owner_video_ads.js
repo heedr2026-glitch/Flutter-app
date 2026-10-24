@@ -1,0 +1,94 @@
+'use strict';
+// صفحة «فيديو الإعلانات»: نفس ترتيب صفحة الإعلانات (طلب جديد / منشور / مرفوض) بالإضافة للمنتهي والإعدادات.
+(function(){
+ const at=tree.findIndex(x=>x[0]==='الإعلانات');
+ tree.splice(at<0?tree.length-1:at+1,0,['🎬 فيديو الإعلانات','video-ads','ads']);
+})();
+let videoAdTab='pending';
+const videoAdUrls=new Map();
+const videoAdTabs=[['pending','طلب جديد'],['published','منشور'],['rejected','مرفوض'],['expired','منتهي'],['settings','⚙️ الإعدادات']];
+const videoAdSize=b=>b>1048576?(b/1048576).toFixed(1)+' ميقا':Math.round((b||0)/1024)+' كيلو';
+const previousRenderAddons=window.renderAddons||(typeof renderAddons==='function'?renderAddons:null);
+window.renderAddons=async function(route,v){
+ if(route!=='video-ads')return previousRenderAddons?previousRenderAddons(route,v):false;
+ const c=$('content'),valid=()=>v===version;
+ if(videoAdTab==='settings'){
+  const d=await api('video-ads/settings'),counts=(await api('video-ads?status=pending')).counts;if(!valid())return true;
+  c.innerHTML='';c.append(videoAdTabBar(counts));c.append(videoAdSettingsPanel(d));return true;
+ }
+ const d=await api('video-ads?status='+videoAdTab+'&page='+(currentPage||1));if(!valid())return true;
+ c.innerHTML='';c.append(videoAdTabBar(d.counts));
+ videoAdBadge(d.counts.pending);
+ if(!d.items.length){c.insertAdjacentHTML('beforeend',note({pending:'لا توجد طلبات جديدة.',published:'لا توجد فيديوهات منشورة حاليًا.',rejected:'لا توجد طلبات مرفوضة.',expired:'لا توجد إعلانات منتهية.'}[videoAdTab]));return true}
+ const list=document.createElement('div');list.className='cards';list.style.gridTemplateColumns='repeat(auto-fill,minmax(280px,1fr))';
+ for(const x of d.items)list.append(videoAdCard(x,d.durations));
+ c.append(list);
+ if(d.total>d.pageSize){const pages=Math.ceil(d.total/d.pageSize),bar=document.createElement('div');bar.className='toolbar';for(let p=1;p<=pages;p++){const b=action(String(p),()=>{currentPage=p;render()});if(p===(currentPage||1))b.classList.add('primary');bar.append(b)}c.append(bar)}
+ return true;
+};
+function videoAdTabBar(counts){
+ const bar=document.createElement('div');bar.className='toolbar';bar.style.marginBottom='16px';
+ for(const [key,label] of videoAdTabs){const n=counts&&key in counts?counts[key]:null;const b=action(label+(n!==null?` (${n})`:''),()=>{videoAdTab=key;currentPage=1;render()});if(key===videoAdTab)b.classList.add('primary');bar.append(b)}
+ return bar;
+}
+function videoAdBadge(n){const b=document.querySelector('#nav [data-route="video-ads"]');if(b)b.textContent='🎬 فيديو الإعلانات'+(n?` (${n})`:'')}
+function videoAdCard(x,durations){
+ const card=document.createElement('div');card.className='panel';
+ const star=x.package==='vip'?' ⭐':'';
+ card.innerHTML=`<div data-player style="background:#0b1020;border-radius:12px;aspect-ratio:9/16;max-height:420px;display:flex;align-items:center;justify-content:center;margin-bottom:10px;overflow:hidden"><button type="button" data-play>▶️ تشغيل الفيديو</button></div>
+ <h3 style="margin:6px 0">${esc(x.organization_name)}${star}</h3>
+ ${x.title?`<p><b>العنوان:</b> ${esc(x.title)}</p>`:''}
+ ${x.overlay_text?`<p><b>النص على الفيديو:</b> ${esc(x.overlay_text)}</p>`:''}
+ ${x.caption?`<p><b>الوصف:</b> ${esc(x.caption)}</p>`:''}
+ <p class="muted">النشاط: ${esc(x.activity||'—')} · المدة: ${Math.round(x.seconds||0)} ث · الحجم: ${videoAdSize(x.size_bytes)} · التنزيل: ${x.allow_download?'مسموح':'مقفول'}</p>
+ <p class="muted">أُرسل: ${when(x.submitted_at)}${x.published_at?' · نُشر: '+when(x.published_at):''}${x.expires_at?' · ينتهي: '+when(x.expires_at):''}${x.duration_label?' ('+esc(x.duration_label)+')':''}</p>
+ ${x.paid?`<p style="color:#b45309;font-weight:bold">💳 إعلان مدفوع ${Number(x.price_sar||0).toFixed(0)} ريال — التحويل باسم: ${esc(x.transfer_name||'غير مكتوب')}</p>`:'<p class="muted">من رصيد VIP الشهري</p>'}
+ ${x.review_note?`<p style="color:#b32635"><b>سبب الرفض:</b> ${esc(x.review_note)}</p>`:''}
+ <div data-actions></div>`;
+ card.querySelector('[data-play]').onclick=()=>videoAdPlay(x.id,card.querySelector('[data-player]'));
+ const box=card.querySelector('[data-actions]');
+ if(x.status==='pending'){
+  box.innerHTML=`<label style="display:block;font-weight:bold;margin:8px 0 4px">مدة الإعلان</label><div class="toolbar" data-durations>${durations.map(d=>`<label style="border:1px solid var(--line);border-radius:9px;padding:8px 12px;cursor:pointer"><input type="radio" name="dur-${x.id}" value="${d.key}" ${d.key==='1w'?'checked':''}> ${esc(d.label)}</label>`).join('')}</div>${x.paid?`<label class="check" style="display:block;margin:8px 0"><input type="checkbox" data-paid> تأكدت من وصول التحويل</label>`:''}<div class="toolbar" style="margin-top:10px"></div>`;
+  const row=box.querySelector('.toolbar:last-child');
+  row.append(action('✅ موافقة ونشر',async()=>{const key=box.querySelector(`input[name="dur-${x.id}"]:checked`)?.value;try{await api('video-ads/'+x.id,'PUT',{action:'approve',duration:key,paymentConfirmed:!!box.querySelector('[data-paid]')?.checked});flash('تم نشر الإعلان ✓');render()}catch(e){flash(e.message)}},'primary'));
+  row.append(action('❌ رفض',async()=>{const note=prompt('سبب الرفض (يوصل للمشترك):','الفيديو غير واضح');if(note===null)return;try{await api('video-ads/'+x.id,'PUT',{action:'reject',note});flash('تم رفض الطلب');render()}catch(e){flash(e.message)}},'danger'));
+ }else if(x.status==='published'){
+  box.append(action('⏹️ إيقاف الإعلان',async()=>{if(!confirm('إيقاف الإعلان الحين؟ يبقى محفوظًا عند المشترك.'))return;try{await api('video-ads/'+x.id,'PUT',{action:'stop'});flash('تم إيقاف الإعلان');render()}catch(e){flash(e.message)}},'danger'));
+ }
+ return card;
+}
+async function videoAdPlay(id,holder){
+ holder.innerHTML='<p class="muted" style="color:#cbd5e1">جارٍ تحميل الفيديو…</p>';
+ try{
+  let url=videoAdUrls.get(id);
+  if(!url){const r=await fetch('/owner/api/v2/video-ads/'+id+'/file',{headers:authHeaders(),cache:'no-store'});if(!r.ok){let m='تعذر تحميل الفيديو';try{m=(await r.json()).error||m}catch(_){}throw Error(m)}url=URL.createObjectURL(await r.blob());videoAdUrls.set(id,url)}
+  holder.innerHTML='';const video=document.createElement('video');video.src=url;video.controls=true;video.autoplay=true;video.playsInline=true;video.style.cssText='width:100%;height:100%;object-fit:contain;background:#000';holder.append(video);
+ }catch(e){holder.innerHTML=`<p style="color:#fecaca;padding:12px">${esc(e.message)}</p>`}
+}
+function videoAdSettingsPanel(d){
+ const box=document.createElement('div');
+ const used=d.storage_used_bytes||0;
+ box.innerHTML=`<div class="panel"><h3>إعدادات إعلانات الفيديو</h3>
+ <p class="muted">أي تغيير هنا يطبق على التطبيق فورًا بدون نسخة جديدة.</p>
+ <div class="formgrid">
+  <label>المدة القصوى للفيديو (ثانية)<input data-k="max_seconds" type="number" min="5" max="600" value="${d.max_seconds}"></label>
+  <label>VIP: عدد الإعلانات المجانية بالشهر<input data-k="quota_vip" type="number" min="0" max="1000" value="${d.quota_vip}"></label>
+  <label>الأساسية: عدد الإعلانات المجانية بالشهر<input data-k="quota_basic" type="number" min="0" max="1000" value="${d.quota_basic}"></label>
+  <label>المجانية: عدد الإعلانات المجانية بالشهر<input data-k="quota_free" type="number" min="0" max="1000" value="${d.quota_free}"></label>
+  <label>سعر الإعلان الواحد لغير VIP (ريال)<input data-k="paid_price_sar" type="number" min="0" step="1" value="${d.paid_price_sar}"></label>
+  <label>أقصى فيديوهات محفوظة لكل مؤسسة<input data-k="max_saved" type="number" min="1" max="100" value="${d.max_saved}"></label>
+  <label>أقصى حجم للرفع (ميقا)<input data-k="max_upload_mb" type="number" min="1" max="500" value="${d.max_upload_mb}"></label>
+ </div>
+ <label class="check" style="display:block;margin:10px 0"><input data-k="enabled" type="checkbox" ${d.enabled?'checked':''}> إعلانات الفيديو شغالة</label>
+ <p class="muted">مساحة الفيديوهات المستخدمة على السيرفر: <b>${videoAdSize(used)}</b></p>
+ <div class="toolbar"></div></div>
+ <div class="panel"><h3>حد خاص لمؤسسة</h3><p class="muted">اكتب رقم المؤسسة وعدد إعلاناتها بالشهر. اتركه فاضي ليرجع لحد باقتها.</p>
+ <div class="formgrid"><label>رقم المؤسسة<input data-q="org" type="number" min="1"></label><label>عدد الإعلانات بالشهر<input data-q="limit" type="number" min="0" max="1000" placeholder="فاضي = حسب الباقة"></label></div>
+ <div class="toolbar" data-qbar></div>
+ ${(d.overrides||[]).length?table(d.overrides,[['المؤسسة',x=>esc(x.organization_name)+' (#'+x.organization_id+')'],['الباقة',x=>pkg[x.package]||esc(x.package)],['الحد الشهري',x=>x.monthly_limit],['آخر تعديل',x=>when(x.updated_at)]]):'<p class="muted">لا توجد حدود خاصة.</p>'}</div>`;
+ box.querySelector('.toolbar').append(action('حفظ الإعدادات',async()=>{const body={};box.querySelectorAll('[data-k]').forEach(i=>{body[i.dataset.k]=i.type==='checkbox'?(i.checked?1:0):i.value});try{await api('video-ads/settings','PUT',body);flash('تم حفظ الإعدادات ✓');render()}catch(e){flash(e.message)}},'primary'));
+ box.querySelector('[data-qbar]').append(action('حفظ الحد الخاص',async()=>{const org=box.querySelector('[data-q="org"]').value,limit=box.querySelector('[data-q="limit"]').value.trim();if(!org){flash('اكتب رقم المؤسسة');return}try{await api('video-ads/quota/'+org,'PUT',{limit:limit===''?null:limit});flash(limit===''?'رجعت المؤسسة لحد باقتها':'تم حفظ الحد الخاص ✓');render()}catch(e){flash(e.message)}}));
+ return box;
+}
+// شارة الطلبات الجديدة بجانب الزر في القائمة.
+setInterval(()=>{if(typeof me!=='undefined'&&me&&can('ads'))api('video-ads?status=pending').then(d=>videoAdBadge(d.counts.pending)).catch(()=>{})},60000);

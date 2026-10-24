@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     KHDOOM_DB=/data/khdoom.db
 
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY server.py /app/server.py
@@ -42,6 +43,8 @@ COPY commercial_leads.py /app/commercial_leads.py
 COPY owner_ads.js /app/owner_ads.js
 COPY package_limits.py owner_package_limits.html /app/
 COPY service_quota.py ai_limit_policy.py login_help.py device_backup.py /app/
+COPY video_ads.py owner_video_ads.js /app/
+COPY assets/images/khdoom_logo.png /app/assets/images/khdoom_logo.png
 
 RUN mkdir -p /data && useradd --create-home khdoom && chown -R khdoom:khdoom /app /data
 USER khdoom

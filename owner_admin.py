@@ -234,12 +234,13 @@ def permission(path,method):
   if p=='technical-ai/state' or p.startswith('me/2fa'): return None
   if p.startswith('finance'): return 'finance'
   if p.startswith('export/'): return {'organizations':'organizations.view','payments':'finance','expenses':'finance','audit':'security'}.get(p[7:],'admins')
+  if p.startswith('video-ads'): return 'ads'
   if p=='addons': return 'packages'
   if p.startswith('community/rewards/'): return 'rewards'
   if p.startswith('addon-offers'): return 'offers'
   if p.startswith(('accounts','branches','organization-verifications')): return 'organizations.view' if method=='GET' else 'organizations.edit'
   if p.startswith('directory'): return 'organizations.view' if method=='GET' else 'organizations.edit'
-  if p.startswith(('credits','service-costs','ai-limits','service-limits')): return 'usage'
+  if p.startswith(('credits','service-costs','ai-limits','service-limits','db-size','owner-')): return 'usage'
   if p.startswith('login-help'): return 'support'
   if p.startswith('organizations/') and method!='GET': return 'suspend' if p.endswith('/status') else 'rewards' if p.endswith('/reward') else 'organizations.edit'
   for prefix,perm in [('admins','admins'),('organizations','organizations.view'),('packages','packages'),('codes','codes'),('offers','offers'),('usage','usage'),('expenses','finance'),('technical-ai','security'),('performance','security'),('readiness','security'),('integrations','integrations'),('security','security'),('support','support'),('ads','ads'),('community','community'),('settings','settings')]:
@@ -574,6 +575,7 @@ def handle(h,method,s):
  path=urlparse(h.path).path.rstrip('/')
  if path=='/owner' and method=='GET': h._send_html((s.ROOT/'owner_dashboard.html').read_text(encoding='utf-8').replace('20260924-ad-image-compress-fix','20260926-ad-request-image-small')); return True
  if path=='/owner/dashboard.js' and method=='GET': h._send_javascript((s.ROOT/'owner_dashboard.js').read_text(encoding='utf-8')); return True
+ if path=='/owner/video-ads.js' and method=='GET': h._send_javascript((s.ROOT/'owner_video_ads.js').read_text(encoding='utf-8')); return True
  if path=='/owner/addons.js' and method=='GET': h._send_javascript((s.ROOT/'owner_addons.js').read_text(encoding='utf-8')); return True
  if not path.startswith('/owner/api/v2/'): return False
  route=path[len('/owner/api/v2/'):]
@@ -603,6 +605,8 @@ def handle(h,method,s):
    h._send(200,{'token':token}); return True
   actor=authorize(h,s)
   if route=='me' and method=='GET': h._send(200,actor); return True
+  if route.startswith('video-ads/') and route.endswith('/file') and method=='GET':
+   import video_ads; video_ads.owner_file(h,route,s); return True
   if route.startswith('ads/image/') and method=='GET':
    value=ad_image_lookup(route[len('ads/image/'):],s)
    if not value: raise s.ApiError(404,'صورة الإعلان غير موجودة')
@@ -664,6 +668,34 @@ def handle(h,method,s):
  except (ValueError,TypeError,KeyError) as e: raise s.ApiError(400,str(e))
 
 def dispatch(c,r,m,d,q,page,a,h,s):
+ if r=='db-size':
+  limit=int(os.environ.get('KHDOOM_DB_LIMIT_MB','512'))*1024*1024
+  try: used=int(c.execute('SELECT pg_database_size(current_database()) AS n').fetchone()['n'])
+  except Exception:
+   try: c.rollback()
+   except Exception: pass
+   used=int(c.execute('PRAGMA page_count').fetchone()[0])*int(c.execute('PRAGMA page_size').fetchone()[0])
+  return {'used':used,'limit':limit,'percent':round(used*100/limit,1) if limit else 0}
+ if r=='owner-data':
+  limit=int(os.environ.get('KHDOOM_DB_LIMIT_MB','512'))*1024*1024
+  try: used=int(c.execute('SELECT pg_database_size(current_database()) AS n').fetchone()['n'])
+  except Exception:
+   try: c.rollback()
+   except Exception: pass
+   used=int(c.execute('PRAGMA page_count').fetchone()[0])*int(c.execute('PRAGMA page_size').fetchone()[0])
+  tops=[]
+  if table_exists(c,'device_backup',s):
+   tops=rows(c,'SELECT b.organization_id id,COALESCE(o.name,\'\') name,SUM(b.size) size,COUNT(*) items FROM device_backup b LEFT JOIN organizations o ON o.id=b.organization_id GROUP BY b.organization_id,o.name ORDER BY SUM(b.size) DESC LIMIT 10')
+  return {'used':used,'limit':limit,'percent':round(used*100/limit,1) if limit else 0,'top':tops}
+ if r=='owner-ai':
+  today=stamp()[:10]; month=today[:7]
+  unit=float(service_unit_costs(c,s)['ai']['unit_cost'])
+  src=service_unit_costs(c,s)['ai']['source']
+  day=c.execute('SELECT COUNT(*) n FROM ai_usage WHERE created_at>=?',(today,)).fetchone()['n']
+  mon=c.execute('SELECT COUNT(*) n FROM ai_usage WHERE created_at>=?',(month+'-01',)).fetchone()['n']
+  tops=rows(c,'SELECT u.organization_id id,COALESCE(o.name,\'\') name,COUNT(*) requests FROM ai_usage u LEFT JOIN organizations o ON o.id=u.organization_id WHERE u.created_at>=? GROUP BY u.organization_id,o.name ORDER BY COUNT(*) DESC LIMIT 10',(month+'-01',))
+  for t in tops: t['cost']=round(int(t['requests'])*unit,2)
+  return {'today':int(day),'month':int(mon),'unit_cost':unit,'source':src,'cost_today':round(int(day)*unit,2),'cost_month':round(int(mon)*unit,2),'month_label':month,'top':tops}
  if r=='login-help' or r.startswith('login-help/'):
   import login_help
   return login_help.handle_admin(c,r,m,d,q)
@@ -692,6 +724,9 @@ def dispatch(c,r,m,d,q,page,a,h,s):
    items=rows(c,'SELECT id,active,approved,expires_at,scheduled_at,published_at,review_note,status '+src+' ORDER BY id DESC LIMIT 30 OFFSET ?',[*args,(page-1)*30])
    return {'signature':items,'total':scalar(c,'SELECT COUNT(*) n '+src,args)}
   raise s.ApiError(403,'لا تملك صلاحية عرض التحديثات')
+ if r=='video-ads' or r.startswith('video-ads/'):
+  import video_ads
+  return video_ads.owner(c,r,m,d,q,page,a,s)
  if r=='addons' or r.startswith(('addon-offers','accounts','branches/','organization-verifications')):
   import organization_addons
   return organization_addons.owner(c,r,m,d,q,page,a,s)
