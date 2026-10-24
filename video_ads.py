@@ -475,6 +475,19 @@ def _optimize_row(c, row) -> bool:
     return True
 
 
+def optimize_async(s, ident: int) -> None:
+    def run():
+        try:
+            with s.db() as c:
+                row = c.execute("SELECT id,file_name FROM video_ads WHERE id=? AND deleted=0 AND optimized=0", (ident,)).fetchone()
+                if row and _optimize_row(c, row):
+                    c.commit()
+        except Exception as error:
+            print("video_ads optimize:", error, flush=True)
+
+    __import__("threading").Thread(target=run, daemon=True).start()
+
+
 _backfill_started = False
 
 
@@ -675,14 +688,11 @@ def client(h, method, s) -> bool:
                 if not wants_trim and final.stat().st_size > cfg["max_upload_mb"] * 1_048_576:
                     final.unlink(missing_ok=True)
                     raise ValueError(f"حجم الفيديو أكبر من {cfg['max_upload_mb']} ميقا")
-                optimized = optimize_video(final)
-                if optimized:
-                    final.unlink(missing_ok=True)
-                    final = optimized
-                prepare_watermark_async({"id": ident, "file_name": final.name})
                 old = row
-                c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds),optimized=?,content_type=? WHERE id=?",
-                          (final.name, final.stat().st_size, seconds, 1 if optimized else 0, "video/mp4" if optimized else row["content_type"], ident))
+                c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds),optimized=0 WHERE id=?",
+                          (final.name, final.stat().st_size, seconds, ident))
+                # الضغط بالخلفية بعد الحفظ؛ المشترك ما ينتظره.
+                optimize_async(s, ident)
                 if old["file_name"]:
                     _remove_file(old)
                 _trim_saved(c, org, keep=ident)
