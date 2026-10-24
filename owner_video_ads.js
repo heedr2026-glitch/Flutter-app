@@ -153,7 +153,7 @@ async function openOfficialComposer(){
   publish.disabled=true;m.err('');const prog=m.dlg.querySelector('[data-progress]');
   try{
    const draft=await api('video-ads/official','POST',body);
-   await new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('PUT',draft.uploadUrl);const h=authHeaders();for(const k in h)xhr.setRequestHeader(k,h[k]);xhr.setRequestHeader('Content-Type',body.contentType);xhr.upload.onprogress=e=>{if(e.lengthComputable)prog.textContent='جاري الرفع… '+Math.round(e.loaded*100/e.total)+'%'+(e.loaded===e.total?' — جاري التجهيز…':'')};xhr.onload=()=>{let d={};try{d=JSON.parse(xhr.responseText||'{}')}catch(_){}xhr.status<300?resolve(d):reject(Error(d.error||'تعذر الرفع'))};xhr.onerror=()=>reject(Error('انقطع الاتصال'));xhr.send(f)});
+   await new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('PUT',draft.uploadUrl);const h=authHeaders();for(const k in h)xhr.setRequestHeader(k,h[k]);xhr.setRequestHeader('Content-Type',body.contentType);xhr.upload.onprogress=e=>{if(e.lengthComputable)prog.textContent='جاري الرفع… '+Math.round(e.loaded*100/e.total)+'%'+(e.loaded===e.total?' — جاري التجهيز…':'')};xhr.onload=()=>{let d={};try{d=JSON.parse(xhr.responseText||'{}')}catch(_){}xhr.status<300?resolve(d):reject(Error(d.error||('تعذر الرفع (رمز '+xhr.status+(xhr.status===502||xhr.status===503?' — السيرفر يعيد التشغيل، جرّب بعد دقيقة':xhr.status===413?' — الملف كبير':'')+')')))};xhr.onerror=()=>reject(Error('انقطع الاتصال'));xhr.send(f)});
    m.close();flash('تم نشر مقطع خدوم ✓');videoAdTab='published';render();
   }catch(e){m.err(e.message);publish.disabled=false;prog.textContent=''}
  },'primary');
