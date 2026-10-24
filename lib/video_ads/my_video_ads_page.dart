@@ -4,7 +4,7 @@ import 'create_video_ad_page.dart';
 import '../khdoom_dark_page.dart';
 import 'video_ads_api.dart';
 
-/// «إعلاناتي»: فيديوهات المؤسسة بكل حالاتها، مع إعادة النشر والحذف.
+/// «المكتبة»: فيديوهات المؤسسة بكل حالاتها، مع إعادة النشر والحذف.
 class MyVideoAdsPage extends StatefulWidget {
   const MyVideoAdsPage({super.key});
 
@@ -71,7 +71,7 @@ class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
           title: const Text('حذف الفيديو'),
           content: Text(
             status == 'published'
-                ? 'الإعلان منشور الحين، بينشال من العروض فورًا وينحذف نهائي. متأكد؟'
+                ? 'الإعلان منشور الحين، بينشال من المشاهدة فورًا وينحذف نهائي. متأكد؟'
                 : status == 'pending'
                 ? 'بينلغي طلب النشر وينحذف الفيديو نهائي. متأكد؟'
                 : 'متأكد تبي تحذف الفيديو نهائي؟',
@@ -171,7 +171,7 @@ class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
       key: _darkKey,
       textDirection: TextDirection.rtl,
       child: Scaffold(
-        appBar: AppBar(title: const Text('إعلاناتي')),
+        appBar: AppBar(title: const Text('📚 المكتبة')),
         floatingActionButton: FloatingActionButton.extended(
           onPressed: () async {
             final created = await Navigator.push<bool>(
@@ -181,7 +181,7 @@ class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
             if (created == true) _load();
           },
           icon: const Icon(Icons.add),
-          label: const Text('إعلان جديد'),
+          label: const Text('أضف مقطع'),
         ),
         body: _loading
             ? const Center(child: CircularProgressIndicator())

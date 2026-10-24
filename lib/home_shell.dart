@@ -4,7 +4,7 @@ import 'community_page.dart';
 import 'main.dart' show DashboardPage, MyBusinessPage;
 import 'video_ads/offers_feed_page.dart';
 
-/// الشريط السفلي الثابت: الرئيسية | عروض | المجتمع | مؤسستي.
+/// الشريط السفلي الثابت: الرئيسية | مشاهدة | المجتمع | مؤسستي.
 class KhdoomHomeShell extends StatefulWidget {
   const KhdoomHomeShell({super.key, this.initialTab = 0});
 
@@ -87,7 +87,7 @@ class _KhdoomHomeShellState extends State<KhdoomHomeShell> {
               NavigationDestination(
                 icon: Icon(Icons.movie_outlined),
                 selectedIcon: Icon(Icons.movie),
-                label: 'عروض',
+                label: 'مشاهدة',
               ),
               NavigationDestination(
                 icon: Icon(Icons.forum_outlined),

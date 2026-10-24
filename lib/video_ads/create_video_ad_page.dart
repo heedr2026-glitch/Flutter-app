@@ -91,7 +91,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
       builder: (context) => Directionality(
         textDirection: TextDirection.rtl,
         child: AlertDialog(
-          title: const Text('🎬 أعلن بالفيديو'),
+          title: const Text('➕ أضف مقطع'),
           content: Text(
             vip
                 ? 'خلصت إعلاناتك المجانية لهذا الشهر (${quota['used']} من ${quota['limit']}).\nتقدر تنشر إعلان إضافي بـ ${price.toStringAsFixed(0)} ريال.'
@@ -335,7 +335,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
       key: _darkKey,
       textDirection: TextDirection.rtl,
       child: Scaffold(
-        appBar: AppBar(title: const Text('إعلان فيديو جديد')),
+        appBar: AppBar(title: const Text('➕ أضف مقطع')),
         body: _error != null
             ? Center(
                 child: Padding(

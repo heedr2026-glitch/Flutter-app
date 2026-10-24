@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 
 import '../branch_store.dart';
 
-/// واجهة إعلانات الفيديو (صفحة «عروض»).
+/// واجهة إعلانات الفيديو (صفحة «مشاهدة»).
 class VideoAdsApi {
   VideoAdsApi._(this.baseUri, this.token);
 

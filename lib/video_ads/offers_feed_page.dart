@@ -10,11 +10,11 @@ import 'video_ads_api.dart';
 
 const _savedKey = 'video_ads_saved_ids';
 
-/// صفحة «عروض»: فيديوهات إعلانات المؤسسات بملء الشاشة، تسحب للأعلى للي بعده.
+/// صفحة «مشاهدة»: فيديوهات إعلانات المؤسسات بملء الشاشة، تسحب للأعلى للي بعده.
 class OffersFeedPage extends StatefulWidget {
   const OffersFeedPage({super.key, this.active = true, this.savedOnly = false});
 
-  /// تتوقف الفيديوهات لما المستخدم يطلع من تبويب العروض.
+  /// تتوقف الفيديوهات لما المستخدم يطلع من تبويب المشاهدة.
   final bool active;
   final bool savedOnly;
 
@@ -219,7 +219,7 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
           foregroundColor: Colors.white,
           elevation: 0,
           automaticallyImplyLeading: widget.savedOnly,
-          title: Text(widget.savedOnly ? 'المحفوظات' : 'عروض'),
+          title: Text(widget.savedOnly ? 'المحفوظات' : 'مشاهدة'),
           actions: [
             IconButton(
               tooltip: _muted ? 'تشغيل الصوت' : 'كتم الصوت',
@@ -238,7 +238,7 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
                 ),
               ),
               IconButton(
-                tooltip: 'إعلاناتي',
+                tooltip: 'المكتبة',
                 icon: const Icon(Icons.video_library_outlined),
                 onPressed: () => Navigator.push(
                   context,
@@ -246,7 +246,7 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
                 ),
               ),
               IconButton(
-                tooltip: 'أعلن بالفيديو',
+                tooltip: 'أضف مقطع',
                 icon: const Icon(Icons.add_circle_outline, size: 30),
                 onPressed: _openCreate,
               ),
@@ -270,7 +270,7 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
       return _centerMessage(
         widget.savedOnly
             ? 'ما حفظت أي إعلان بعد. اضغط 🔖 على أي فيديو يعجبك.'
-            : 'ما فيه عروض الحين. كن أول من يعلن 🎬',
+            : 'ما فيه مقاطع الحين. كن أول من يضيف مقطع 🎬',
         retry: !widget.savedOnly,
       );
     }
