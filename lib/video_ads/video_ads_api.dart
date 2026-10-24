@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
@@ -162,15 +163,35 @@ class VideoAdsApi {
     void Function(double progress)? onProgress,
   }) async {
     final draft = await _json('POST', '/api/video-ads/sounds', {'name': name, 'public': public}) as Map;
-    final result = await _uploadTo(
-      draft['uploadUrl'].toString(),
-      video,
-      contentType: contentTypeFor(video.path),
-      start: start,
-      end: end,
-      onProgress: onProgress,
-    );
-    return Map<String, dynamic>.from(result as Map);
+    // الجوال ياخذ الصوت بس من الجزء المحدد ويرفع ملف صغير؛ إذا ما قدر نرفع المقطع والسيرفر يقصه.
+    File? clip;
+    try {
+      final out = await const MethodChannel('khdoom/audio_clip').invokeMethod<String>('extract', {
+        'path': video.path,
+        'startMs': (start * 1000).round(),
+        'endMs': (end * 1000).round(),
+      });
+      if (out != null && out.isNotEmpty) clip = File(out);
+    } catch (_) {
+      clip = null;
+    }
+    try {
+      final result = await _uploadTo(
+        draft['uploadUrl'].toString(),
+        clip ?? video,
+        contentType: clip != null ? 'audio/mp4' : contentTypeFor(video.path),
+        start: clip != null ? null : start,
+        end: clip != null ? null : end,
+        onProgress: onProgress,
+      );
+      return Map<String, dynamic>.from(result as Map);
+    } finally {
+      if (clip != null) {
+        try {
+          await clip.delete();
+        } catch (_) {}
+      }
+    }
   }
 
   Future<void> deleteSound(int id) => _json('DELETE', '/api/video-ads/sounds/$id');
