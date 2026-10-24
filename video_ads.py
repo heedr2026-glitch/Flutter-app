@@ -87,6 +87,8 @@ def migrate(c, postgres: bool = False) -> None:
     present = set() if postgres else {r["name"] for r in c.execute("PRAGMA table_info(video_ads)")}
     if postgres or "overlay_y" not in present:
         c.execute("ALTER TABLE video_ads ADD COLUMN " + ("IF NOT EXISTS " if postgres else "") + "overlay_y REAL NOT NULL DEFAULT 0.15")
+    if postgres or "optimized" not in present:
+        c.execute("ALTER TABLE video_ads ADD COLUMN " + ("IF NOT EXISTS " if postgres else "") + "optimized INTEGER NOT NULL DEFAULT 0")
     c.execute("CREATE INDEX IF NOT EXISTS video_ads_status ON video_ads(status, deleted)")
     c.execute("CREATE INDEX IF NOT EXISTS video_ads_org ON video_ads(organization_id, deleted)")
     c.execute("CREATE INDEX IF NOT EXISTS video_ad_submissions_org ON video_ad_submissions(organization_id, created_at)")
@@ -429,6 +431,67 @@ def trim_video(source: Path, target: Path, start: float, length: float) -> bool:
 LOGO = Path(__file__).resolve().parent / "assets" / "images" / "khdoom_logo.png"
 
 
+def optimize_video(source: Path) -> Path | None:
+    """يضغط الفيديو لجودة الجوال (720p) ويجهزه للتشغيل الفوري؛ يرجع الملف الجديد."""
+    if not _ffmpeg() or not source.exists():
+        return None
+    target = source.with_name(source.stem + "_m.mp4")
+    temp = target.with_suffix(".part.mp4")
+    try:
+        done = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source),
+                               "-vf", "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'",
+                               "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-maxrate", "2M", "-bufsize", "4M",
+                               "-pix_fmt", "yuv420p", "-g", "60", "-c:a", "aac", "-b:a", "96k", "-ac", "2",
+                               "-movflags", "+faststart", str(temp)],
+                              capture_output=True, timeout=900)
+        if done.returncode == 0 and temp.exists() and temp.stat().st_size > 0:
+            temp.replace(target)
+            return target
+    except (subprocess.SubprocessError, OSError):
+        pass
+    temp.unlink(missing_ok=True)
+    return None
+
+
+def _optimize_row(c, row) -> bool:
+    source = _file_path(row)
+    if not source or not source.exists():
+        return False
+    result = optimize_video(source)
+    if not result:
+        return False
+    c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,content_type='video/mp4',optimized=1 WHERE id=?",
+              (result.name, result.stat().st_size, row["id"]))
+    for old in (source, source.with_name("wm_" + source.stem + ".mp4")):
+        old.unlink(missing_ok=True)
+    return True
+
+
+_backfill_started = False
+
+
+def start_backfill(s) -> None:
+    """الفيديوهات القديمة تنضغط مرة وحدة بالخلفية بدون ما يعيد المشترك رفعها."""
+    global _backfill_started
+    if _backfill_started or not _ffmpeg():
+        return
+    _backfill_started = True
+
+    def run():
+        try:
+            with s.db() as c:
+                rows = c.execute("SELECT id,file_name FROM video_ads WHERE deleted=0 AND optimized=0 AND file_name<>'' ORDER BY id").fetchall()
+            for row in rows:
+                with s.db() as c:
+                    _optimize_row(c, row)
+                    c.commit()
+        except Exception as error:  # الضغط تحسين؛ ما يوقف السيرفر
+            print("video_ads backfill:", error, flush=True)
+
+    import threading
+    threading.Thread(target=run, daemon=True).start()
+
+
 def watermarked(row) -> Path | None:
     """نسخة التنزيل عليها شعار خدوم في الزاوية؛ تنحفظ بعد أول تنزيل."""
     source = _file_path(row)
@@ -465,6 +528,7 @@ def client(h, method, s) -> bool:
     if not path.startswith("/api/video-ads"):
         return False
     q = {k: v[0] for k, v in parse_qs(urlparse(h.path).query).items()}
+    start_backfill(s)
     try:
         public = re.fullmatch(r"/api/video-ads/dl/([0-9]+)/([0-9]+)/([0-9a-f]{40})", path)
         if public and method == "GET":
@@ -587,8 +651,13 @@ def client(h, method, s) -> bool:
                 if not wants_trim and final.stat().st_size > cfg["max_upload_mb"] * 1_048_576:
                     final.unlink(missing_ok=True)
                     raise ValueError(f"حجم الفيديو أكبر من {cfg['max_upload_mb']} ميقا")
+                optimized = optimize_video(final)
+                if optimized:
+                    final.unlink(missing_ok=True)
+                    final = optimized
                 old = row
-                c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds) WHERE id=?", (final.name, final.stat().st_size, seconds, ident))
+                c.execute("UPDATE video_ads SET file_name=?,size_bytes=?,seconds=COALESCE(?,seconds),optimized=?,content_type=? WHERE id=?",
+                          (final.name, final.stat().st_size, seconds, 1 if optimized else 0, "video/mp4" if optimized else row["content_type"], ident))
                 if old["file_name"]:
                     _remove_file(old)
                 _trim_saved(c, org, keep=ident)
