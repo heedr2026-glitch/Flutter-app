@@ -7,6 +7,7 @@ import 'package:video_player/video_player.dart';
 import '../main.dart' show SubscriptionPackagesPage;
 import 'offers_feed_page.dart' show overlayTextPreview;
 import '../khdoom_dark_page.dart';
+import 'sound_picker.dart';
 import 'video_ads_api.dart';
 
 /// إنشاء إعلان فيديو: تصوير أو اختيار من المعرض ← قص ← نص (اختياري) ← إرسال للمراجعة.
@@ -26,6 +27,9 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
   String? _error;
 
   File? _file;
+  bool _isImage = false;
+  Map<String, dynamic>? _sound;
+  VideoPlayerController? _soundPlayer;
   VideoPlayerController? _player;
   RangeValues _range = const RangeValues(0, 0);
   double _duration = 0;
@@ -52,6 +56,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
   @override
   void dispose() {
     _player?.dispose();
+    _soundPlayer?.dispose();
     for (final c in [_title, _caption, _overlay, _activity, _contact, _transfer]) {
       c.dispose();
     }
@@ -146,12 +151,91 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
     player.addListener(_loopInsideRange);
     // الفيديو يبدأ واقف؛ المستخدم يشغله بضغطة لما يبي.
     if (!mounted) return;
+    if (_sound != null) await player.setVolume(0);
+    if (!mounted) return;
     setState(() {
+      _isImage = false;
       _file = file;
       _player = player;
       _duration = seconds;
       _range = RangeValues(0, seconds.clamp(0, _maxSeconds.toDouble()));
     });
+  }
+
+  bool get _soundsEnabled => _quota?['sounds_enabled'] == true;
+
+  /// مدة الإعلان: للصورة بطول الصوت أو 8 ثواني.
+  double get _imageSeconds {
+    final sound = (_sound?['seconds'] as num?)?.toDouble();
+    return (sound ?? 8).clamp(1, _maxSeconds.toDouble());
+  }
+
+  Future<void> _pickImage() async {
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1440,
+      imageQuality: 90,
+    );
+    if (picked == null) return;
+    await _player?.dispose();
+    if (!mounted) return;
+    setState(() {
+      _player = null;
+      _file = File(picked.path);
+      _isImage = true;
+    });
+  }
+
+  Future<void> _chooseSound() async {
+    final sound = await pickSound(context, _api!, maxSeconds: _maxSeconds);
+    if (sound == null || !mounted) return;
+    await _soundPlayer?.dispose();
+    final player = VideoPlayerController.networkUrl(
+      _api!.resolve(sound['url'].toString()),
+      httpHeaders: _api!.authHeaders,
+    );
+    setState(() {
+      _sound = sound;
+      _soundPlayer = player;
+    });
+    // الصوت المختار يستبدل صوت الفيديو الأصلي.
+    await _player?.setVolume(0);
+    try {
+      await player.initialize();
+      await player.setLooping(true);
+    } catch (_) {}
+  }
+
+  Future<void> _removeSound() async {
+    await _soundPlayer?.dispose();
+    await _player?.setVolume(1);
+    setState(() {
+      _sound = null;
+      _soundPlayer = null;
+    });
+  }
+
+  void _togglePreview() {
+    final p = _player;
+    final sound = _soundPlayer;
+    final playing = p != null ? p.value.isPlaying : (sound?.value.isPlaying ?? false);
+    if (playing) {
+      p?.pause();
+      sound?.pause();
+    } else {
+      if (p != null) {
+        final pos = p.value.position.inMilliseconds / 1000;
+        if (pos < _range.start || pos >= _range.end - 0.1) {
+          p.seekTo(Duration(milliseconds: (_range.start * 1000).round()));
+        }
+        p.play();
+      }
+      if (sound != null && sound.value.isInitialized) {
+        sound.seekTo(Duration.zero);
+        sound.play();
+      }
+    }
+    setState(() {});
   }
 
   void _loopInsideRange() {
@@ -197,8 +281,11 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
     });
     try {
       final api = _api!;
-      final needsTrim = _duration > _maxSeconds + 0.5 || _range.start > 0.2 || _range.end < _duration - 0.2;
-      final length = _range.end - _range.start;
+      await _player?.pause();
+      await _soundPlayer?.pause();
+      final needsTrim = !_isImage &&
+          (_duration > _maxSeconds + 0.5 || _range.start > 0.2 || _range.end < _duration - 0.2);
+      final length = _isImage ? _imageSeconds : _range.end - _range.start;
       final id = await api.createDraft({
         'title': _title.text.trim(),
         'caption': _caption.text.trim(),
@@ -207,8 +294,9 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
         'activity': _activity.text.trim(),
         'contact': _contact.text.trim(),
         'allowDownload': _allowDownload,
-        'seconds': needsTrim ? length : _duration,
+        'seconds': (_isImage || needsTrim) ? length : _duration,
         'contentType': contentTypeFor(file.path),
+        if (_sound != null) 'soundId': _sound!['id'],
       });
       await api.upload(
         id,
@@ -279,7 +367,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
           ),
         const SizedBox(height: 8),
         Text(
-          'المدة القصوى للفيديو $_maxSeconds ثانية. إذا الفيديو أطول تقدر تقصه.',
+          'المدة القصوى للفيديو $_maxSeconds ثانية. إذا الفيديو أطول تقدر تقصه. وتقدر تعلن بصورة وحدة كمان.',
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 28),
@@ -297,17 +385,65 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
           icon: const Icon(Icons.photo_library),
           label: const Padding(
             padding: EdgeInsets.all(14),
-            child: Text('اختر من المعرض'),
+            child: Text('فيديو من المعرض'),
+          ),
+        ),
+        const SizedBox(height: 14),
+        OutlinedButton.icon(
+          onPressed: _pickImage,
+          icon: const Icon(Icons.image),
+          label: const Padding(
+            padding: EdgeInsets.all(14),
+            child: Text('🖼️ صورة'),
           ),
         ),
       ],
     ),
   );
 
+  Widget _soundCard() {
+    final sound = _sound;
+    if (sound == null) {
+      return OutlinedButton.icon(
+        onPressed: _sending ? null : _chooseSound,
+        icon: const Icon(Icons.music_note),
+        label: const Text('🎵 إضافة صوت'),
+      );
+    }
+    return Card(
+      child: ListTile(
+        leading: const Icon(Icons.music_note, size: 30),
+        title: Text('🎵 ${sound['name']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text(
+          '${sound['organizationName'] ?? ''} · ▶️ ${(sound['uses'] as num?)?.toInt() ?? 0} استخدام\nصوت الفيديو الأصلي بيختفي',
+        ),
+        isThreeLine: true,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: 'تغيير',
+              onPressed: _sending ? null : _chooseSound,
+              icon: const Icon(Icons.swap_horiz),
+            ),
+            IconButton(
+              tooltip: 'إزالة',
+              onPressed: _sending ? null : _removeSound,
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _editor() {
-    final player = _player!;
+    final player = _player;
     final overlay = _overlay.text.trim();
-    final length = _range.end - _range.start;
+    final length = _isImage ? _imageSeconds : _range.end - _range.start;
+    final previewPlaying = player != null
+        ? player.value.isPlaying
+        : (_soundPlayer?.value.isPlaying ?? false);
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -315,20 +451,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
           aspectRatio: 9 / 16,
           child: LayoutBuilder(
             builder: (context, box) => GestureDetector(
-              onTap: () {
-                final p = _player;
-                if (p == null) return;
-                if (p.value.isPlaying) {
-                  p.pause();
-                } else {
-                  final pos = p.value.position.inMilliseconds / 1000;
-                  if (pos < _range.start || pos >= _range.end - 0.1) {
-                    p.seekTo(Duration(milliseconds: (_range.start * 1000).round()));
-                  }
-                  p.play();
-                }
-                setState(() {});
-              },
+              onTap: _togglePreview,
               onVerticalDragUpdate: overlay.isEmpty
                   ? null
                   : (d) => setState(
@@ -339,18 +462,21 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Center(
-                      child: AspectRatio(
-                        aspectRatio: player.value.aspectRatio,
-                        child: VideoPlayer(player),
-                      ),
-                    ),
+                    if (player != null)
+                      Center(
+                        child: AspectRatio(
+                          aspectRatio: player.value.aspectRatio,
+                          child: VideoPlayer(player),
+                        ),
+                      )
+                    else
+                      Image.file(_file!, fit: BoxFit.contain),
                     if (overlay.isNotEmpty)
                       Align(
                         alignment: Alignment(0, _overlayY * 2 - 1),
                         child: overlayTextPreview(overlay),
                       ),
-                    if (!player.value.isPlaying)
+                    if (!previewPlaying && (player != null || _soundPlayer != null))
                       const Center(
                         child: Icon(Icons.play_circle_fill, size: 72, color: Colors.white70),
                       ),
@@ -370,11 +496,15 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
             ),
           ),
         const SizedBox(height: 12),
+        if (_soundsEnabled) _soundCard(),
+        const SizedBox(height: 8),
         Text(
-          '✂️ القص: ${_time(_range.start)} ← ${_time(_range.end)}  (المدة: ${length.round()} ثانية من $_maxSeconds)',
+          _isImage
+              ? '🖼️ مدة الإعلان: ${length.round()} ثانية${_sound == null ? ' (بدون صوت)' : ' (بطول الصوت)'}'
+              : '✂️ القص: ${_time(_range.start)} ← ${_time(_range.end)}  (المدة: ${length.round()} ثانية من $_maxSeconds)',
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
-        if (_duration > 0.5)
+        if (!_isImage && _duration > 0.5)
           RangeSlider(
             min: 0,
             max: _duration,
@@ -458,9 +588,11 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
               ? null
               : () async {
                   await _player?.dispose();
+                  await _soundPlayer?.pause();
                   setState(() {
                     _player = null;
                     _file = null;
+                    _isImage = false;
                   });
                 },
           child: const Text('اختيار فيديو ثاني'),

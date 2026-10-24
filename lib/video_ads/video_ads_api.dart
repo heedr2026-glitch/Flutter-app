@@ -77,6 +77,16 @@ class VideoAdsApi {
     double? start,
     double? end,
     void Function(double progress)? onProgress,
+  }) => _uploadTo('/api/video-ads/$id/upload', file,
+      contentType: contentType, start: start, end: end, onProgress: onProgress);
+
+  Future<dynamic> _uploadTo(
+    String path,
+    File file, {
+    required String contentType,
+    double? start,
+    double? end,
+    void Function(double progress)? onProgress,
   }) async {
     final query = end == null
         ? ''
@@ -84,7 +94,7 @@ class VideoAdsApi {
     final length = await file.length();
     final request = http.StreamedRequest(
       'PUT',
-      resolve('/api/video-ads/$id/upload$query'),
+      resolve('$path$query'),
     )
       ..headers.addAll({...authHeaders, 'Content-Type': contentType})
       ..contentLength = length;
@@ -113,6 +123,7 @@ class VideoAdsApi {
               : 'تعذر رفع الفيديو',
         );
       }
+      return text.isEmpty ? null : jsonDecode(text);
     } finally {
       await pipe.cancel();
     }
@@ -131,6 +142,38 @@ class VideoAdsApi {
   );
 
   Future<void> delete(int id) => _json('DELETE', '/api/video-ads/$id');
+
+  // ---------------- الأصوات (مثل سناب)
+  Future<List<Map<String, dynamic>>> sounds({bool public = false}) async {
+    final result = await _json('GET', '/api/video-ads/sounds${public ? '?scope=public' : ''}') as Map;
+    return [
+      for (final item in (result['items'] as List? ?? const []))
+        Map<String, dynamic>.from(item as Map),
+    ];
+  }
+
+  /// ينشئ صوت من جزء من فيديو في الجوال.
+  Future<Map<String, dynamic>> createSound({
+    required String name,
+    required bool public,
+    required File video,
+    required double start,
+    required double end,
+    void Function(double progress)? onProgress,
+  }) async {
+    final draft = await _json('POST', '/api/video-ads/sounds', {'name': name, 'public': public}) as Map;
+    final result = await _uploadTo(
+      draft['uploadUrl'].toString(),
+      video,
+      contentType: contentTypeFor(video.path),
+      start: start,
+      end: end,
+      onProgress: onProgress,
+    );
+    return Map<String, dynamic>.from(result as Map);
+  }
+
+  Future<void> deleteSound(int id) => _json('DELETE', '/api/video-ads/sounds/$id');
 
   Future<Map<String, dynamic>> toggleLike(int id) async => Map<String, dynamic>.from(
     await _json('POST', '/api/video-ads/$id/like', {}) as Map,
@@ -163,6 +206,9 @@ String whatsappNumber(String raw) {
 
 String contentTypeFor(String path) {
   final lower = path.toLowerCase();
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
   if (lower.endsWith('.mov')) return 'video/quicktime';
   if (lower.endsWith('.webm')) return 'video/webm';
   if (lower.endsWith('.3gp')) return 'video/3gpp';
