@@ -40,7 +40,7 @@ function videoAdCard(x,durations){
  ${x.title?`<p><b>العنوان:</b> ${esc(x.title)}</p>`:''}
  ${x.overlay_text?`<p><b>النص على الفيديو:</b> ${esc(x.overlay_text)}</p>`:''}
  ${x.caption?`<p><b>الوصف:</b> ${esc(x.caption)}</p>`:''}
- <p class="muted">النشاط: ${esc(x.activity||'—')} · المدة: ${Math.round(x.seconds||0)} ث · الحجم: ${videoAdSize(x.size_bytes)} · التنزيل: ${x.allow_download?'مسموح':'مقفول'}</p>
+ <p class="muted">النشاط: ${esc(x.activity||'—')} · المدة: ${Math.round(x.seconds||0)} ث · الحجم: ${videoAdSize(x.size_bytes)} · التنزيل: ${x.allow_download?'مسموح':'مقفول'} · ❤️ ${x.likes||0}</p>
  <p class="muted">أُرسل: ${when(x.submitted_at)}${x.published_at?' · نُشر: '+when(x.published_at):''}${x.expires_at?' · ينتهي: '+when(x.expires_at):''}${x.duration_label?' ('+esc(x.duration_label)+')':''}</p>
  ${x.paid?`<p style="color:#b45309;font-weight:bold">💳 إعلان مدفوع ${Number(x.price_sar||0).toFixed(0)} ريال — التحويل باسم: ${esc(x.transfer_name||'غير مكتوب')}</p>`:'<p class="muted">من رصيد VIP الشهري</p>'}
  ${x.review_note?`<p style="color:#b32635"><b>سبب الرفض:</b> ${esc(x.review_note)}</p>`:''}
