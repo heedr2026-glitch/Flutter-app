@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
+import '../main.dart' show SettingsPage;
 import 'create_video_ad_page.dart';
 import 'my_video_ads_page.dart';
 import '../khdoom_dark_page.dart';
@@ -125,6 +126,14 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
   }
 
   Future<void> _contact(Map<String, dynamic> item) async {
+    // مقاطع خدوم الرسمية: التواصل يفتح الدعم الفني.
+    if (item['official'] == true) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const SettingsPage(openSupport: true)),
+      );
+      return;
+    }
     final phone = (item['contact'] ?? '').toString().trim();
     if (phone.isEmpty) {
       _message('المعلن ما أضاف رقم تواصل');
@@ -492,7 +501,7 @@ class _VideoAdViewState extends State<_VideoAdView> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${item['organizationName'] ?? ''}${item['vip'] == true ? ' ⭐' : ''}',
+                  '${item['pinned'] == true ? '📌 ' : ''}${item['organizationName'] ?? ''}${item['official'] == true ? ' ✔️' : item['vip'] == true ? ' ⭐' : ''}',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 17,

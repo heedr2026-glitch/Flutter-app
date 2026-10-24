@@ -5773,7 +5773,10 @@ class _VehiclesPageState extends State<VehiclesPage> {
 }
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, this.openSupport = false});
+
+  /// يفتح «الدعم الفني» مباشرة (مثل زر تواصل في مقاطع خدوم).
+  final bool openSupport;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -6322,6 +6325,9 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadSettings();
+    if (widget.openSupport) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openTechnicalSupport());
+    }
   }
 
   Future<void> _loadSettings() async {
