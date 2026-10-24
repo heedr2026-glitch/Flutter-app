@@ -90,6 +90,7 @@ def migrate(c, postgres: bool = False) -> None:
     c.execute("CREATE INDEX IF NOT EXISTS video_ads_status ON video_ads(status, deleted)")
     c.execute("CREATE INDEX IF NOT EXISTS video_ads_org ON video_ads(organization_id, deleted)")
     c.execute("CREATE INDEX IF NOT EXISTS video_ad_submissions_org ON video_ad_submissions(organization_id, created_at)")
+    c.execute("CREATE TABLE IF NOT EXISTS video_ad_likes(video_ad_id BIGINT NOT NULL, organization_id BIGINT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(video_ad_id, organization_id))")
     for key, value in DEFAULT_SETTINGS.items():
         c.execute("INSERT INTO video_ad_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING", (key, str(value)))
     c.execute("INSERT INTO video_ad_settings(key,value) VALUES('link_secret',?) ON CONFLICT(key) DO NOTHING", (secrets.token_hex(32),))
@@ -251,7 +252,9 @@ def owner_list(c, status: str, page: int) -> dict:
     where = "FROM video_ads v JOIN organizations o ON o.id=v.organization_id WHERE v.deleted=0 AND v.status=?"
     order = "v.submitted_at ASC,v.id ASC" if status == "pending" else "v.id DESC"
     result = admin.paged(c, select, where, [status], order, page)
-    result["items"] = [{**_owner_row(x), "package": org_package(c, x["organization_id"])} for x in result.get("items", [])]
+    result["items"] = [{**_owner_row(x), "package": org_package(c, x["organization_id"]),
+                        "likes": int(c.execute("SELECT COUNT(*) n FROM video_ad_likes WHERE video_ad_id=?", (x["id"],)).fetchone()["n"])}
+                       for x in result.get("items", [])]
     result["counts"] = {k: c.execute("SELECT COUNT(*) n FROM video_ads WHERE deleted=0 AND status=?", (k,)).fetchone()["n"] for k in statuses}
     result["durations"] = [{"key": k, "label": DURATION_LABELS[k]} for k in DURATIONS]
     return result
@@ -346,6 +349,13 @@ def owner_file(h, route, s) -> None:
 
 
 # ---------------------------------------------------------------- تطبيق المشترك
+def _attach_likes(c, items, org) -> None:
+    """كل مؤسسة تعجب بالإعلان مرة وحدة؛ نرجع العدد وهل أعجبتها."""
+    for item in items:
+        item["likes"] = int(c.execute("SELECT COUNT(*) n FROM video_ad_likes WHERE video_ad_id=?", (item["id"],)).fetchone()["n"])
+        item["liked"] = bool(c.execute("SELECT 1 FROM video_ad_likes WHERE video_ad_id=? AND organization_id=?", (item["id"], org)).fetchone())
+
+
 def _public(row, base_contact="", package="") -> dict:
     return {"id": row["id"], "title": row["title"], "caption": row["caption"], "overlayText": row["overlay_text"],
             "activity": row["activity"], "contact": row["contact"] or base_contact, "allowDownload": bool(row["allow_download"]),
@@ -495,12 +505,28 @@ def client(h, method, s) -> bool:
                 if activity:
                     sql += " AND v.activity=?"; args.append(activity[:60])
                 sql += " ORDER BY v.published_at DESC LIMIT 50"
-                result = {"items": [_public(x, x["org_phone"] or "", org_package(c, x["organization_id"])) for x in c.execute(sql, args).fetchall()]}
+                items = [_public(x, x["org_phone"] or "", org_package(c, x["organization_id"])) for x in c.execute(sql, args).fetchall()]
+                _attach_likes(c, items, org)
+                result = {"items": items}
+            elif re.fullmatch(r"[0-9]+/like", r) and method == "POST":
+                ident = int(r.split("/")[0])
+                if not c.execute("SELECT id FROM video_ads WHERE id=? AND deleted=0 AND status='published'", (ident,)).fetchone():
+                    raise s.ApiError(404, "الإعلان غير متاح")
+                if c.execute("SELECT 1 FROM video_ad_likes WHERE video_ad_id=? AND organization_id=?", (ident, org)).fetchone():
+                    c.execute("DELETE FROM video_ad_likes WHERE video_ad_id=? AND organization_id=?", (ident, org))
+                    liked = False
+                else:
+                    c.execute("INSERT INTO video_ad_likes(video_ad_id,organization_id,created_at) VALUES(?,?,?)", (ident, org, stamp()))
+                    liked = True
+                count = c.execute("SELECT COUNT(*) n FROM video_ad_likes WHERE video_ad_id=?", (ident,)).fetchone()["n"]
+                result = {"liked": liked, "likes": int(count)}
             elif r == "quota" and method == "GET":
                 result = quota(c, org)
             elif r == "mine" and method == "GET":
                 rows = c.execute("SELECT * FROM video_ads WHERE organization_id=? AND deleted=0 ORDER BY id DESC", (org,)).fetchall()
-                result = {"items": [{**_public(x), "status": x["status"], "reviewNote": x["review_note"], "paid": bool(x["paid"])} for x in rows],
+                mine_items = [{**_public(x), "status": x["status"], "reviewNote": x["review_note"], "paid": bool(x["paid"])} for x in rows]
+                _attach_likes(c, mine_items, org)
+                result = {"items": mine_items,
                           "quota": quota(c, org)}
             elif r == "" and method == "POST":
                 if user["role"] != "admin":

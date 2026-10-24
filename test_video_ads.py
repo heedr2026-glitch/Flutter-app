@@ -87,6 +87,11 @@ class VideoAdsTest(unittest.TestCase):
                 self.assertTrue(feed['items'][0]['vip'])
                 self.assertEqual(call('/api/video-ads/%d/download' % draft['id'], user=2)[0], 403)
                 self.assertEqual(call('/api/video-ads/%d/file' % draft['id'], user=2)[0], 200)
+                like = call('/api/video-ads/%d/like' % draft['id'], 'POST', {}, user=2)[1]
+                self.assertEqual((like['liked'], like['likes']), (True, 1))
+                self.assertEqual(call('/api/video-ads/feed', user=2)[1]['items'][0]['likes'], 1)
+                self.assertTrue(call('/api/video-ads/feed', user=2)[1]['items'][0]['liked'])
+                self.assertEqual(call('/api/video-ads/%d/like' % draft['id'], 'POST', {}, user=2)[1]['likes'], 0)
 
                 # انتهاء المدة: يختفي ويبقى محفوظًا ويُعاد نشره
                 with server.db() as c:
