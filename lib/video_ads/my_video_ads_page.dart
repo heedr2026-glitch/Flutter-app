@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'create_video_ad_page.dart';
+import '../khdoom_dark_page.dart';
 import 'video_ads_api.dart';
 
 /// «إعلاناتي»: فيديوهات المؤسسة بكل حالاتها، مع إعادة النشر والحذف.
@@ -12,6 +13,8 @@ class MyVideoAdsPage extends StatefulWidget {
 }
 
 class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
+  // الحوارات تاخذ ألوان الصفحة الداكنة من هنا.
+  final _darkKey = GlobalKey();
   VideoAdsApi? _api;
   List<Map<String, dynamic>> _items = [];
   Map<String, dynamic> _quota = {};
@@ -61,7 +64,7 @@ class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
   Future<void> _delete(Map<String, dynamic> item) async {
     final status = item['status'];
     final ok = await showDialog<bool>(
-      context: context,
+      context: _darkKey.currentContext ?? context,
       builder: (context) => Directionality(
         textDirection: TextDirection.rtl,
         child: AlertDialog(
@@ -106,7 +109,7 @@ class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
       final controller = TextEditingController();
       final price = ((_quota['paid_price_sar'] as num?) ?? 29).toStringAsFixed(0);
       final name = await showDialog<String>(
-        context: context,
+        context: _darkKey.currentContext ?? context,
         builder: (context) => Directionality(
           textDirection: TextDirection.rtl,
           child: AlertDialog(
@@ -163,7 +166,9 @@ class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Directionality(
+    return KhdoomDarkPage(
+      child: Directionality(
+      key: _darkKey,
       textDirection: TextDirection.rtl,
       child: Scaffold(
         appBar: AppBar(title: const Text('إعلاناتي')),
@@ -212,6 +217,7 @@ class _MyVideoAdsPageState extends State<MyVideoAdsPage> {
                 ),
               ),
       ),
+    ),
     );
   }
 

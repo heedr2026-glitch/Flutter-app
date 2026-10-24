@@ -5,6 +5,7 @@ import 'package:video_player/video_player.dart';
 
 import 'create_video_ad_page.dart';
 import 'my_video_ads_page.dart';
+import '../khdoom_dark_page.dart';
 import 'video_ads_api.dart';
 
 const _savedKey = 'video_ads_saved_ids';
@@ -22,6 +23,8 @@ class OffersFeedPage extends StatefulWidget {
 }
 
 class _OffersFeedPageState extends State<OffersFeedPage> {
+  // الحوارات تاخذ ألوان الصفحة الداكنة من هنا.
+  final _darkKey = GlobalKey();
   VideoAdsApi? _api;
   List<Map<String, dynamic>> _items = [];
   Set<String> _saved = {};
@@ -127,7 +130,7 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
       return;
     }
     final choice = await showModalBottomSheet<String>(
-      context: context,
+      context: _darkKey.currentContext ?? context,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -203,7 +206,9 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Directionality(
+    return KhdoomDarkPage(
+      child: Directionality(
+      key: _darkKey,
       textDirection: TextDirection.rtl,
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -270,6 +275,7 @@ class _OffersFeedPageState extends State<OffersFeedPage> {
         ),
         body: _body(),
       ),
+    ),
     );
   }
 

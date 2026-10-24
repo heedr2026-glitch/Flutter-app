@@ -6,6 +6,7 @@ import 'package:video_player/video_player.dart';
 
 import '../main.dart' show SubscriptionPackagesPage;
 import 'offers_feed_page.dart' show overlayTextPreview;
+import '../khdoom_dark_page.dart';
 import 'video_ads_api.dart';
 
 /// إنشاء إعلان فيديو: تصوير أو اختيار من المعرض ← قص ← نص (اختياري) ← إرسال للمراجعة.
@@ -17,6 +18,8 @@ class CreateVideoAdPage extends StatefulWidget {
 }
 
 class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
+  // الحوارات تاخذ ألوان الصفحة الداكنة من هنا.
+  final _darkKey = GlobalKey();
   VideoAdsApi? _api;
   Map<String, dynamic>? _quota;
   bool _pay = false;
@@ -78,7 +81,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
     final vip = quota['can_create'] == true;
     final price = (quota['paid_price_sar'] as num?) ?? 29;
     final choice = await showDialog<String>(
-      context: context,
+      context: _darkKey.currentContext ?? context,
       barrierDismissible: false,
       builder: (context) => Directionality(
         textDirection: TextDirection.rtl,
@@ -235,7 +238,9 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Directionality(
+    return KhdoomDarkPage(
+      child: Directionality(
+      key: _darkKey,
       textDirection: TextDirection.rtl,
       child: Scaffold(
         appBar: AppBar(title: const Text('إعلان فيديو جديد')),
@@ -252,6 +257,7 @@ class _CreateVideoAdPageState extends State<CreateVideoAdPage> {
             ? _chooseSource()
             : _editor(),
       ),
+    ),
     );
   }
 
