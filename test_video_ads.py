@@ -128,6 +128,54 @@ class VideoAdsTest(unittest.TestCase):
             finally:
                 httpd.shutdown()
 
+    def test_trim_and_watermarked_download(self):
+        import shutil, subprocess
+        if not shutil.which('ffmpeg'):
+            self.skipTest('ffmpeg غير مثبت')
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(server, 'DB_PATH', Path(directory) / 'test.db'), \
+             patch.object(server, 'OWNER_KEY_PATH', Path(directory) / 'owner.key'), \
+             patch.object(server, 'DATABASE_URL', ''), patch.object(server, 'db', test_db), \
+             patch.dict(os.environ, {'KHDOOM_OWNER_KEY': 'video-key', 'KHDOOM_VIDEO_DIR': str(Path(directory) / 'videos')}):
+            source = Path(directory) / 'long.mp4'
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x568:rate=15', '-t', '50', '-pix_fmt', 'yuv420p', str(source)], check=True)
+            server.init_db()
+            with server.db() as c:
+                c.execute('INSERT INTO organizations(id,name,created_at) VALUES(1,?,?)', ('مراتك', server.now()))
+                c.execute("INSERT INTO subscriptions(organization_id,package,starts_at) VALUES(1,'vip',?)", (server.now(),))
+                c.execute("INSERT INTO users(id,organization_id,name,username,password_hash,password_salt,role,created_at) VALUES(1,1,'u','tr1','x','x','admin',?)", (server.now(),))
+                c.execute('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)', (hashlib.sha256(b'tr-token').hexdigest(), 1, (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(), server.now()))
+                c.commit()
+            httpd = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            base = 'http://127.0.0.1:' + str(httpd.server_port)
+            def call(path, method='GET', data=None, raw=None, auth=True):
+                headers = {'Content-Type': 'video/mp4' if raw else 'application/json'}
+                if auth: headers['Authorization'] = 'Bearer tr-token'
+                body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)
+                try:
+                    with urlopen(Request(base + path, data=body, method=method, headers=headers), timeout=120) as r:
+                        content = r.read()
+                        return r.status, (json.loads(content) if r.headers.get('Content-Type', '').startswith('application/json') else content), r.headers
+                except HTTPError as e:
+                    return e.code, json.loads(e.read() or b'{}'), e.headers
+            try:
+                draft = call('/api/video-ads', 'POST', {'title': 'مقصوص', 'seconds': 20, 'overlayText': 'خصم', 'overlayY': 0.7})[1]
+                self.assertEqual(call(draft['uploadUrl'] + '?start=10&end=50', 'PUT', raw=source.read_bytes())[0], 400)
+                status, up, _ = call(draft['uploadUrl'] + '?start=10&end=30', 'PUT', raw=source.read_bytes())
+                self.assertEqual(status, 200, up)
+                self.assertLess(abs(up['seconds'] - 20), 2)
+                link = call('/api/video-ads/%d/download-link' % draft['id'], 'POST', {})[1]['url']
+                status, content, headers = call(link, auth=False)
+                self.assertEqual(status, 200)
+                self.assertIn('attachment', headers.get('Content-Disposition', ''))
+                self.assertGreater(len(content), 1000)
+                self.assertEqual(call(link[:-4] + '0000', auth=False)[0], 403)
+                mine = call('/api/video-ads/mine')[1]['items'][0]
+                self.assertEqual(mine['overlayY'], 0.7)
+            finally:
+                httpd.shutdown()
+
 
 if __name__ == '__main__':
     unittest.main()
